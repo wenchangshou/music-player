@@ -1,0 +1,22 @@
+[Unit]
+Description=TIDAL multi-device playback relay
+After=network.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+StateDirectory=tidal-relay
+StateDirectoryMode=0700
+Environment=TIDAL_ACCOUNT_DB=/var/lib/tidal-relay/accounts.sqlite3
+LoadCredential=relay.json:/etc/tidal-relay/config.json
+Environment=TIDAL_REMOTE_ASSETS=/opt/tidal-relay/assets
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 /opt/tidal-relay/server.py
+Restart=on-failure
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+
+[Install]
+WantedBy=multi-user.target

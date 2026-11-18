@@ -1,0 +1,4143 @@
+package com.tidalgui.player;
+
+import android.app.AlertDialog;
+import android.content.ComponentName;
+import android.content.Intent;
+import android.content.ServiceConnection;
+import android.content.res.ColorStateList;
+import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
+import android.net.Uri;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.IBinder;
+import android.os.Looper;
+import android.text.TextUtils;
+import android.view.Gravity;
+import android.view.View;
+import android.view.WindowInsets;
+import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.InputMethodManager;
+import android.widget.Button;
+import android.widget.EditText;
+import android.widget.ImageView;
+import android.widget.LinearLayout;
+import android.widget.ScrollView;
+import android.widget.SeekBar;
+import android.widget.TextView;
+
+import androidx.activity.ComponentActivity;
+import androidx.activity.OnBackPressedCallback;
+import androidx.media3.common.Player;
+import androidx.media3.common.util.UnstableApi;
+
+import com.tidalgui.player.LocalLibrary.LocalGroup;
+
+import org.json.JSONObject;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+
+import static com.tidalgui.player.ListeningRoomColors.ACCENT;
+import static com.tidalgui.player.ListeningRoomColors.BG;
+import static com.tidalgui.player.ListeningRoomColors.INK;
+import static com.tidalgui.player.ListeningRoomColors.MUTED;
+import static com.tidalgui.player.ListeningRoomColors.RAISED;
+import static com.tidalgui.player.ListeningRoomColors.SURFACE;
+
+@UnstableApi
+public final class MainActivity extends ComponentActivity {
+    private static final int IMPORT_SESSION = 1;
+    private static final int IMPORT_AUDIO = 2;
+    private static final int IMPORT_FOLDER = 3;
+    private static final int INSTALL_PERMISSION = 4;
+    private static final int IMPORT_M3U = 5;
+    private static final int EXPORT_M3U = 6;
+    private static final int DOWNLOAD_DIRECTORY = 7;
+    private static final int JOB_DOWNLOAD_DIRECTORY = 8;
+    private interface DownloadChoice { void chosen(int quality, Uri directory); }
+    private DownloadChoice pendingDownloadChoice;
+    private String pendingDownloadTitle;
+    private int pendingDownloadQuality;
+    private Uri pendingDownloadDirectory;
+    static final String OPEN_PLAYER = "com.tidalgui.player.OPEN_PLAYER";
+    private static final int PAGE_SIZE = 50;
+    private static final int LOCAL_PAGE_SIZE = 80;
+
+    private enum Page { HOME, LOCAL, SEARCH, SOURCES, LIBRARY, COLLECTION, QUEUE, PLAYER, SETTINGS, CONNECTIONS, ACCOUNT, DOWNLOADS, NETEASE_PLAYLISTS, NETEASE_SQUARE, OFFLINE }
+
+    private final Handler handler = new Handler(Looper.getMainLooper());
+    private static final ExecutorService downloads = Executors.newSingleThreadExecutor();
+    private final ExecutorService worker = Executors.newFixedThreadPool(3);
+    private ArtworkLoader artwork;
+    private final List<TidalClient.Track> tracks = new ArrayList<>();
+    private final List<TidalClient.Collection> collections = new ArrayList<>();
+    private final java.util.ArrayDeque<TidalClient.Collection> collectionTrail = new java.util.ArrayDeque<>();
+    private PlaybackService playback;
+    private boolean bound;
+    private final OnBackPressedCallback back = new OnBackPressedCallback(false) {
+        @Override public void handleOnBackPressed() { goBack(); }
+    };
+    private Page page = Page.HOME;
+    private Page downloadBack = Page.HOME;
+    private DownloadTasks.OfflineAlbum offlineAlbum;
+    private final java.util.Set<String> expandedDownloads = new java.util.HashSet<>();
+    private DownloadTasks downloadTasks;
+    private LinearLayout downloadRows;
+    private boolean downloadRefreshPending;
+    private String downloadSignature;
+    private int downloadFilter;
+    private boolean selectingDownloads;
+    private final java.util.Set<String> selectedDownloads = new java.util.LinkedHashSet<>();
+    private long downloadNextRefresh;
+    private Page playerBack = Page.HOME;
+    private static final String[] SQUARE_CATEGORIES = {"全部", "华语", "欧美", "流行", "摇滚", "民谣", "电子", "轻音乐"};
+    private final List<TidalClient.Collection> neteaseCreated = new ArrayList<>();
+    private final List<TidalClient.Collection> neteaseCollected = new ArrayList<>();
+    private String squareCategory = SQUARE_CATEGORIES[0];
+    private boolean showCollected;
+    private boolean neteasePlaylistLoading;
+    private boolean neteasePlaylistMore;
+    private int neteasePlaylistOffset;
+    private long neteasePlaylistUser;
+    private int neteasePlaylistGeneration;
+    private String neteasePlaylistNotice = "";
+    private Page collectionBack = Page.LIBRARY;
+    private TidalClient.Collection collection;
+    private ArtistDetails artistDetails;
+    private boolean showAllArtistTracks;
+
+    private static final class ArtistDetails {
+        final TidalClient.Collection artist;
+        final List<TidalClient.Track> top;
+        final List<TidalClient.Collection> albums;
+        final List<TidalClient.Collection> singles;
+        final List<TidalClient.Collection> similar;
+        final String biography;
+
+        ArtistDetails(TidalClient api, TidalClient.Collection selected) throws Exception {
+            String id = selected.id;
+            artist = optional(() -> api.artist(id), selected);
+            albums = optional(() -> api.artistReleases(id, false), java.util.Collections.emptyList());
+            singles = optional(() -> api.artistReleases(id, true), java.util.Collections.emptyList());
+            similar = optional(() -> api.similarArtists(id), java.util.Collections.emptyList());
+            biography = optional(() -> api.artistBiography(id), "");
+            if (albums.isEmpty() && singles.isEmpty() && similar.isEmpty() && biography.isEmpty()) {
+                top = api.collectionTracks(selected, 0);
+            } else {
+                top = optional(() -> api.collectionTracks(selected, 0), java.util.Collections.emptyList());
+            }
+        }
+
+        private static <T> T optional(java.util.concurrent.Callable<T> request, T fallback) throws Exception {
+            if (Thread.currentThread().isInterrupted()) throw new InterruptedException();
+            try {
+                return request.call();
+            } catch (InterruptedException error) {
+                throw error;
+            } catch (Exception unavailable) {
+                return fallback;
+            }
+        }
+    }
+    private String term = "";
+    private String input = "";
+    private String notice = "";
+    private int filter;
+    private int libraryFilter;
+    private enum SearchSource {
+        LOCAL("本地音乐"), TIDAL("TIDAL"), NETEASE("网易云");
+        final String label;
+        SearchSource(String label) { this.label = label; }
+
+        String homeTitle() {
+            switch (this) {
+                case TIDAL: return "TIDAL";
+                case NETEASE: return "网易云音乐";
+                default: return "听音室";
+            }
+        }
+
+        boolean includes(TidalClient.Track track) {
+            switch (this) {
+                case TIDAL: return track.needsTidal();
+                case NETEASE: return track.isNetease();
+                default: return track.isLocal();
+            }
+        }
+    }
+
+    private static final String HOME_SOURCE = "home_source";
+    private SearchSource homeSource = SearchSource.LOCAL;
+    private SearchSource searchSource = SearchSource.LOCAL;
+    private final java.util.EnumMap<SearchSource, SearchState> searches = new java.util.EnumMap<>(SearchSource.class);
+
+    private static final class SearchState {
+        String input = "";
+        String term = "";
+        int filter;
+    }
+    private boolean localBusy;
+    private String localScanSummary = "";
+    private String localPlaylist;
+    private LocalGroup localGroup;
+    private String exportPlaylist;
+    private int localSort;
+    private static final String[] LIBRARY_TABS = {"歌曲", "专辑", "歌单", "艺人", "专辑艺人", "流派", "年份"};
+    private static final String[] LIBRARY_SORTS = {"标题", "艺人", "专辑", "年份（新到旧）", "导入顺序"};
+    private int localTab;
+    private int localPage;
+    private int queuePage;
+    private long visibleLocalRevision;
+    private int generation;
+    private int importGeneration;
+    private Future<?> loginTask;
+    private AlertDialog loginDialog;
+    private TextView relayStatus;
+    private boolean updateBusy;
+    private Button checkUpdateButton;
+    private TextView updateStatus;
+    private String updateMessage = "";
+    private org.json.JSONObject installManifest;
+    private Future<?> catalogue;
+    private boolean hasMore;
+    private boolean catalogueLoading;
+    private boolean dragging;
+    private boolean favoriteBusy;
+    private boolean keyboardHidden = true;
+    private LyricsDialog lyrics;
+    private final java.util.Set<Long> favoriteIds = new java.util.HashSet<>();
+    private final Runnable renderPlayer = this::updatePlayer;
+
+    private LinearLayout root;
+    private LinearLayout content;
+    private LinearLayout mini;
+    private TextView miniTitle;
+    private TextView miniArtist;
+    private ImageView miniArt;
+    private android.widget.ImageButton miniPlay;
+    private TextView title;
+    private TextView subtitle;
+    private TextView time;
+    private TextView total;
+    private TextView message;
+    private ImageView cover;
+    private android.widget.ImageButton play;
+    private android.widget.ImageButton shuffle;
+    private android.widget.ImageButton repeat;
+    private android.widget.ImageButton favorite;
+    private Button playerDetails;
+    private Button playerQuality;
+    private Button playerLyrics;
+    private Button playerComments;
+    private SeekBar seek;
+    private long visibleTrack = Long.MIN_VALUE;
+    private int visibleQueueIndex = -2;
+    private long visibleQueueRevision = -1;
+    private String visibleRemoteLink = "";
+    private TidalClient visibleAccount;
+
+    private final ServiceConnection playbackConnection = new ServiceConnection() {
+        @Override public void onServiceConnected(ComponentName name, IBinder binder) {
+            playback = ((PlaybackService.LocalBinder) binder).service();
+            playback.listener = renderPlayer;
+            if (getIntent().getBooleanExtra(OPEN_PLAYER, false) && playback.current() != null) {
+                open(Page.PLAYER);
+            } else {
+                render();
+            }
+        }
+
+        @Override public void onServiceDisconnected(ComponentName name) {
+            playback = null;
+            render();
+        }
+    };
+
+    private final Runnable tick = new Runnable() {
+        @Override public void run() {
+            updatePosition();
+            if (page == Page.CONNECTIONS && relayStatus != null && playback != null && playback.relay != null) {
+                String status = playback.relay.status;
+                if (!TextUtils.equals(relayStatus.getText(), status)) relayStatus.setText(status);
+            }
+            long now = android.os.SystemClock.uptimeMillis();
+            if (page == Page.DOWNLOADS && now >= downloadNextRefresh) {
+                downloadNextRefresh = now + 1000;
+                refreshDownloads();
+            }
+            handler.postDelayed(this, 300);
+        }
+    };
+
+    @Override protected void onCreate(Bundle state) {
+        super.onCreate(state);
+        artwork = new ArtworkLoader(this);
+        downloadTasks = DownloadTasks.get(this);
+        localSort = Math.max(0, Math.min(LIBRARY_SORTS.length - 1,
+                getPreferences(MODE_PRIVATE).getInt("local_sort", 0)));
+        String source = getPreferences(MODE_PRIVATE).getString(HOME_SOURCE, SearchSource.LOCAL.name());
+        try {
+            homeSource = SearchSource.valueOf(source);
+        } catch (IllegalArgumentException ignored) {
+            homeSource = SearchSource.LOCAL;
+        }
+        searchSource = homeSource;
+        for (SearchSource entry : SearchSource.values()) searches.put(entry, new SearchState());
+        if (state != null) exportPlaylist = state.getString("export_playlist");
+        setVolumeControlStream(android.media.AudioManager.STREAM_MUSIC);
+        root = column();
+        root.setBackgroundColor(BG);
+        root.setOnApplyWindowInsetsListener((view, insets) -> {
+            if (android.os.Build.VERSION.SDK_INT >= 30) {
+                android.graphics.Insets safe = insets.getInsets(WindowInsets.Type.systemBars()
+                        | WindowInsets.Type.displayCutout() | WindowInsets.Type.ime());
+                int ime = insets.getInsets(WindowInsets.Type.ime()).bottom;
+                view.setPadding(safe.left, safe.top, safe.right, safe.bottom);
+                keyboardHidden = ime == 0;
+                applyMiniVisibility();
+            } else {
+                view.setPadding(insets.getSystemWindowInsetLeft(), insets.getSystemWindowInsetTop(),
+                        insets.getSystemWindowInsetRight(), insets.getSystemWindowInsetBottom());
+            }
+            return insets;
+        });
+        setContentView(root);
+        getOnBackPressedDispatcher().addCallback(this, back);
+        bound = bindService(new Intent(this, PlaybackService.class).setAction(PlaybackService.LOCAL_BIND),
+                playbackConnection, BIND_AUTO_CREATE);
+        render();
+    }
+
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        if (intent.getBooleanExtra(OPEN_PLAYER, false) && playback != null && playback.current() != null) {
+            open(Page.PLAYER);
+        }
+    }
+
+    @Override public void onConfigurationChanged(android.content.res.Configuration configuration) {
+        super.onConfigurationChanged(configuration);
+        render();
+    }
+
+    @Override protected void onStart() {
+        super.onStart();
+        handler.post(tick);
+    }
+
+    @Override protected void onStop() {
+        handler.removeCallbacks(tick);
+        if (playback != null) playback.saveProgress();
+        super.onStop();
+    }
+
+    @Override protected void onDestroy() {
+        cancelLogin();
+        if (lyrics != null) lyrics.dismiss();
+        if (playback != null && playback.listener == renderPlayer) playback.listener = null;
+        if (bound) unbindService(playbackConnection);
+        worker.shutdownNow();
+        artwork.close();
+        handler.removeCallbacksAndMessages(null);
+        super.onDestroy();
+    }
+
+    private void goBack() {
+        switch (page) {
+            case PLAYER: navigate(playerBack); break;
+            case COLLECTION:
+                if (collectionTrail.isEmpty()) navigate(collectionBack);
+                else {
+                    collection = collectionTrail.pop();
+                    load(false);
+                }
+                break;
+            case QUEUE: navigate(queueBack); break;
+            case OFFLINE:
+                if (offlineAlbum != null) {
+                    offlineAlbum = null;
+                    render();
+                } else navigate(Page.LOCAL);
+                break;
+            case DOWNLOADS:
+                if (selectingDownloads) {
+                    selectingDownloads = false;
+                    selectedDownloads.clear();
+                    refreshDownloads();
+                } else navigate(downloadBack);
+                break;
+            case LOCAL:
+                if (localPlaylist != null || localGroup != null) {
+                    localPlaylist = null;
+                    localGroup = null;
+                    localPage = 0;
+                    render();
+                } else navigate(Page.HOME);
+                break;
+            case LIBRARY: navigate(Page.SOURCES); break;
+            case CONNECTIONS: navigate(Page.SETTINGS); break;
+            case ACCOUNT: navigate(Page.SOURCES); break;
+            case HOME: getOnBackPressedDispatcher().onBackPressed(); break;
+            default: open(Page.HOME);
+        }
+    }
+
+    private Page queueBack = Page.HOME;
+
+    private void open(Page next) {
+        if (page == next) return;
+        if (next == Page.PLAYER) playerBack = page;
+        if (next == Page.DOWNLOADS) {
+            downloadBack = page;
+            selectingDownloads = false;
+            selectedDownloads.clear();
+        }
+        if (next == Page.QUEUE) { queueBack = page; queuePage = 0; }
+        navigate(next);
+    }
+
+    private void navigate(Page next) {
+        boolean refresh = (next == Page.SEARCH && searchSource != SearchSource.LOCAL) || next == Page.LIBRARY || next == Page.COLLECTION;
+        if (refresh && next == Page.LIBRARY && page != Page.COLLECTION) libraryFilter = 0;
+        if (next == Page.HOME) {
+            generation++;
+            if (catalogue != null) catalogue.cancel(true);
+        }
+        page = next;
+        localPage = 0;
+        notice = "";
+        if (refresh) load(false);
+        else render();
+    }
+
+    private void render() {
+        back.setEnabled(page != Page.HOME);
+        root.removeAllViews();
+        checkUpdateButton = null;
+        updateStatus = null;
+        mini = null;
+        seek = null;
+        dragging = false;
+        visibleTrack = Long.MIN_VALUE;
+        visibleLocalRevision = playback == null ? -1 : playback.localRevision;
+        visibleQueueIndex = playback == null ? -1 : playback.index;
+        visibleQueueRevision = playback == null ? -1 : playback.queueRevision;
+        visibleRemoteLink = playback == null ? "" : playback.remoteLink();
+        visibleAccount = playback == null ? null : playback.client;
+        if (page == Page.PLAYER) {
+            buildNowPlaying();
+            updatePlayer();
+            return;
+        }
+
+        LinearLayout header = row();
+        header.setPadding(dp(20), dp(10), dp(16), dp(8));
+        header.setMinimumHeight(dp(72));
+        root.addView(header);
+        boolean subpage = page == Page.OFFLINE || page == Page.NETEASE_PLAYLISTS || page == Page.NETEASE_SQUARE || page == Page.DOWNLOADS || page == Page.COLLECTION || page == Page.QUEUE || page == Page.SETTINGS
+                || page == Page.CONNECTIONS || page == Page.ACCOUNT || page == Page.LIBRARY
+                || (page == Page.LOCAL && (localPlaylist != null || localGroup != null));
+        if (subpage) header.addView(iconButton("back", "返回", this::goBack));
+        TextView heading = text(pageTitle(), subpage ? 25 : 32, INK, true);
+        heading.setSingleLine();
+        heading.setEllipsize(TextUtils.TruncateAt.END);
+        header.addView(heading, new LinearLayout.LayoutParams(0, -2, 1));
+        if (page == Page.HOME || page == Page.SOURCES) {
+            header.addView(glyph("download", INK, 23, "下载管理", () -> open(Page.DOWNLOADS)),
+                    new LinearLayout.LayoutParams(dp(46), dp(46)));
+            header.addView(glyph("settings", INK, 23, "设置", () -> open(Page.SETTINGS)),
+                    new LinearLayout.LayoutParams(dp(46), dp(46)));
+        }
+        if (page == Page.LOCAL && !subpage) {
+            header.addView(glyph("plus", INK, 25, "导入本地音乐", this::importMenu),
+                    new LinearLayout.LayoutParams(dp(46), dp(46)));
+        }
+        if (page == Page.SEARCH) buildSearch();
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
+        content = column();
+        content.setPadding(dp(20), dp(6), dp(20), dp(18));
+        scroll.addView(content);
+        switch (page) {
+            case HOME:
+                buildHomeSources();
+                if (homeSource == SearchSource.LOCAL) home();
+                else sourceHome(homeSource);
+                break;
+            case LOCAL: localMusic(); break;
+            case SOURCES: sources(); break;
+            case NETEASE_PLAYLISTS:
+            case NETEASE_SQUARE: neteasePlaylistPage(); break;
+            case SEARCH:
+                if (searchSource != SearchSource.LOCAL) catalogue();
+                else localResults(term);
+                break;
+            case LIBRARY:
+            case COLLECTION: catalogue(); break;
+            case QUEUE: queue(); break;
+            case SETTINGS: settings(); break;
+            case DOWNLOADS: downloadsPage(); break;
+            case OFFLINE: offlinePage(); break;
+            case CONNECTIONS: connections(); break;
+            case ACCOUNT: tidalSettings(); break;
+            default: break;
+        }
+        buildMini();
+        buildNav();
+        root.requestApplyInsets();
+        updatePlayer();
+    }
+
+    private String pageTitle() {
+        switch (page) {
+            case HOME: return homeSource.homeTitle();
+            case SEARCH: return searchSource == SearchSource.LOCAL ? "搜索" : searchSource.label + "搜索";
+            case LOCAL: return localPlaylist != null ? localPlaylist : localGroup != null ? localGroup.label : "音乐库";
+            case SOURCES: return "音源";
+            case NETEASE_PLAYLISTS: return "我的歌单";
+            case NETEASE_SQUARE: return "歌单广场";
+            case LIBRARY: return "TIDAL 收藏";
+            case COLLECTION: return collection.title;
+            case QUEUE: return "播放队列";
+            case SETTINGS: return "设置";
+            case DOWNLOADS: return "下载管理";
+            case OFFLINE: return offlineAlbum == null ? "已下载" : offlineAlbum.title;
+            case CONNECTIONS: return "设备与连接";
+            case ACCOUNT: return "TIDAL 账号";
+            default: return "听音室";
+        }
+    }
+
+    private void buildSearch() {
+        LinearLayout bar = row();
+        bar.setPadding(dp(20), 0, dp(20), dp(6));
+        EditText search = new EditText(this);
+        search.setSingleLine(true);
+        search.setTextColor(INK);
+        search.setHintTextColor(MUTED);
+        search.setHint(searchSource != SearchSource.LOCAL ? "搜索 " + searchSource.label : "搜索本地歌曲、专辑或艺人");
+        search.setBackground(shape(SURFACE, 14));
+        search.setPadding(dp(14), 0, dp(14), 0);
+        search.setText(input);
+        search.addTextChangedListener(new android.text.TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) { input = s.toString(); }
+            @Override public void afterTextChanged(android.text.Editable editable) {}
+        });
+        search.setImeOptions(EditorInfo.IME_ACTION_SEARCH);
+        Runnable submit = () -> {
+            getSystemService(InputMethodManager.class).hideSoftInputFromWindow(search.getWindowToken(), 0);
+            term = input.trim();
+            localPage = 0;
+            if (searchSource != SearchSource.LOCAL) load(false);
+            else render();
+        };
+        search.setOnEditorActionListener((v, action, event) -> {
+            if (action != EditorInfo.IME_ACTION_SEARCH) return false;
+            submit.run();
+            return true;
+        });
+        bar.addView(search, new LinearLayout.LayoutParams(0, dp(48), 1));
+        bar.addView(action("搜索", "提交搜索", submit));
+        root.addView(bar);
+        LinearLayout scopes = row();
+        scopes.setPadding(dp(20), 0, dp(20), 0);
+        for (SearchSource source : SearchSource.values()) {
+            scopes.addView(pill(source.label, searchSource == source, () -> openSearch(source)));
+        }
+        root.addView(scopes);
+    }
+
+    private void switchSearchSource(SearchSource source) {
+        if (searchSource == source) return;
+        SearchState previous = searches.get(searchSource);
+        previous.input = input;
+        previous.term = term;
+        previous.filter = filter;
+        searchSource = source;
+        SearchState next = searches.get(source);
+        input = next.input;
+        term = next.term;
+        filter = next.filter;
+    }
+
+    private void openSearch(SearchSource source) {
+        boolean changed = searchSource != source;
+        switchSearchSource(source);
+        if (page != Page.SEARCH) open(Page.SEARCH);
+        else if (changed) {
+            if (source != SearchSource.LOCAL) load(false);
+            else {
+                generation++;
+                if (catalogue != null) catalogue.cancel(true);
+                localPage = 0;
+                render();
+            }
+        }
+    }
+
+    private void enterSource(SearchSource source) {
+        homeSource = source;
+        getPreferences(MODE_PRIVATE).edit().putString(HOME_SOURCE, source.name()).apply();
+        switchSearchSource(source);
+        navigate(Page.HOME);
+    }
+
+    private void buildHomeSources() {
+        LinearLayout selector = row();
+        selector.setPadding(0, 0, 0, dp(12));
+        for (SearchSource source : SearchSource.values()) {
+            Button tab = pill(source.label, homeSource == source, () -> enterSource(source));
+            tab.setContentDescription("切换到" + source.homeTitle() + "首页");
+            tab.setSelected(homeSource == source);
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(44), 1);
+            if (selector.getChildCount() > 0) params.setMarginStart(dp(6));
+            selector.addView(tab, params);
+        }
+        content.addView(selector);
+    }
+
+    private void buildNav() {
+        LinearLayout nav = row();
+        nav.setPadding(dp(9), dp(5), dp(9), dp(4));
+        nav.setBackgroundColor(BG);
+        Page[] pages = {Page.HOME, Page.LOCAL, Page.SEARCH, Page.SOURCES};
+        String[] labels = {"首页", "音乐库", "搜索", "音源"};
+        String[] icons = {"home", "library", "search", "sources"};
+        for (int i = 0; i < pages.length; i++) {
+            Page target = pages[i];
+            boolean selected = page == target || (target == Page.SOURCES
+                    && (page == Page.LIBRARY || (page == Page.COLLECTION && collectionBack == Page.LIBRARY)));
+            Button tab = action(labels[i], labels[i], () -> {
+                if (target == Page.SEARCH) {
+                    if (page == Page.SEARCH) render();
+                    else openSearch(homeSource);
+                    return;
+                }
+                if (target == Page.LOCAL) {
+                    localPlaylist = null;
+                    localGroup = null;
+                    localPage = 0;
+                }
+                if (target == page) render();
+                else open(target);
+            });
+            int color = selected ? ACCENT : MUTED;
+            tab.setTextColor(color);
+            tab.setTextSize(11);
+            tab.setCompoundDrawablesWithIntrinsicBounds(null, new PlayerIcon(icons[i], color, dp(20)), null, null);
+            tab.setCompoundDrawablePadding(dp(3));
+            tab.setPadding(0, dp(8), 0, dp(5));
+            if (selected) tab.setBackground(shape(RAISED, 14));
+            nav.addView(tab, new LinearLayout.LayoutParams(0, dp(55), 1));
+        }
+        root.addView(nav);
+    }
+
+    private void home() {
+        TidalClient.Track active = playback == null ? null : playback.current();
+        List<TidalClient.Track> recent = playback == null ? new ArrayList<>() : new ArrayList<>(playback.history);
+        TidalClient.Track feature = active != null ? active : recent.isEmpty() ? null : recent.get(0);
+        android.widget.FrameLayout hero = new android.widget.FrameLayout(this);
+        hero.setBackground(shape(RAISED, 22));
+        hero.setClipToOutline(true);
+        content.addView(hero, new LinearLayout.LayoutParams(-1, dp(244)));
+        ImageView photo = new ImageView(this);
+        photo.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        if (feature == null) photo.setImageResource(R.drawable.listening_room);
+        else artwork.loadPhoto(photo, feature, 640);
+        hero.addView(photo, new android.widget.FrameLayout.LayoutParams(-1, -1));
+        View shade = new View(this);
+        shade.setBackground(new GradientDrawable(GradientDrawable.Orientation.BOTTOM_TOP,
+                new int[]{0xff0b191d, 0xb817292c, 0x000c1a1f}));
+        hero.addView(shade, new android.widget.FrameLayout.LayoutParams(-1, -1));
+        LinearLayout copy = column();
+        copy.setPadding(dp(19), 0, dp(19), dp(17));
+        android.widget.FrameLayout.LayoutParams layout = new android.widget.FrameLayout.LayoutParams(
+                -1, -2, Gravity.BOTTOM);
+        hero.addView(copy, layout);
+        if (feature != null) copy.addView(text(active == null ? "上次聆听" : "继续聆听", 13, ACCENT, true));
+        TextView featureTitle = text(feature == null ? "音乐，从本地开始" : displayTitle(feature), 27, INK, true);
+        featureTitle.setMaxLines(2);
+        featureTitle.setEllipsize(TextUtils.TruncateAt.END);
+        copy.addView(featureTitle);
+        if (feature != null && !feature.artist.isEmpty()) copy.addView(single(feature.artist, 14, INK, false));
+        String button = feature == null ? "导入音乐" : active == null ? "继续播放" : "打开播放器";
+        Button action = primary(button, feature == null ? this::importMenu : () -> {
+            if (active == null) playList(recent, 0, false);
+            else if (!playback.player.getPlayWhenReady()) playback.toggle();
+            open(Page.PLAYER);
+        });
+        LinearLayout.LayoutParams actionLayout = new LinearLayout.LayoutParams(-2, dp(44));
+        actionLayout.topMargin = dp(11);
+        copy.addView(action, actionLayout);
+
+        section("开始聆听");
+        LinearLayout shortcuts = row();
+        content.addView(shortcuts, new LinearLayout.LayoutParams(-1, -2));
+        int size = playback == null ? 0 : playback.localLibrary.size();
+        addShortcut(shortcuts, "本地音乐", size + " 首歌曲", "library", () -> open(Page.LOCAL));
+        addShortcut(shortcuts, "在线音源", "TIDAL 与网易云", "sources", () -> open(Page.SOURCES));
+
+        if (!recent.isEmpty()) {
+            section("最近播放");
+            for (int i = 0; i < Math.min(8, recent.size()); i++) {
+                int at = i;
+                TidalClient.Track track = recent.get(at);
+                content.addView(trackEntry(track, false, () -> playList(recent, at, false)));
+            }
+        }
+        if (!hasPlayerAccount()) {
+            section("多端同步");
+            LinearLayout sync = row();
+            sync.setPadding(dp(14), dp(12), dp(10), dp(12));
+            sync.setBackground(shape(SURFACE, 15));
+            ImageView symbol = new ImageView(this);
+            symbol.setImageDrawable(new PlayerIcon("user", ACCENT, dp(24)));
+            sync.addView(symbol, new LinearLayout.LayoutParams(dp(24), dp(24)));
+            TextView about = text("登录播放器账号，在电脑和手机之间同步登录、遥控播放。", 13, MUTED, false);
+            about.setPadding(dp(12), 0, dp(8), 0);
+            sync.addView(about, new LinearLayout.LayoutParams(0, -2, 1));
+            sync.addView(secondary("登录", this::playerAccountLogin), new LinearLayout.LayoutParams(-2, dp(38)));
+            content.addView(sync);
+        }
+    }
+
+    private List<?> personalKey;
+    private List<TidalClient.Track> personalTracks = java.util.Collections.emptyList();
+    private List<TidalClient.Collection> personalPlaylists = java.util.Collections.emptyList();
+    private List<TidalClient.Collection> personalAlbums = java.util.Collections.emptyList();
+    private boolean personalPlaylistsForAccount;
+    private boolean personalLoading;
+
+    private void loadPersonalHome(SearchSource source, NeteaseClient netease,
+                                  android.content.SharedPreferences prefs) {
+        TidalClient tidal = playback == null ? null : playback.client;
+        List<?> key = source == SearchSource.TIDAL ? java.util.Arrays.asList(source, tidal)
+                : java.util.Arrays.asList(source, prefs.getString(NeteaseClient.SETTING, ""),
+                        prefs.getString(NeteaseClient.SESSION, ""));
+        if (key.equals(personalKey)) return;
+        personalKey = key;
+        personalTracks = java.util.Collections.emptyList();
+        personalPlaylists = java.util.Collections.emptyList();
+        personalAlbums = java.util.Collections.emptyList();
+        personalPlaylistsForAccount = false;
+        personalLoading = source == SearchSource.NETEASE || tidal != null;
+        if (!personalLoading) return;
+
+        worker.submit(() -> {
+            List<TidalClient.Track> picks = new ArrayList<>();
+            List<TidalClient.Collection> playlists = new ArrayList<>();
+            List<TidalClient.Collection> albums = new ArrayList<>();
+            boolean accountPlaylists = false;
+            if (source == SearchSource.TIDAL) {
+                addPersonalItems(picks, () -> tidal.favorites(0));
+                addPersonalItems(albums, () -> tidal.collections("", TidalClient.Collection.Kind.ALBUM, 0, false));
+                addPersonalItems(playlists, () -> tidal.collections("", TidalClient.Collection.Kind.PLAYLIST, 0, false));
+                if (playlists.isEmpty()) {
+                    addPersonalItems(playlists, () -> tidal.collections("", TidalClient.Collection.Kind.PLAYLIST, 0, true));
+                }
+            } else {
+                if (netease.signedIn()) {
+                    addPersonalItems(picks, netease::dailyTracks);
+                    addPersonalItems(playlists, () -> netease.recommendedPlaylists(true));
+                    accountPlaylists = !playlists.isEmpty();
+                }
+                if (playlists.isEmpty()) addPersonalItems(playlists, () -> netease.recommendedPlaylists(false));
+            }
+            boolean personal = accountPlaylists;
+            runOnUiThread(() -> {
+                if (isDestroyed() || personalKey != key) return;
+                personalTracks = picks;
+                personalPlaylists = playlists;
+                personalAlbums = albums;
+                personalPlaylistsForAccount = personal;
+                personalLoading = false;
+                if (page == Page.HOME && homeSource == source) render();
+            });
+        });
+    }
+
+    private interface PersonalItems<T> { List<T> load() throws Exception; }
+
+    private static <T> void addPersonalItems(List<T> destination, PersonalItems<T> source) {
+        try {
+            destination.addAll(source.load());
+        } catch (Exception ignored) {
+            // Other sections and local listening history remain available.
+        }
+    }
+
+    private void sourceHome(SearchSource source) {
+        boolean tidal = source == SearchSource.TIDAL;
+        android.content.SharedPreferences prefs = getSharedPreferences("tidal", MODE_PRIVATE);
+        NeteaseClient netease = new NeteaseClient(prefs);
+        boolean signedIn = tidal ? playback != null && playback.client != null : netease.signedIn();
+        loadPersonalHome(source, netease, prefs);
+
+        List<TidalClient.Track> recent = new ArrayList<>();
+        if (playback != null) {
+            for (TidalClient.Track track : playback.history) {
+                if (source.includes(track)) recent.add(track);
+            }
+        }
+
+        int hour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY);
+        String greeting = hour < 6 ? "凌晨好" : hour < 12 ? "早上好" : hour < 18 ? "下午好" : "晚上好";
+        TextView title = text(greeting, 25, INK, true);
+        title.setPadding(0, 0, 0, dp(10));
+        content.addView(title);
+
+        List<TidalClient.Track> featured = personalTracks.isEmpty() ? recent : personalTracks;
+        LinearLayout hero = column();
+        hero.setPadding(dp(15), dp(14), dp(15), dp(13));
+        GradientDrawable backdrop = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
+                tidal ? new int[]{0xff173542, SURFACE} : new int[]{0xff48252e, SURFACE});
+        backdrop.setCornerRadius(dp(20));
+        hero.setBackground(backdrop);
+        content.addView(hero, new LinearLayout.LayoutParams(-1, -2));
+
+        if (featured.isEmpty() && tidal && signedIn && !personalAlbums.isEmpty()) {
+            TidalClient.Collection first = personalAlbums.get(0);
+            LinearLayout feature = row();
+            ImageView image = art(72);
+            artwork.load(image, first.cover, 320, first.title);
+            feature.addView(image, new LinearLayout.LayoutParams(dp(72), dp(72)));
+            LinearLayout details = column();
+            details.setPadding(dp(12), 0, 0, 0);
+            details.addView(text("最近收藏的专辑 · 共 " + personalAlbums.size() + " 张", 12, ACCENT, true));
+            details.addView(single(first.title, 20, INK, true));
+            details.addView(single(first.subtitle, 13, MUTED, false));
+            feature.addView(details, new LinearLayout.LayoutParams(0, -2, 1));
+            hero.addView(feature);
+            LinearLayout actions = row();
+            actions.setPadding(0, dp(12), 0, 0);
+            actions.addView(withIcon(primary("打开专辑", () -> openCollection(first)), "forward", BG),
+                    new LinearLayout.LayoutParams(-2, dp(40)));
+            hero.addView(actions);
+        } else if (featured.isEmpty()) {
+            String label = personalLoading ? "正在准备你的音乐"
+                    : tidal && !signedIn ? "登录后查看你的收藏"
+                    : !tidal && !signedIn && netease.usesDefaultBackend() ? "登录后查看每日推荐" : "开始聆听";
+            hero.addView(text(label, 19, INK, true));
+            String hint = personalLoading ? "稍等片刻，正在读取推荐与收藏。"
+                    : tidal && !signedIn ? "在 TIDAL 网页确认一次授权，即可收听 Hi-Res 无损并同步收藏歌曲与歌单。"
+                    : "搜索歌曲、专辑或艺人，开始一段新的聆听。";
+            TextView about = text(hint, 13, MUTED, false);
+            about.setPadding(0, dp(4), 0, dp(12));
+            hero.addView(about);
+            if (!personalLoading) {
+                String button = tidal && !signedIn ? "登录 TIDAL" : "搜索音乐";
+                hero.addView(primary(button, tidal && !signedIn ? this::login : () -> openSearch(source)),
+                        new LinearLayout.LayoutParams(-2, dp(42)));
+            }
+        } else {
+            TidalClient.Track first = featured.get(0);
+            LinearLayout feature = row();
+            ImageView image = art(62);
+            artwork.load(image, first, 320);
+            feature.addView(image, new LinearLayout.LayoutParams(dp(62), dp(62)));
+            LinearLayout details = column();
+            details.setPadding(dp(12), 0, 0, 0);
+            String kind = personalTracks.isEmpty() ? "继续聆听" : tidal ? "从你的收藏听起" : "每日推荐";
+            details.addView(text(kind + " · " + featured.size() + " 首", 12, ACCENT, true));
+            details.addView(single(first.title, 20, INK, true));
+            details.addView(single(first.artist, 13, MUTED, false));
+            feature.addView(details, new LinearLayout.LayoutParams(0, -2, 1));
+            hero.addView(feature);
+            LinearLayout actions = row();
+            actions.setPadding(0, dp(9), 0, 0);
+            actions.addView(withIcon(primary("立即播放", () -> playList(featured, 0, false)), "play", BG),
+                    new LinearLayout.LayoutParams(-2, dp(40)));
+            View gap = new View(this);
+            actions.addView(gap, new LinearLayout.LayoutParams(dp(8), 1));
+            actions.addView(withIcon(secondary("加入队列", () -> {
+                if (playback == null) return;
+                playback.enqueueAll(featured);
+                toast("已加入 " + featured.size() + " 首");
+            }), "queue", ACCENT), new LinearLayout.LayoutParams(-2, dp(40)));
+            hero.addView(actions);
+        }
+
+        LinearLayout links = row();
+        links.setPadding(0, dp(12), 0, 0);
+        links.addView(tile("search", "搜索", () -> openSearch(source)));
+        if (!featured.isEmpty()) {
+            links.addView(tile("shuffle", "随机听", () -> playList(featured,
+                    new java.util.Random().nextInt(featured.size()), false)));
+        }
+        if (tidal) {
+            links.addView(tile("heart", "我的收藏", signedIn ? () -> open(Page.LIBRARY) : this::login));
+            links.addView(tile("user", "账号", () -> open(Page.ACCOUNT)));
+        } else {
+            if (netease.usesDefaultBackend()) {
+                links.addView(tile("user", signedIn ? "账号" : "登录网易云",
+                        signedIn ? () -> open(Page.SOURCES) : () -> showNeteaseLogin(netease)));
+            }
+        }
+        for (int i = 0; i < links.getChildCount(); i++) {
+            LinearLayout.LayoutParams cell = new LinearLayout.LayoutParams(0, dp(70), 1);
+            if (i > 0) cell.leftMargin = dp(8);
+            links.getChildAt(i).setLayoutParams(cell);
+        }
+        content.addView(links);
+        if (!tidal) {
+            LinearLayout playlistLinks = row();
+            addShortcut(playlistLinks, "我的歌单", "我创建的与收藏的", "library",
+                    () -> openNeteasePlaylists(Page.NETEASE_PLAYLISTS));
+            addShortcut(playlistLinks, "歌单广场", "按分类发现歌单", "sources",
+                    () -> openNeteasePlaylists(Page.NETEASE_SQUARE));
+            content.addView(playlistLinks);
+        }
+
+        if (!recent.isEmpty()) {
+            section("最近聆听");
+            for (int i = 0; i < Math.min(6, recent.size()); i++) {
+                int at = i;
+                content.addView(trackEntry(recent.get(at), false, () -> playList(recent, at, false)));
+            }
+        }
+        if (tidal && personalAlbums.size() > 1) shelf("收藏专辑", personalAlbums.subList(1, personalAlbums.size()));
+        if (!personalPlaylists.isEmpty()) {
+            shelf(tidal ? "歌单" : personalPlaylistsForAccount ? "专属歌单" : "推荐歌单", personalPlaylists);
+        }
+    }
+
+    /** Horizontally scrolling row of album / playlist covers. */
+    private void shelf(String heading, List<TidalClient.Collection> items) {
+        section(heading);
+        android.widget.HorizontalScrollView scroll = new android.widget.HorizontalScrollView(this);
+        scroll.setHorizontalScrollBarEnabled(false);
+        LinearLayout row = row();
+        row.setGravity(Gravity.TOP);
+        for (int i = 0; i < Math.min(12, items.size()); i++) {
+            TidalClient.Collection item = items.get(i);
+            LinearLayout card = column();
+            ImageView cover = art(124);
+            artwork.load(cover, item.cover, 320, item.title);
+            card.addView(cover, new LinearLayout.LayoutParams(dp(124), dp(124)));
+            TextView name = single(item.title, 13, INK, true);
+            name.setPadding(0, dp(7), 0, 0);
+            card.addView(name);
+            if (!item.subtitle.isEmpty()) card.addView(single(item.subtitle, 12, MUTED, false));
+            card.setContentDescription(item.title);
+            card.setOnClickListener(view -> openCollection(item));
+            LinearLayout.LayoutParams cardParams = new LinearLayout.LayoutParams(dp(124), -2);
+            cardParams.setMarginEnd(dp(12));
+            row.addView(card, cardParams);
+        }
+        scroll.addView(row);
+        content.addView(scroll);
+    }
+
+    private void openNeteasePlaylists(Page target) {
+        if (page == target) return;
+        neteasePlaylistGeneration++;
+        neteasePlaylistLoading = false;
+        neteasePlaylistMore = false;
+        neteasePlaylistNotice = "";
+        neteaseCreated.clear();
+        neteaseCollected.clear();
+        open(target);
+        loadNeteasePlaylists(false);
+    }
+
+    private void neteasePlaylistPage() {
+        boolean mine = page == Page.NETEASE_PLAYLISTS;
+        if (mine) {
+            LinearLayout filters = row();
+            filters.addView(pill("我创建的", !showCollected, () -> {
+                showCollected = false;
+                render();
+            }));
+            filters.addView(pill("我收藏的", showCollected, () -> {
+                showCollected = true;
+                render();
+            }));
+            content.addView(filters);
+        } else {
+            android.widget.HorizontalScrollView scroll = new android.widget.HorizontalScrollView(this);
+            scroll.setHorizontalScrollBarEnabled(false);
+            LinearLayout filters = row();
+            for (String category : SQUARE_CATEGORIES) {
+                filters.addView(pill(category, squareCategory.equals(category), () -> {
+                    if (squareCategory.equals(category)) return;
+                    squareCategory = category;
+                    loadNeteasePlaylists(false);
+                }));
+            }
+            scroll.addView(filters);
+            content.addView(scroll);
+        }
+        NeteaseClient account = new NeteaseClient(getSharedPreferences("tidal", MODE_PRIVATE));
+        if (mine && !account.signedIn()) {
+            empty("登录后查看个人歌单", "查看你创建和收藏的网易云歌单");
+            if (account.usesDefaultBackend()) content.addView(primary("登录网易云", () -> showNeteaseLogin(account)));
+            return;
+        }
+        List<TidalClient.Collection> items = mine && showCollected ? neteaseCollected : neteaseCreated;
+        for (TidalClient.Collection item : items) collectionRow(item);
+        if (neteasePlaylistLoading) {
+            if (items.isEmpty()) empty("正在加载歌单…", "");
+        } else if (!neteasePlaylistNotice.isEmpty()) {
+            empty(neteasePlaylistNotice, "");
+            content.addView(action("重试", "重新加载歌单", () -> loadNeteasePlaylists(neteasePlaylistOffset > 0)));
+        } else if (items.isEmpty() && !neteasePlaylistMore) {
+            empty("暂无歌单", "");
+        }
+        if (!neteasePlaylistLoading && neteasePlaylistMore && neteasePlaylistNotice.isEmpty()) {
+            content.addView(action("加载更多", "加载更多歌单", () -> loadNeteasePlaylists(true)));
+        }
+    }
+
+    private void loadNeteasePlaylists(boolean append) {
+        Page target = page;
+        NeteaseClient account = new NeteaseClient(getSharedPreferences("tidal", MODE_PRIVATE));
+        int request = ++neteasePlaylistGeneration;
+        if (!append) {
+            neteaseCreated.clear();
+            neteaseCollected.clear();
+            neteasePlaylistOffset = 0;
+            neteasePlaylistUser = 0;
+            neteasePlaylistMore = false;
+        }
+        neteasePlaylistNotice = "";
+        neteasePlaylistLoading = target == Page.NETEASE_SQUARE || account.signedIn();
+        render();
+        if (!neteasePlaylistLoading) return;
+        int offset = neteasePlaylistOffset;
+        long user = neteasePlaylistUser;
+        String category = squareCategory;
+        worker.submit(() -> {
+            try {
+                NeteaseClient.PlaylistPage result = target == Page.NETEASE_SQUARE
+                        ? account.playlistSquare(category, offset) : account.myPlaylists(user, offset);
+                runOnUiThread(() -> {
+                    if (isDestroyed() || neteasePlaylistGeneration != request) return;
+                    neteaseCreated.addAll(result.created);
+                    neteaseCollected.addAll(result.collected);
+                    neteasePlaylistOffset = result.nextOffset;
+                    neteasePlaylistUser = result.user;
+                    neteasePlaylistMore = result.more;
+                    neteasePlaylistLoading = false;
+                    if (page == target) render();
+                });
+            } catch (Exception error) {
+                runOnUiThread(() -> {
+                    if (isDestroyed() || neteasePlaylistGeneration != request) return;
+                    neteasePlaylistNotice = "歌单加载失败 · " + readable(error);
+                    neteasePlaylistLoading = false;
+                    if (page == target) render();
+                });
+            }
+        });
+    }
+
+    private void addShortcut(LinearLayout parent, String title, String subtitle, String icon, Runnable choose) {
+        LinearLayout card = column();
+        card.setPadding(dp(13), dp(14), dp(10), dp(13));
+        card.setBackground(shape(SURFACE, 15));
+        TextView name = text(title, 16, INK, true);
+        ImageView symbol = new ImageView(this);
+        symbol.setImageDrawable(new PlayerIcon(icon, ACCENT, dp(23)));
+        card.addView(symbol, new LinearLayout.LayoutParams(dp(23), dp(23)));
+        name.setPadding(0, dp(9), 0, dp(2));
+        card.addView(name);
+        card.addView(text(subtitle, 13, MUTED, false));
+        card.setOnClickListener(view -> choose.run());
+        card.setContentDescription(title + "，" + subtitle);
+        LinearLayout.LayoutParams style = new LinearLayout.LayoutParams(0, -2, 1);
+        if (parent.getChildCount() > 0) style.leftMargin = dp(10);
+        parent.addView(card, style);
+    }
+
+    private boolean hasPlayerAccount() {
+        return !getSharedPreferences("tidal", MODE_PRIVATE).getString("player_account", "").isEmpty();
+    }
+
+    private void sources() {
+        boolean loggedIn = playback != null && playback.client != null;
+        LinearLayout tidal = panel("TIDAL", loggedIn ? "已连接 · Hi-Res 无损、收藏与歌单" : "在 TIDAL 网页授权一次即可，无需电脑。");
+        Button enterTidal = withIcon(loggedIn ? primary("进入 TIDAL", () -> enterSource(SearchSource.TIDAL))
+                : secondary("浏览", () -> enterSource(SearchSource.TIDAL)), "forward", loggedIn ? BG : ACCENT);
+        tidal.addView(loggedIn ? toolbar(enterTidal, secondary("账号设置", () -> open(Page.ACCOUNT)))
+                : toolbar(withIcon(primary("登录 TIDAL", this::login), "user", BG), enterTidal,
+                secondary("账号设置", () -> open(Page.ACCOUNT))));
+        android.content.SharedPreferences sourcePrefs = getSharedPreferences("tidal", MODE_PRIVATE);
+        NeteaseClient neteaseAccount = new NeteaseClient(sourcePrefs);
+        boolean neteaseIn = neteaseAccount.signedIn();
+        LinearLayout netease = panel("网易云音乐", neteaseIn
+                ? "已登录 · 使用网易云账号播放" : "登录后可播放账号有权访问的曲目，访客可浏览推荐歌单。");
+        List<Button> neteaseActions = new ArrayList<>();
+        boolean offerLogin = neteaseAccount.usesDefaultBackend() && !neteaseIn;
+        if (offerLogin) neteaseActions.add(withIcon(primary("扫码登录", () -> showNeteaseLogin(neteaseAccount)), "user", BG));
+        neteaseActions.add(withIcon(offerLogin ? secondary("浏览", () -> enterSource(SearchSource.NETEASE))
+                : primary("进入网易云", () -> enterSource(SearchSource.NETEASE)), "forward", offerLogin ? ACCENT : BG));
+        if (neteaseAccount.usesDefaultBackend() && neteaseIn) {
+            neteaseActions.add(secondary("退出登录", () -> new AlertDialog.Builder(this)
+                    .setTitle("退出网易云登录？").setNegativeButton("取消", null)
+                    .setPositiveButton("退出", (dialog, which) -> {
+                        sourcePrefs.edit().remove(NeteaseClient.SESSION).apply();
+                        render();
+                    }).show()));
+        }
+        neteaseActions.add(secondary("接口设置", this::configureNetease));
+        netease.addView(toolbar(neteaseActions.toArray(new Button[0])));
+        LinearLayout local = panel("本地文件", "音乐保存在手机或已授权的外接存储中。");
+        local.addView(toolbar(withIcon(primary("打开音乐库", () -> open(Page.LOCAL)), "library", BG),
+                withIcon(secondary("扫描目录", this::chooseFolders), "folder", ACCENT)));
+        if (!hasPlayerAccount()) {
+            LinearLayout account = panel("播放器账号（可选）", "在电脑和手机之间同步登录、遥控播放。");
+            account.addView(toolbar(withIcon(secondary("登录播放器账号", this::playerAccountLogin), "user", ACCENT)));
+        }
+    }
+
+    private void showNeteaseLogin(NeteaseClient api) {
+        LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
+        body.setPadding(dp(20), dp(8), dp(20), dp(8));
+        TextView status = new TextView(this);
+        status.setTextColor(MUTED);
+        body.addView(status);
+        ImageView qr = new ImageView(this);
+        qr.setContentDescription("网易云登录二维码");
+        qr.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        qr.setVisibility(View.GONE);
+        body.addView(qr, new LinearLayout.LayoutParams(-1, dp(220)));
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("登录网易云")
+                .setView(body).setNegativeButton("关闭", null).setNeutralButton("刷新二维码", null).show();
+        Button retry = dialog.getButton(AlertDialog.BUTTON_NEUTRAL);
+
+        final class Login {
+            private Future<?> request;
+            private int attempt;
+            private long deadline;
+
+            void cancel() {
+                attempt++;
+                if (request != null) request.cancel(true);
+            }
+
+            boolean active(int id) {
+                return id == attempt && dialog.isShowing() && !isDestroyed();
+            }
+
+            void start() {
+                cancel();
+                int id = attempt;
+                status.setText("正在生成二维码…");
+                qr.setVisibility(View.GONE);
+                request = worker.submit(() -> {
+                    try {
+                        org.json.JSONObject data = api.startLogin();
+                        String image = data.getString("qr");
+                        if (!image.startsWith("data:image/png;base64,") || image.length() > 200000) {
+                            throw new java.io.IOException("二维码格式无效");
+                        }
+                        byte[] bytes = android.util.Base64.decode(image.substring(22), android.util.Base64.DEFAULT);
+                        android.graphics.Bitmap bitmap = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+                        if (bitmap == null) throw new java.io.IOException("无法读取二维码");
+                        String proof = data.getString("proof");
+                        handler.post(() -> {
+                            if (!active(id)) return;
+                            qr.setImageBitmap(bitmap);
+                            qr.setVisibility(View.VISIBLE);
+                            status.setText("请用另一台设备上的网易云音乐 App 扫码，并确认登录。");
+                            deadline = android.os.SystemClock.elapsedRealtime() + 170000;
+                            schedule(id, proof);
+                        });
+                    } catch (Exception error) {
+                        handler.post(() -> { if (active(id)) status.setText("登录失败 · " + readable(error)); });
+                    }
+                });
+            }
+
+            void schedule(int id, String proof) {
+                handler.postDelayed(() -> {
+                    if (!active(id)) return;
+                    if (android.os.SystemClock.elapsedRealtime() >= deadline) {
+                        expire();
+                        return;
+                    }
+                    request = worker.submit(() -> {
+                        try {
+                            org.json.JSONObject result = api.pollLogin(proof);
+                            handler.post(() -> update(id, proof, result));
+                        } catch (Exception error) {
+                            handler.post(() -> {
+                                if (!active(id)) return;
+                                status.setText("正在重新连接网易云…");
+                                schedule(id, proof);
+                            });
+                        }
+                    });
+                }, 2500);
+            }
+
+            void expire() {
+                qr.setVisibility(View.GONE);
+                status.setText("二维码已过期，请刷新后重新扫码。");
+            }
+
+            void update(int id, String proof, org.json.JSONObject result) {
+                if (!active(id)) return;
+                switch (result.optInt("code")) {
+                    case 800:
+                        expire();
+                        return;
+                    case 801:
+                        status.setText("请用另一台设备上的网易云音乐 App 扫码，并确认登录。");
+                        break;
+                    case 802:
+                        status.setText("已扫码，请在网易云音乐 App 中确认。");
+                        break;
+                    case 803:
+                        String session = result.optString("session");
+                        if (!session.matches("[A-Za-z0-9._~%+-]{16,4096}")) {
+                            status.setText("未能取得登录会话，请刷新后再试。");
+                            return;
+                        }
+                        getSharedPreferences("tidal", MODE_PRIVATE).edit()
+                                .putString(NeteaseClient.SESSION, session).apply();
+                        dialog.dismiss();
+                        if (page == Page.NETEASE_PLAYLISTS) loadNeteasePlaylists(false);
+                        else render();
+                        toast("已登录网易云");
+                        return;
+                    default:
+                        status.setText("网易云未能完成授权，请刷新二维码重试。");
+                        return;
+                }
+                schedule(id, proof);
+            }
+        }
+
+        Login login = new Login();
+        retry.setOnClickListener(view -> login.start());
+        dialog.setOnDismissListener(ignored -> login.cancel());
+        login.start();
+    }
+
+    private void configureNetease() {
+        android.content.SharedPreferences prefs = getSharedPreferences("tidal", MODE_PRIVATE);
+        EditText address = new EditText(this);
+        address.setSingleLine(true);
+        address.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_URI);
+        address.setHint(NeteaseClient.DEFAULT_BASE);
+        address.setText(prefs.getString(NeteaseClient.SETTING, ""));
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("网易云接口")
+                .setMessage("留空使用播放器默认后台。").setView(address)
+                .setNegativeButton("取消", null).setPositiveButton("保存", null).show();
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(button -> {
+            try {
+                String value = address.getText().toString().trim();
+                String endpoint = value.isEmpty() ? "" : NeteaseClient.validateBase(value);
+                prefs.edit().putString(NeteaseClient.SETTING, endpoint).apply();
+                dialog.dismiss();
+                if ((page == Page.SEARCH && searchSource == SearchSource.NETEASE)
+                        || (page == Page.COLLECTION && collection.isNetease())) load(false);
+                else render();
+            } catch (java.io.IOException invalid) {
+                address.setError(invalid.getMessage());
+            }
+        });
+    }
+
+    private void localMusic() {
+        if (playback == null) return;
+        LocalLibrary library = playback.localLibrary;
+        List<TidalClient.Track> tracks = library.search("", localPlaylist);
+        if (localPlaylist != null || localGroup != null) {
+            if (localGroup != null) {
+                LocalGroup selected = localGroup;
+                for (int i = tracks.size() - 1; i >= 0; i--) {
+                    if (!LocalLibrary.groupFor(tracks.get(i), selected.category).key.equals(selected.key)) tracks.remove(i);
+                }
+                if (selected.category == 1) sortAlbum(tracks);
+                else sortLocal(tracks);
+            }
+            content.addView(text(tracks.size() + " 首歌曲", 14, MUTED, false));
+            if (localPlaylist != null) {
+                content.addView(toolbar(secondary("导出 M3U", this::pickPlaylistDestination),
+                        secondary("删除歌单", this::deleteLocalPlaylist)));
+            }
+            if (tracks.isEmpty()) empty("暂无歌曲", localPlaylist != null ? "从本地歌曲的更多菜单加入曲目。" : "");
+            else showTracks(tracks, false);
+            return;
+        }
+        TextView info = text(library.size() + " 首歌曲  ·  " + library.folders().size() + " 个扫描目录", 14, MUTED, false);
+        info.setPadding(0, 0, 0, dp(8));
+        content.addView(info);
+        if (localBusy) content.addView(text("正在扫描音乐…", 14, ACCENT, false));
+        else if (!localScanSummary.isEmpty()) content.addView(text(localScanSummary, 13, MUTED, false));
+        Button downloaded = withIcon(secondary("已下载", () -> {
+            offlineAlbum = null;
+            open(Page.OFFLINE);
+        }), "download", ACCENT);
+        if (library.hasFolders()) {
+            Button rescan = withIcon(secondary("更新音乐库", () -> scanDirectories(library.folders())), "refresh", ACCENT);
+            rescan.setEnabled(!localBusy);
+            content.addView(toolbar(downloaded, rescan));
+        } else {
+            content.addView(toolbar(downloaded));
+        }
+        android.widget.HorizontalScrollView categories = new android.widget.HorizontalScrollView(this);
+        categories.setHorizontalScrollBarEnabled(false);
+        LinearLayout tabs = row();
+        Button active = null;
+        for (int i = 0; i < LIBRARY_TABS.length; i++) {
+            int tab = i;
+            Button choice = pill(LIBRARY_TABS[i], localTab == i, () -> { localTab = tab; localPage = 0; render(); });
+            tabs.addView(choice);
+            if (localTab == i) active = choice;
+        }
+        categories.addView(tabs);
+        content.addView(categories);
+        if (active != null) {
+            Button selected = active;
+            categories.post(() -> categories.scrollTo(Math.max(0, selected.getLeft() - dp(52)), 0));
+        }
+
+        if (localTab == 2) {
+            content.addView(toolbar(withIcon(secondary("新建歌单", () -> newLocalPlaylist(null)), "plus", ACCENT),
+                    secondary("导入 M3U", this::pickPlaylistSource)));
+            for (String name : library.playlists()) {
+                content.addView(entry(name, library.search("", name).size() + " 首歌曲", "", () -> {
+                    localPlaylist = name;
+                    localPage = 0;
+                    render();
+                }));
+            }
+        } else if (tracks.isEmpty()) {
+            LinearLayout empty = panel("添加本地音乐", "导入歌曲，或授权音乐目录扫描其中的音频文件。");
+            empty.addView(toolbar(withIcon(primary("扫描文件夹", this::pickFolder), "folder", BG),
+                    secondary("选择音频文件", this::pickAudio)));
+        } else if (localTab == 0) {
+            content.addView(toolbar(
+                    withIcon(secondary("排序 · " + LIBRARY_SORTS[localSort], this::chooseLocalSort), "sort", ACCENT),
+                    withIcon(secondary("查找", () -> openSearch(SearchSource.LOCAL)), "search", ACCENT)));
+            sortLocal(tracks);
+            showTracks(tracks, false);
+        } else {
+            java.util.Map<String, LocalGroup> grouped = new java.util.LinkedHashMap<>();
+            for (TidalClient.Track track : tracks) {
+                LocalGroup candidate = LocalLibrary.groupFor(track, localTab);
+                LocalGroup group = grouped.get(candidate.key);
+                if (group == null) {
+                    group = candidate;
+                    grouped.put(group.key, group);
+                }
+                group.members.add(track);
+            }
+            List<LocalGroup> groups = new ArrayList<>(grouped.values());
+            java.text.Collator collator = java.text.Collator.getInstance();
+            java.util.Collections.sort(groups, (a, b) -> {
+                if (localTab == 6) {
+                    int yearOrder = Integer.compare(yearNumber(b.label), yearNumber(a.label));
+                    if (yearOrder != 0) return yearOrder;
+                }
+                int labelOrder = collator.compare(a.label, b.label);
+                return labelOrder != 0 ? labelOrder : collator.compare(a.detail, b.detail);
+            });
+            content.addView(toolbar(withIcon(secondary("快速定位", () -> chooseGroup(groups)), "search", ACCENT)));
+            int first = pager(groups.size(), false);
+            for (int i = first; i < Math.min(groups.size(), first + LOCAL_PAGE_SIZE); i++) {
+                LocalGroup group = groups.get(i);
+                String detail = group.members.size() + " 首歌曲";
+                if (!group.detail.isEmpty()) detail = group.detail + " · " + detail;
+                LinearLayout card = entry(group.label, detail, "", () -> openGroup(group));
+                if (group.category == 1) artwork.load((ImageView) card.getChildAt(0), group.members.get(0), 320);
+                content.addView(card);
+            }
+        }
+    }
+
+    private void openGroup(LocalGroup group) {
+        localGroup = group;
+        localPage = 0;
+        render();
+    }
+
+    private interface QueryFilter { void apply(String query); }
+
+    private void chooseGroup(List<LocalGroup> groups) {
+        EditText query = new EditText(this);
+        query.setSingleLine(true);
+        query.setHint("输入分类名称");
+        List<String> labels = new ArrayList<>();
+        List<LocalGroup> matches = new ArrayList<>();
+        android.widget.ArrayAdapter<String> results = new android.widget.ArrayAdapter<>(this,
+                android.R.layout.simple_list_item_1, labels);
+        android.widget.ListView list = new android.widget.ListView(this);
+        list.setAdapter(results);
+        LinearLayout body = column();
+        body.addView(query);
+        body.addView(list, new LinearLayout.LayoutParams(-1, dp(280)));
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("快速定位")
+                .setView(body).setNegativeButton("取消", null).create();
+        QueryFilter filter = term -> {
+            String needle = term.toLowerCase(Locale.ROOT).trim();
+            matches.clear();
+            results.setNotifyOnChange(false);
+            results.clear();
+            for (LocalGroup group : groups) {
+                String full = group.label + " " + group.detail;
+                if (full.toLowerCase(Locale.ROOT).contains(needle)) {
+                    matches.add(group);
+                    results.add(group.detail.isEmpty() ? group.label : group.label + " · " + group.detail);
+                }
+            }
+            results.notifyDataSetChanged();
+        };
+        filter.apply("");
+        query.addTextChangedListener(new android.text.TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) { filter.apply(s.toString()); }
+            @Override public void afterTextChanged(android.text.Editable editable) {}
+        });
+        list.setOnItemClickListener((view, item, position, id) -> {
+            dialog.dismiss();
+            openGroup(matches.get(position));
+        });
+        dialog.show();
+    }
+
+    private void chooseLocalSort() {
+        new AlertDialog.Builder(this).setTitle("歌曲排序")
+                .setSingleChoiceItems(LIBRARY_SORTS, localSort, (dialog, index) -> {
+                    localSort = index;
+                    getPreferences(MODE_PRIVATE).edit().putInt("local_sort", index).apply();
+                    localPage = 0;
+                    dialog.dismiss();
+                    render();
+                }).setNegativeButton("取消", null).show();
+    }
+
+    private void sortLocal(List<TidalClient.Track> tracks) {
+        int order = localSort;
+        if (order == 4) return;
+        java.text.Collator collator = java.text.Collator.getInstance();
+        java.util.Collections.sort(tracks, (a, b) -> {
+            int key;
+            switch (order) {
+                case 1: key = collator.compare(a.artist, b.artist); break;
+                case 2: key = collator.compare(a.album, b.album); break;
+                case 3: key = Integer.compare(yearNumber(b.payload.optString("year")), yearNumber(a.payload.optString("year"))); break;
+                default: key = 0; break;
+            }
+            return key != 0 ? key : collator.compare(a.title, b.title);
+        });
+    }
+
+    private static int yearNumber(String year) {
+        try { return Integer.parseInt(year); }
+        catch (NumberFormatException absent) { return 0; }
+    }
+
+    private static int trackNumber(TidalClient.Track track, String field, int fallback) {
+        String value = track.payload.optString(field).split("/", 2)[0].trim();
+        try { return Integer.parseInt(value); }
+        catch (NumberFormatException absent) { return fallback; }
+    }
+
+    private static void sortAlbum(List<TidalClient.Track> tracks) {
+        java.util.Collections.sort(tracks, (a, b) -> {
+            int disc = Integer.compare(trackNumber(a, "disc_number", 1), trackNumber(b, "disc_number", 1));
+            if (disc != 0) return disc;
+            int track = Integer.compare(trackNumber(a, "track_number", Integer.MAX_VALUE),
+                    trackNumber(b, "track_number", Integer.MAX_VALUE));
+            return track != 0 ? track : a.title.compareToIgnoreCase(b.title);
+        });
+    }
+
+    private void localResults(String query) {
+        if (query.isEmpty()) {
+            empty("搜索本地音乐", "可以按歌曲、艺人、专辑、流派或年份查找。");
+        } else if (playback != null) {
+            List<TidalClient.Track> result = playback.localLibrary.search(query, null);
+            if (result.isEmpty()) empty("没有找到匹配的本地歌曲", "");
+            else { sortLocal(result); showTracks(result, false); }
+        }
+    }
+
+    private void importMenu() {
+        new AlertDialog.Builder(this).setTitle("添加本地音乐")
+                .setItems(new String[]{"扫描文件夹", "选择音频文件", "管理已授权目录"}, (dialog, which) -> {
+                    if (which == 0) pickFolder();
+                    else if (which == 1) pickAudio();
+                    else chooseFolders();
+                }).show();
+    }
+
+    private void newLocalPlaylist(TidalClient.Track initial) {
+        EditText name = new EditText(this);
+        name.setSingleLine(true);
+        name.setHint("歌单名称");
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("新建本地歌单").setView(name)
+                .setNegativeButton("取消", null).setPositiveButton("创建", null).show();
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
+            if (playback == null) return;
+            String value = name.getText().toString().trim();
+            if (!playback.localLibrary.create(value)) {
+                name.setError("请输入新的名称（1–64 个字符）");
+                return;
+            }
+            if (initial != null) playback.localLibrary.add(value, initial);
+            dialog.dismiss();
+            playback.libraryChanged();
+            toast("已创建歌单");
+        });
+    }
+
+    private void deleteLocalPlaylist() {
+        String name = localPlaylist;
+        new AlertDialog.Builder(this).setTitle("删除歌单 " + name + "？")
+                .setMessage("音频文件仍会保留。").setNegativeButton("取消", null)
+                .setPositiveButton("删除歌单", (dialog, which) -> {
+                    if (playback == null) return;
+                    playback.localLibrary.deletePlaylist(name);
+                    localPlaylist = null;
+                    playback.libraryChanged();
+                }).show();
+    }
+
+    private void catalogue() {
+        if (page != Page.COLLECTION) {
+            LinearLayout chips = row();
+            String[] names = page == Page.LIBRARY
+                    ? new String[]{"歌曲", "专辑", "歌单", "艺人", "自建"}
+                    : new String[]{"歌曲", "专辑", "歌单", "艺人"};
+            for (int i = 0; i < names.length; i++) {
+                int selected = i;
+                Button chip = action(names[i], names[i], () -> {
+                    if (page == Page.LIBRARY) libraryFilter = selected;
+                    else filter = selected;
+                    load(false);
+                });
+                if (i == (page == Page.LIBRARY ? libraryFilter : filter)) chip.setBackground(shape(RAISED, 18));
+                chips.addView(chip);
+            }
+            content.addView(chips);
+        } else {
+            artHeader(artistDetails == null ? collection : artistDetails.artist);
+        }
+
+        if (catalogueLoading && tracks.isEmpty() && collections.isEmpty()) {
+            empty("正在加载…", "");
+        } else if (!notice.isEmpty()) {
+            empty(notice, "");
+            if (notice.startsWith("加载失败")) content.addView(action("重试", "重试", () -> load(false)));
+        } else if (artistDetails != null) {
+            if (!tracks.isEmpty()) {
+                section("热门歌曲");
+                showTracks(new ArrayList<>(tracks), false, showAllArtistTracks ? Integer.MAX_VALUE : 8);
+                if (tracks.size() > 8) {
+                    String label = showAllArtistTracks ? "收起热门歌曲" : "查看全部热门歌曲";
+                    content.addView(action(label, label, () -> {
+                        showAllArtistTracks = !showAllArtistTracks;
+                        render();
+                    }));
+                }
+            }
+            artistSection("专辑", artistDetails.albums);
+            artistSection("单曲与 EP", artistDetails.singles);
+            artistSection("相似艺人", artistDetails.similar);
+            if (!artistDetails.biography.isEmpty()) {
+                section("艺人简介");
+                TextView biography = text(artistDetails.biography, 15, INK, false);
+                biography.setMaxLines(5);
+                biography.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                content.addView(biography);
+                content.addView(action("阅读简介", "阅读艺人简介", () -> new AlertDialog.Builder(this)
+                        .setTitle(artistDetails.artist.title).setMessage(artistDetails.biography)
+                        .setPositiveButton("关闭", null).show()));
+            }
+            if (tracks.isEmpty() && artistDetails.albums.isEmpty() && artistDetails.singles.isEmpty()
+                    && artistDetails.similar.isEmpty() && artistDetails.biography.isEmpty()) {
+                empty("暂无艺人作品", "");
+            }
+        } else if (!tracks.isEmpty() || !collections.isEmpty()) {
+            if (!tracks.isEmpty()) showTracks(new ArrayList<>(tracks), page == Page.LIBRARY);
+            if (page == Page.COLLECTION && collection.kind == TidalClient.Collection.Kind.ARTIST
+                    && !collections.isEmpty()) section("专辑");
+            for (TidalClient.Collection item : collections) collectionRow(item);
+        } else if (page == Page.SEARCH && term.isEmpty()) {
+            empty("搜索音乐", "输入歌曲名、艺人名，或按类型查找专辑和歌单");
+        } else {
+            empty("暂无内容", "");
+        }
+        if (hasMore) content.addView(action("加载更多", "加载更多", () -> load(true)));
+    }
+
+    private void load(boolean append) {
+        int request = ++generation;
+        if (catalogue != null) catalogue.cancel(true);
+        if (!append) {
+            tracks.clear();
+            collections.clear();
+            artistDetails = null;
+            showAllArtistTracks = false;
+        }
+        notice = "";
+        hasMore = false;
+        catalogueLoading = false;
+        if (page == Page.SEARCH && term.isEmpty()) {
+            render();
+            return;
+        }
+        TidalClient api = playback == null ? null : playback.client;
+        boolean useNetease = page == Page.SEARCH && searchSource == SearchSource.NETEASE
+                || page == Page.COLLECTION && collection.isNetease();
+        NeteaseClient netease = playback == null ? null : playback.netease();
+        if (useNetease && netease == null) {
+            notice = "播放器正在连接，请稍后重试";
+            render();
+            return;
+        }
+        if (!useNetease && api == null) {
+            notice = "请先登录 TIDAL";
+            render();
+            return;
+        }
+        Page requestedPage = page;
+        int requestedFilter = requestedPage == Page.LIBRARY ? libraryFilter : filter;
+        String query = term;
+        TidalClient.Collection selected = collection;
+        boolean collectionList = requestedPage != Page.COLLECTION && requestedFilter != 0;
+        int offset = collectionList ? collections.size() : tracks.size();
+        catalogueLoading = true;
+        render();
+        catalogue = worker.submit(() -> {
+            try {
+                if (requestedPage == Page.COLLECTION && selected.kind == TidalClient.Collection.Kind.ARTIST
+                        && !useNetease) {
+                    ArtistDetails details = new ArtistDetails(api, selected);
+                    runOnUiThread(() -> {
+                        if (!current(request, requestedPage)) return;
+                        artistDetails = details;
+                        tracks.addAll(details.top);
+                        finishLoad(false);
+                    });
+                } else if (collectionList) {
+                    TidalClient.Collection.Kind kind;
+                    switch (requestedFilter) {
+                        case 1: kind = TidalClient.Collection.Kind.ALBUM; break;
+                        case 3: kind = TidalClient.Collection.Kind.ARTIST; break;
+                        default: kind = TidalClient.Collection.Kind.PLAYLIST;
+                    }
+                    List<TidalClient.Collection> found = useNetease ? netease.collections(query, kind, offset) : api.collections(
+                            requestedPage == Page.LIBRARY ? "" : query, kind, offset, requestedFilter == 4);
+                    runOnUiThread(() -> {
+                        if (!current(request, requestedPage)) return;
+                        collections.addAll(found);
+                        finishLoad(found.size() == 40);
+                    });
+                } else {
+                    List<TidalClient.Track> found;
+                    List<TidalClient.Collection> releases = new ArrayList<>();
+                    boolean artist = requestedPage == Page.COLLECTION && selected.kind == TidalClient.Collection.Kind.ARTIST;
+                    if (requestedPage == Page.COLLECTION) {
+                        found = useNetease ? netease.collectionTracks(selected, offset) : api.collectionTracks(selected, offset);
+                        if (artist && offset == 0) {
+                            try {
+                                releases.addAll(netease.artistAlbums(selected.id));
+                            } catch (Exception ignored) {
+                                // The playable top tracks remain available if releases cannot be loaded.
+                            }
+                        }
+                    } else if (requestedPage == Page.LIBRARY) {
+                        found = api.favorites(offset);
+                    } else {
+                        found = useNetease ? netease.search(query, offset) : api.search(query, offset);
+                    }
+                    runOnUiThread(() -> {
+                        if (!current(request, requestedPage)) return;
+                        tracks.addAll(found);
+                        collections.addAll(releases);
+                        if (requestedPage == Page.LIBRARY) {
+                            for (TidalClient.Track track : found) {
+                                favoriteIds.add(track.id);
+                            }
+                        }
+                        boolean paged = !artist && (!useNetease || requestedPage != Page.COLLECTION
+                                || selected.kind == TidalClient.Collection.Kind.PLAYLIST);
+                        finishLoad(paged && found.size() == PAGE_SIZE);
+                    });
+                }
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    if (!current(request, requestedPage)) return;
+                    notice = "加载失败 · " + readable(e);
+                    finishLoad(false);
+                });
+            }
+        });
+    }
+
+    private boolean current(int request, Page requestedPage) {
+        return !isDestroyed() && page == requestedPage && request == generation;
+    }
+
+    private void finishLoad(boolean more) {
+        catalogueLoading = false;
+        hasMore = more;
+        render();
+    }
+
+    private void artHeader(TidalClient.Collection item) {
+        boolean artist = item.kind == TidalClient.Collection.Kind.ARTIST;
+        LinearLayout header = row();
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        header.setPadding(0, dp(4), 0, dp(6));
+        ImageView image = art(140);
+        if (artist) image.setBackground(shape(RAISED, 70));
+        artwork.load(image, item.cover, 320, item.title);
+        header.addView(image, new LinearLayout.LayoutParams(dp(140), dp(140)));
+        LinearLayout info = column();
+        info.setPadding(dp(16), 0, 0, 0);
+        info.addView(text(artist ? "艺人" : item.kind == TidalClient.Collection.Kind.PLAYLIST ? "歌单" : "专辑",
+                12, ACCENT, true));
+        TextView name = text(item.title, 22, INK, true);
+        name.setMaxLines(3);
+        name.setEllipsize(TextUtils.TruncateAt.END);
+        name.setPadding(0, dp(2), 0, dp(4));
+        info.addView(name);
+        if (!item.subtitle.isEmpty()) info.addView(single(item.subtitle, 13, MUTED, false));
+        if (item.kind == TidalClient.Collection.Kind.ALBUM && !item.isNetease()) {
+            Button download = withIcon(secondary("下载专辑",
+                    () -> chooseTidalDownload(item, java.util.Collections.emptyList())), "download", ACCENT);
+            LinearLayout.LayoutParams chip = new LinearLayout.LayoutParams(-2, dp(36));
+            chip.topMargin = dp(12);
+            info.addView(download, chip);
+        }
+        header.addView(info, new LinearLayout.LayoutParams(0, -2, 1));
+        content.addView(header);
+        if (item.kind != TidalClient.Collection.Kind.ARTIST || item.isNetease()) {
+            section(item.kind == TidalClient.Collection.Kind.ARTIST ? "热门歌曲"
+                    : item.kind == TidalClient.Collection.Kind.PLAYLIST ? "歌单曲目" : "专辑曲目");
+        }
+    }
+
+    private void artistSection(String title, List<TidalClient.Collection> items) {
+        if (items.isEmpty()) return;
+        section(title);
+        int preview = Math.min(6, items.size());
+        for (int i = 0; i < preview; i++) collectionRow(items.get(i));
+        if (items.size() > preview) {
+            content.addView(action("查看全部 · " + title, "查看全部" + title, () -> {
+                String[] names = new String[items.size()];
+                for (int i = 0; i < names.length; i++) {
+                    TidalClient.Collection item = items.get(i);
+                    names[i] = item.subtitle.isEmpty() ? item.title : item.title + " · " + item.subtitle;
+                }
+                new AlertDialog.Builder(this).setTitle(title).setItems(names, (dialog, index) ->
+                        openCollection(items.get(index))).setNegativeButton("关闭", null).show();
+            }));
+        }
+    }
+
+    private void collectionRow(TidalClient.Collection item) {
+        String type = item.kind == TidalClient.Collection.Kind.ARTIST ? "艺人"
+                : item.kind == TidalClient.Collection.Kind.PLAYLIST ? "歌单" : "专辑";
+        content.addView(entry(item.title, item.subtitle.isEmpty() ? type : item.subtitle,
+                item.cover, () -> openCollection(item)));
+    }
+
+    private void openCollection(TidalClient.Collection item) {
+        if (page == Page.COLLECTION) {
+            if (collection.kind == item.kind && collection.id.equals(item.id)) return;
+            collectionTrail.push(collection);
+            collection = item;
+            load(false);
+        } else {
+            collectionTrail.clear();
+            collectionBack = page;
+            collection = item;
+            open(Page.COLLECTION);
+        }
+    }
+
+    private void showTracks(List<TidalClient.Track> source, boolean favoriteList) {
+        showTracks(source, favoriteList, Integer.MAX_VALUE);
+    }
+
+    private void showTracks(List<TidalClient.Track> source, boolean favoriteList, int maximumVisible) {
+        List<TidalClient.Track> downloadable = new ArrayList<>();
+        for (TidalClient.Track track : source) {
+            if (track.needsTidal()) downloadable.add(track);
+        }
+        Button all = withIcon(primary("全部播放", () -> playList(source, 0, false)), "play", BG);
+        Button random = withIcon(secondary("随机", () -> playList(source, 0, true)), "shuffle", ACCENT);
+        content.addView(downloadable.size() > 1
+                ? toolbar(all, random, withIcon(secondary("多选下载", () -> selectTidalDownloads(downloadable)), "download", ACCENT))
+                : toolbar(all, random));
+        boolean local = !source.isEmpty() && source.get(0).isLocal();
+        int first = local ? pager(source.size(), false) : 0;
+        int last = local ? Math.min(source.size(), first + LOCAL_PAGE_SIZE) : Math.min(source.size(), maximumVisible);
+        for (int i = first; i < last; i++) {
+            int index = i;
+            TidalClient.Track track = source.get(i);
+            content.addView(trackEntry(track, favoriteList, () -> playList(source, index, false)));
+        }
+    }
+
+    private int pager(int total, boolean queue) {
+        int pages = Math.max(1, (total + LOCAL_PAGE_SIZE - 1) / LOCAL_PAGE_SIZE);
+        int current = Math.min(pages - 1, queue ? queuePage : localPage);
+        if (pages > 1) {
+            LinearLayout bar = row();
+            Button previous = action("上一页", "上一页", () -> changePage(queue, current - 1));
+            previous.setEnabled(current > 0);
+            bar.addView(previous);
+            TextView count = text((current + 1) + " / " + pages, 13, MUTED, false);
+            bar.addView(count);
+            Button next = action("下一页", "下一页", () -> changePage(queue, current + 1));
+            next.setEnabled(current + 1 < pages);
+            bar.addView(next);
+            content.addView(bar);
+        }
+        return current * LOCAL_PAGE_SIZE;
+    }
+
+    private void changePage(boolean queue, int pageNumber) {
+        if (queue) queuePage = pageNumber;
+        else localPage = pageNumber;
+        render();
+    }
+
+    private void playList(List<TidalClient.Track> list, int index, boolean random) {
+        if (playback == null || list.isEmpty()) return;
+        playback.replaceQueue(list, index, random);
+        updatePlayer();
+    }
+
+    private LinearLayout trackEntry(TidalClient.Track track, boolean favoriteList, Runnable playTrack) {
+        String detail = track.artist;
+        if (!track.album.isEmpty()) detail += (detail.isEmpty() ? "" : " · ") + track.album;
+        if (detail.isEmpty()) detail = track.isLocal() ? "本地音频" : track.isNetease() ? "网易云" : "TIDAL";
+        LinearLayout view = entry(displayTitle(track), detail, "", playTrack);
+        artwork.load((ImageView) view.getChildAt(0), track, 160);
+        view.addView(iconButton("more", "更多 " + track.title, () -> trackMenu(track, favoriteList)));
+        return view;
+    }
+
+    private void trackMenu(TidalClient.Track track, boolean favoriteList) {
+        if (track.isLocal()) {
+            localTrackMenu(track);
+            return;
+        }
+        boolean liked = favoriteList || favoriteIds.contains(track.id);
+        List<String> choices = new ArrayList<>();
+        List<Runnable> actions = new ArrayList<>();
+        choices.add("下一首播放");
+        actions.add(() -> { playback.enqueue(track, true); toast("已加入下一首"); });
+        choices.add("追加到队列");
+        actions.add(() -> { playback.enqueue(track, false); toast("已加入队列"); });
+        if (!track.isNetease()) {
+            choices.add(liked ? "取消收藏" : "收藏歌曲");
+            actions.add(() -> changeFavorite(track, !liked));
+        }
+        choices.add("分享歌曲");
+        actions.add(() -> share(track));
+        if (track.isNetease()) {
+            choices.add("查看评论");
+            actions.add(() -> showNeteaseComments(track));
+            choices.add("下载歌曲");
+            actions.add(() -> downloadNetease(track));
+        } else {
+            choices.add("下载歌曲");
+            actions.add(() -> downloadTidal(track));
+            if (track.artistId > 0 && !track.artist.isEmpty()) {
+                choices.add("查看艺人");
+                actions.add(() -> {
+                    try {
+                        openCollection(new TidalClient.Collection(new JSONObject().put("id", track.artistId)
+                                .put("name", track.artist).put("picture", track.artistPicture),
+                                TidalClient.Collection.Kind.ARTIST));
+                    } catch (org.json.JSONException ignored) {}
+                });
+            }
+            choices.add("歌曲电台");
+            actions.add(() -> playRadio(track));
+        }
+        if (track.albumId > 0) {
+            choices.add("查看专辑");
+            actions.add(() -> {
+                try {
+                    openCollection(new TidalClient.Collection(new org.json.JSONObject()
+                            .put("id", track.albumId).put("title", track.album).put("cover", track.cover),
+                            TidalClient.Collection.Kind.ALBUM));
+                } catch (org.json.JSONException ignored) {}
+            });
+        }
+        new AlertDialog.Builder(this).setTitle(track.title)
+                .setItems(choices.toArray(new String[0]), (dialog, choice) -> {
+                    if (playback != null) actions.get(choice).run();
+                }).show();
+    }
+
+    private void showNeteaseComments(TidalClient.Track track) {
+        if (playback == null || track == null || !track.isNetease()) return;
+        new NeteaseCommentsDialog(this, playback.netease(), track, worker).show();
+    }
+
+    private void downloadNetease(TidalClient.Track track) {
+        DownloadTasks.Resolve resolve = downloadResolver("网易云");
+        if (resolve == null) {
+            toast("请先配置网易云接口");
+            return;
+        }
+        downloadChoices("下载 · " + track.title, DownloadTasks.HIGHEST, MusicDownload.directory(this),
+                (quality, directory) -> queueDownloads(java.util.Collections.singletonList(track), "网易云",
+                        quality, directory, resolve));
+    }
+
+    private void downloadTidal(TidalClient.Track track) {
+        chooseTidalDownload(null, java.util.Collections.singletonList(track));
+    }
+
+    private void selectTidalDownloads(List<TidalClient.Track> options) {
+        String[] labels = new String[options.size()];
+        boolean[] selected = new boolean[options.size()];
+        for (int i = 0; i < options.size(); i++) {
+            TidalClient.Track track = options.get(i);
+            labels[i] = track.artist.isEmpty() ? track.title : track.title + " · " + track.artist;
+        }
+        AlertDialog dialogue = new AlertDialog.Builder(this).setTitle("选择下载歌曲")
+                .setMultiChoiceItems(labels, selected, (dialog, index, checked) -> {
+                    selected[index] = checked;
+                    boolean any = false;
+                    for (boolean item : selected) any |= item;
+                    ((AlertDialog) dialog).getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(any);
+                }).setPositiveButton("继续", (dialog, button) -> {
+                    List<TidalClient.Track> chosen = new ArrayList<>();
+                    for (int i = 0; i < selected.length; i++) {
+                        if (selected[i]) chosen.add(options.get(i));
+                    }
+                    chooseTidalDownload(null, chosen);
+                }).setNegativeButton("取消", null).show();
+        dialogue.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(false);
+    }
+
+    private void chooseTidalDownload(TidalClient.Collection album, List<TidalClient.Track> selected) {
+        TidalClient api = playback == null ? null : playback.client;
+        if (api == null) {
+            toast("请先登录 TIDAL");
+            return;
+        }
+        String title = album == null ? "下载 " + selected.size() + " 首" : "下载专辑";
+        DownloadTasks.Resolve resolve = downloadResolver("TIDAL");
+        downloadChoices(title, DownloadTasks.HIGHEST, MusicDownload.directory(this), (quality, directory) -> {
+            toast("正在读取曲目信息");
+            downloads.submit(() -> {
+                try {
+                    List<TidalClient.Track> items;
+                    TidalClient.Collection metadata = album;
+                    if (album != null) {
+                        metadata = tryDownloadAlbum(api, album.id, album);
+                        items = api.albumTracks(metadata);
+                    } else items = enrichDownloadTracks(api, selected);
+                    if (items.isEmpty()) throw new IOException("暂无可下载的曲目");
+                    int skipped = downloadTasks.add(items, "TIDAL", quality, directory, resolve, metadata);
+                    handler.post(() -> showQueuedDownloads(skipped));
+                } catch (Exception error) {
+                    handler.post(() -> {
+                        if (!isDestroyed()) toast("下载失败 · " + readable(error));
+                    });
+                }
+            });
+        });
+    }
+
+    private TidalClient.Collection tryDownloadAlbum(TidalClient api, String id, TidalClient.Collection fallback) {
+        try { return api.downloadAlbum(id); }
+        catch (Exception ignored) { return fallback; }
+    }
+
+    private List<TidalClient.Track> enrichDownloadTracks(TidalClient api, List<TidalClient.Track> selected) throws Exception {
+        java.util.Map<Long, TidalClient.Collection> albums = new java.util.HashMap<>();
+        List<TidalClient.Track> tracks = new ArrayList<>();
+        for (TidalClient.Track track : selected) {
+            if (track.albumId <= 0) {
+                tracks.add(track);
+                continue;
+            }
+            if (!albums.containsKey(track.albumId)) {
+                albums.put(track.albumId, tryDownloadAlbum(api, Long.toString(track.albumId), null));
+            }
+            TidalClient.Collection album = albums.get(track.albumId);
+            if (album == null) {
+                tracks.add(track);
+                continue;
+            }
+            JSONObject data = new JSONObject(track.payload.toString());
+            JSONObject release = data.getJSONObject("album");
+            release.put("title", album.title).put("numberOfVolumes", album.volumes);
+            if (!album.albumArtist.isEmpty()) release.put("artist", new JSONObject().put("name", album.albumArtist));
+            tracks.add(new TidalClient.Track(data));
+        }
+        return tracks;
+    }
+
+    private void downloadChoices(String title, int quality, Uri directory, DownloadChoice callback) {
+        LinearLayout dialogContent = column();
+        dialogContent.setPadding(dp(22), dp(5), dp(22), dp(8));
+        TextView destination = text(directory == null ? "系统下载目录"
+                : android.provider.DocumentsContract.getTreeDocumentId(directory), 14, MUTED, false);
+        dialogContent.addView(text("保存位置", 14, INK, true));
+        dialogContent.addView(destination);
+        android.widget.Spinner selector = new android.widget.Spinner(this);
+        android.widget.ArrayAdapter<String> options = new android.widget.ArrayAdapter<>(this,
+                android.R.layout.simple_spinner_dropdown_item, DownloadTasks.QUALITY_NAMES);
+        selector.setAdapter(options);
+        selector.setSelection(quality);
+        dialogContent.addView(text("下载音质", 14, INK, true));
+        dialogContent.addView(selector, new LinearLayout.LayoutParams(-1, dp(48)));
+        new AlertDialog.Builder(this).setTitle(title).setView(dialogContent)
+                .setNeutralButton("更改目录", (dialog, button) -> {
+                    pendingDownloadChoice = callback;
+                    pendingDownloadTitle = title;
+                    pendingDownloadQuality = selector.getSelectedItemPosition();
+                    pendingDownloadDirectory = directory;
+                    Intent picker = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
+                            | Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+                            | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION);
+                    if (directory != null && android.os.Build.VERSION.SDK_INT >= 26) {
+                        picker.putExtra(android.provider.DocumentsContract.EXTRA_INITIAL_URI, directory);
+                    }
+                    startActivityForResult(picker, JOB_DOWNLOAD_DIRECTORY);
+                })
+                .setNegativeButton("取消", null)
+                .setPositiveButton("开始下载", (dialog, button) -> callback.chosen(selector.getSelectedItemPosition(), directory))
+                .show();
+    }
+
+    private void queueDownloads(List<TidalClient.Track> tracks, String source, int quality, Uri directory,
+                                DownloadTasks.Resolve resolve) {
+        downloads.submit(() -> {
+            int skipped = downloadTasks.add(tracks, source, quality, directory, resolve);
+            handler.post(() -> showQueuedDownloads(skipped));
+        });
+    }
+
+    private void showQueuedDownloads(int skipped) {
+        if (isDestroyed()) return;
+        if (skipped > 0) toast(skipped + " 首已下载或正在下载");
+        open(Page.DOWNLOADS);
+        refreshDownloads();
+    }
+
+    private void offlinePage() {
+        if (offlineAlbum != null) {
+            DownloadTasks.OfflineAlbum album = offlineAlbum;
+            content.addView(primary("播放全部", () -> playOffline(album.tracks, 0)));
+            for (int i = 0; i < album.tracks.size(); i++) {
+                int index = i;
+                TidalClient.Track track = album.tracks.get(i);
+                content.addView(entry(track.title, track.artist, "", () -> playOffline(album.tracks, index)));
+            }
+            return;
+        }
+        LinearLayout destination = content;
+        destination.addView(text("正在读取已下载音乐…", 14, MUTED, false));
+        worker.submit(() -> {
+            List<DownloadTasks.OfflineAlbum> albums = downloadTasks.offlineAlbums();
+            handler.post(() -> {
+                if (isDestroyed() || page != Page.OFFLINE || content != destination || offlineAlbum != null) return;
+                destination.removeAllViews();
+                if (albums.isEmpty()) {
+                    panel(destination, "暂无已下载音乐", "完成下载后，可以在这里离线播放。");
+                    return;
+                }
+                for (DownloadTasks.OfflineAlbum album : albums) {
+                    destination.addView(entry(album.title, album.source + " · " + album.tracks.size() + " 首", "", () -> {
+                        offlineAlbum = album;
+                        render();
+                    }));
+                }
+            });
+        });
+    }
+
+    private void playOffline(List<TidalClient.Track> tracks, int index) {
+        if (playback == null) return;
+        playList(tracks, index, false);
+        open(Page.PLAYER);
+    }
+
+    private DownloadTasks.Resolve downloadResolver(String source) {
+        if (playback == null) return null;
+        if ("网易云".equals(source)) {
+            NeteaseClient api = playback.netease();
+            if (api == null) return null;
+            return (track, quality) -> {
+                NeteaseClient.Audio audio = api.audio(track, quality);
+                NeteaseClient.verifyDownloadQuality(audio, quality);
+                String resolution = audio.actualLevel;
+                if (audio.bitrate > 0) resolution += " · " + audio.bitrate / 1000 + " kbps";
+                return new DownloadTasks.Audio(audio.stream.uri, audio.format, resolution);
+            };
+        }
+        TidalClient api = playback.client;
+        if (api == null) return null;
+        return (track, quality) -> {
+            TidalClient.DownloadAudio audio = api.downloadAudio(track, PlaybackService.QUALITIES[quality]);
+            return new DownloadTasks.Audio(audio.uri, audio.extension, audio.resolution, audio.dash);
+        };
+    }
+
+    private void downloadsPage() {
+        downloadRows = column();
+        content.addView(downloadRows);
+        downloadSignature = null;
+        refreshDownloads();
+    }
+
+    private void refreshDownloads() {
+        if (downloadRefreshPending || page != Page.DOWNLOADS) return;
+        downloadRefreshPending = true;
+        worker.submit(() -> {
+            List<DownloadTasks.Job> jobs = downloadTasks.snapshot();
+            handler.post(() -> {
+                downloadRefreshPending = false;
+                if (page == Page.DOWNLOADS && !isDestroyed()) showDownloadRows(jobs);
+            });
+        });
+    }
+
+    private void showDownloadRows(List<DownloadTasks.Job> jobs) {
+        List<DownloadTasks.Job> visible = new ArrayList<>();
+        java.util.Set<String> visibleIds = new java.util.HashSet<>();
+        for (DownloadTasks.Job job : jobs) {
+            if (downloadFilter == 0 || downloadGroup(job) == downloadFilter) {
+                visible.add(job);
+                visibleIds.add(job.id);
+            }
+        }
+        selectedDownloads.retainAll(visibleIds);
+        StringBuilder signature = new StringBuilder().append(expandedDownloads).append(':').append(downloadFilter)
+                .append(':').append(selectingDownloads).append(':').append(selectedDownloads);
+        for (DownloadTasks.Job job : jobs) {
+            signature.append('|').append(job.id).append(':').append(downloadStatus(job))
+                    .append(':').append(downloadProgress(job)).append(':').append(job.error).append(':').append(job.resolution);
+        }
+        if (signature.toString().equals(downloadSignature)) return;
+        downloadSignature = signature.toString();
+        downloadRows.removeAllViews();
+
+        int[] counts = new int[4];
+        counts[0] = jobs.size();
+        for (DownloadTasks.Job job : jobs) counts[downloadGroup(job)]++;
+        String[] labels = {"全部", "进行中", "已完成", "失败和取消"};
+        LinearLayout filter = row();
+        filter.setPadding(0, dp(2), 0, dp(12));
+        downloadRows.addView(filter);
+        for (int i = 0; i < labels.length; i++) {
+            final int index = i;
+            TextView tab = text(labels[i] + "\n" + counts[i], 13, i == downloadFilter ? BG : MUTED, true);
+            tab.setGravity(Gravity.CENTER);
+            tab.setSelected(i == downloadFilter);
+            tab.setBackground(shape(i == downloadFilter ? ACCENT : SURFACE, 10));
+            tab.setContentDescription(labels[i] + " " + counts[i] + " 项");
+            tab.setFocusable(true);
+            tab.setOnClickListener(view -> {
+                if (downloadFilter != index) selectedDownloads.clear();
+                downloadFilter = index;
+                showDownloadRows(jobs);
+                refreshDownloads();
+            });
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(54), 1);
+            if (i > 0) params.leftMargin = dp(5);
+            filter.addView(tab, params);
+        }
+
+        if (!visible.isEmpty() || selectingDownloads) showDownloadSelection(jobs, visible);
+        if (counts[downloadFilter] == 0) {
+            panel(downloadRows, downloadFilter == 0 ? "暂无下载任务" : "暂无" + labels[downloadFilter] + "任务",
+                    downloadFilter == 0 ? "下载歌曲或专辑后，可在这里查看进度。" : "");
+            return;
+        }
+        java.util.Map<String, List<DownloadTasks.Job>> albums = new java.util.LinkedHashMap<>();
+        for (DownloadTasks.Job job : jobs) {
+            if (job.batch.isEmpty()) continue;
+            List<DownloadTasks.Job> items = albums.get(job.batch);
+            if (items == null) {
+                items = new ArrayList<>();
+                albums.put(job.batch, items);
+            }
+            items.add(job);
+        }
+        if (!selectingDownloads) {
+            for (List<DownloadTasks.Job> album : albums.values()) {
+                List<DownloadTasks.Job> matches = new ArrayList<>();
+                for (DownloadTasks.Job job : album) {
+                    if (downloadFilter == 0 || downloadGroup(job) == downloadFilter) matches.add(job);
+                }
+                if (!matches.isEmpty()) downloadAlbum(album, matches, jobs);
+            }
+        }
+        for (int group = 1; group < labels.length; group++) {
+            if (downloadFilter != 0 && downloadFilter != group) continue;
+            boolean hasRows = false;
+            for (DownloadTasks.Job job : visible) {
+                if (downloadGroup(job) == group && (selectingDownloads || job.batch.isEmpty())) hasRows = true;
+            }
+            if (!hasRows) continue;
+            TextView heading = text(labels[group], 15, INK, true);
+            heading.setPadding(dp(2), dp(8), 0, dp(8));
+            downloadRows.addView(heading);
+            for (DownloadTasks.Job job : visible) {
+                if (downloadGroup(job) == group && (selectingDownloads || job.batch.isEmpty())) downloadRow(job, jobs);
+            }
+        }
+    }
+
+    private void downloadAlbum(List<DownloadTasks.Job> album, List<DownloadTasks.Job> matches,
+                               List<DownloadTasks.Job> jobs) {
+        DownloadTasks.Job first = album.get(0);
+        int completed = 0;
+        List<DownloadTasks.Job> failed = new ArrayList<>();
+        for (DownloadTasks.Job job : album) {
+            if (job.state == DownloadTasks.State.COMPLETE) completed++;
+            if (job.state == DownloadTasks.State.FAILED) failed.add(job);
+        }
+        boolean expanded = expandedDownloads.contains(first.batch);
+        String detail = "已完成 " + completed + "/" + album.size() + " 首";
+        if (!failed.isEmpty()) detail += " · " + failed.size() + " 首失败";
+        LinearLayout section = panel(downloadRows, first.albumTitle, detail);
+        android.widget.ProgressBar progress = new android.widget.ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        progress.setMax(album.size());
+        progress.setProgress(completed);
+        progress.setProgressTintList(ColorStateList.valueOf(ACCENT));
+        section.addView(progress, new LinearLayout.LayoutParams(-1, dp(6)));
+        LinearLayout actions = row();
+        actions.addView(action(expanded ? "收起" : "展开", (expanded ? "收起 " : "展开 ") + first.albumTitle, () -> {
+            if (!expandedDownloads.remove(first.batch)) expandedDownloads.add(first.batch);
+            showDownloadRows(jobs);
+        }));
+        if (!failed.isEmpty()) actions.addView(action("只重试失败项", "重试 " + first.albumTitle + " 的失败下载", () -> {
+            DownloadTasks.Resolve resolve = downloadResolver(first.source);
+            if (resolve == null) {
+                toast("请先连接 " + first.source);
+                return;
+            }
+            worker.submit(() -> {
+                for (DownloadTasks.Job job : failed) downloadTasks.retry(job.id, job.directory, resolve);
+                handler.post(() -> { if (!isDestroyed()) refreshDownloads(); });
+            });
+        }));
+        section.addView(actions);
+        if (expanded) {
+            java.util.Collections.sort(matches, (a, b) -> Integer.compare(a.order, b.order));
+            for (DownloadTasks.Job job : matches) downloadRow(job, jobs);
+        }
+    }
+
+    private int downloadGroup(DownloadTasks.Job job) {
+        if (job.active()) return 1;
+        return job.state == DownloadTasks.State.COMPLETE ? 2 : 3;
+    }
+
+    private void downloadRow(DownloadTasks.Job job, List<DownloadTasks.Job> jobs) {
+        LinearLayout item = column();
+        item.setPadding(dp(12), dp(9), dp(6), dp(9));
+        item.setBackground(shape(selectedDownloads.contains(job.id) ? RAISED : SURFACE, 12));
+        LinearLayout.LayoutParams card = new LinearLayout.LayoutParams(-1, -2);
+        card.bottomMargin = dp(6);
+        downloadRows.addView(item, card);
+
+        LinearLayout line = row();
+        item.addView(line);
+        item.setOnLongClickListener(view -> {
+            selectingDownloads = true;
+            selectedDownloads.add(job.id);
+            showDownloadRows(jobs);
+            return true;
+        });
+        if (selectingDownloads) item.setOnClickListener(view -> toggleDownloadSelection(job, jobs));
+        boolean complete = job.state == DownloadTasks.State.COMPLETE;
+        boolean failed = job.state == DownloadTasks.State.FAILED;
+        int tone = failed ? 0xffffb2a8 : job.state == DownloadTasks.State.CANCELLED ? MUTED : ACCENT;
+        TextView icon = text(complete ? "✓" : failed ? "!" : job.active() ? "↓" : "–", 20, tone, true);
+        icon.setGravity(Gravity.CENTER);
+        icon.setBackground(shape(RAISED, 10));
+        icon.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        if (selectingDownloads) {
+            android.widget.CheckBox select = new android.widget.CheckBox(this);
+            select.setButtonTintList(ColorStateList.valueOf(ACCENT));
+            select.setContentDescription("选择 " + job.title);
+            select.setChecked(selectedDownloads.contains(job.id));
+            select.setOnClickListener(view -> toggleDownloadSelection(job, jobs));
+            line.addView(select, new LinearLayout.LayoutParams(dp(44), dp(48)));
+        } else line.addView(icon, new LinearLayout.LayoutParams(dp(40), dp(40)));
+
+        LinearLayout details = column();
+        details.setPadding(dp(10), 0, dp(2), 0);
+        line.addView(details, new LinearLayout.LayoutParams(0, -2, 1));
+        TextView title = text(job.title, 15, INK, true);
+        title.setMaxLines(2);
+        title.setEllipsize(TextUtils.TruncateAt.END);
+        details.addView(title);
+        TextView metadata = text(job.source + (job.artist.isEmpty() ? "" : " · " + job.artist), 12, MUTED, false);
+        metadata.setSingleLine();
+        metadata.setEllipsize(TextUtils.TruncateAt.END);
+        details.addView(metadata);
+        if (!job.resolution.isEmpty()) details.addView(text(job.resolution, 11, MUTED, false));
+        TextView status = text(downloadStatus(job), 12, tone, true);
+        status.setPadding(0, dp(3), 0, 0);
+        details.addView(status);
+
+        if (!selectingDownloads && job.active()) {
+            line.addView(action("取消", "取消下载 " + job.title, () -> {
+                downloadTasks.cancel(job.id);
+                refreshDownloads();
+            }));
+        } else if (!selectingDownloads) {
+            if (complete) line.addView(action("播放", "播放已下载歌曲 " + job.title, () -> openDownload(job)));
+            else line.addView(action("重试", "重新下载 " + job.title, () -> retryDownload(job)));
+            Button more = iconButton("more", "下载选项 " + job.title, () -> downloadOptions(job));
+            line.addView(more);
+        }
+
+        if (job.state == DownloadTasks.State.TRANSFERRING) {
+            LinearLayout transfer = column();
+            transfer.setPadding(dp(50), dp(5), dp(8), 0);
+            android.widget.ProgressBar progress = new android.widget.ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+            progress.setIndeterminate(job.total <= 0);
+            progress.setProgressTintList(ColorStateList.valueOf(ACCENT));
+            progress.setIndeterminateTintList(ColorStateList.valueOf(ACCENT));
+            if (job.total > 0) progress.setProgress(downloadPercent(job));
+            transfer.addView(progress, new LinearLayout.LayoutParams(-1, dp(6)));
+            transfer.addView(text(downloadProgress(job), 11, MUTED, false));
+            item.addView(transfer);
+        } else if (failed && !job.error.isEmpty()) {
+            TextView reason = text(job.error, 12, MUTED, false);
+            reason.setPadding(dp(50), dp(4), dp(8), 0);
+            item.addView(reason);
+        }
+    }
+
+    private void toggleDownloadSelection(DownloadTasks.Job job, List<DownloadTasks.Job> jobs) {
+        if (!selectedDownloads.remove(job.id)) selectedDownloads.add(job.id);
+        showDownloadRows(jobs);
+    }
+
+    private void showDownloadSelection(List<DownloadTasks.Job> jobs, List<DownloadTasks.Job> visible) {
+        LinearLayout bar = row();
+        downloadRows.addView(bar);
+        if (!selectingDownloads) {
+            Button select = secondary("多选", () -> {
+                selectingDownloads = true;
+                showDownloadRows(jobs);
+            });
+            LinearLayout.LayoutParams chip = new LinearLayout.LayoutParams(-2, dp(38));
+            chip.topMargin = dp(4);
+            chip.bottomMargin = dp(4);
+            bar.addView(select, chip);
+            return;
+        }
+        TextView summary = text("已选 " + selectedDownloads.size() + " 项", 13, INK, true);
+        bar.addView(summary, new LinearLayout.LayoutParams(0, -2, 1));
+        boolean all = !visible.isEmpty() && selectedDownloads.size() == visible.size();
+        Button selectAll = action(all ? "清空" : "全选", all ? "清空选择" : "全选当前列表", () -> {
+            selectedDownloads.clear();
+            if (!all) for (DownloadTasks.Job job : visible) selectedDownloads.add(job.id);
+            showDownloadRows(jobs);
+        });
+        selectAll.setEnabled(!visible.isEmpty());
+        bar.addView(selectAll);
+        Button actions = action("管理", "批量管理下载", () -> showDownloadBatch(visible));
+        actions.setEnabled(!selectedDownloads.isEmpty());
+        bar.addView(actions);
+        bar.addView(action("完成", "退出多选", () -> {
+            selectingDownloads = false;
+            selectedDownloads.clear();
+            showDownloadRows(jobs);
+        }));
+    }
+
+    private enum DownloadBatch { CANCEL, RETRY, REMOVE, DELETE }
+
+    private boolean eligibleDownload(DownloadTasks.Job job, DownloadBatch action) {
+        switch (action) {
+            case CANCEL: return job.active();
+            case RETRY: return job.state == DownloadTasks.State.FAILED || job.state == DownloadTasks.State.CANCELLED;
+            case REMOVE: return !job.active();
+            case DELETE: return job.state == DownloadTasks.State.COMPLETE;
+            default: return false;
+        }
+    }
+
+    private void showDownloadBatch(List<DownloadTasks.Job> visible) {
+        List<String> labels = new ArrayList<>();
+        List<Runnable> options = new ArrayList<>();
+        String[] names = {"取消下载", "重试下载", "移除记录", "删除文件"};
+        for (DownloadBatch action : DownloadBatch.values()) {
+            List<DownloadTasks.Job> targets = new ArrayList<>();
+            for (DownloadTasks.Job job : visible) {
+                if (selectedDownloads.contains(job.id) && eligibleDownload(job, action)) targets.add(job);
+            }
+            if (targets.isEmpty()) continue;
+            labels.add(names[action.ordinal()] + " · " + targets.size() + " 项");
+            options.add(() -> {
+                if (action == DownloadBatch.DELETE) {
+                    new AlertDialog.Builder(this).setTitle("删除 " + targets.size() + " 个下载文件？")
+                            .setNegativeButton("取消", null)
+                            .setPositiveButton("删除", (dialog, button) -> runDownloadBatch(action, targets)).show();
+                } else runDownloadBatch(action, targets);
+            });
+        }
+        if (!labels.isEmpty()) new AlertDialog.Builder(this).setTitle("批量管理下载")
+                .setItems(labels.toArray(new String[0]), (dialog, index) -> options.get(index).run()).show();
+    }
+
+    private void runDownloadBatch(DownloadBatch action, List<DownloadTasks.Job> targets) {
+        DownloadTasks.Resolve tidal = action == DownloadBatch.RETRY ? downloadResolver("TIDAL") : null;
+        DownloadTasks.Resolve netease = action == DownloadBatch.RETRY ? downloadResolver("网易云") : null;
+        Uri destination = MusicDownload.directory(this);
+        for (DownloadTasks.Job job : targets) selectedDownloads.remove(job.id);
+        worker.submit(() -> {
+            int skipped = 0;
+            for (DownloadTasks.Job job : targets) {
+                switch (action) {
+                    case CANCEL: downloadTasks.cancel(job.id); break;
+                    case RETRY:
+                        DownloadTasks.Resolve resolve = "网易云".equals(job.source) ? netease : tidal;
+                        if (resolve == null) skipped++;
+                        else downloadTasks.retry(job.id, destination, resolve);
+                        break;
+                    default:
+                        if (!downloadTasks.remove(job.id, action == DownloadBatch.DELETE)) skipped++;
+                }
+            }
+            int remaining = skipped;
+            handler.post(() -> {
+                if (isDestroyed()) return;
+                if (remaining > 0) toast(remaining + " 项未处理" + (action == DownloadBatch.RETRY ? "，请先连接对应音源" : ""));
+                refreshDownloads();
+            });
+        });
+    }
+
+    private String downloadProgress(DownloadTasks.Job job) {
+        if (job.state != DownloadTasks.State.TRANSFERRING) return "";
+        String transferred = android.text.format.Formatter.formatShortFileSize(this, Math.max(0, job.bytes));
+        return job.total > 0 ? transferred + " / " + android.text.format.Formatter.formatShortFileSize(this, job.total) : transferred;
+    }
+
+    private int downloadPercent(DownloadTasks.Job job) {
+        return (int) Math.max(0, Math.min(100, job.bytes * 100.0 / job.total));
+    }
+
+    private String downloadStatus(DownloadTasks.Job job) {
+        switch (job.state) {
+            case QUEUED: return "排队中";
+            case PREPARING: return "获取下载地址…";
+            case WAITING: return "等待系统下载";
+            case TRANSFERRING: return job.total > 0 ? "下载中 · " + downloadPercent(job) + "%" : "下载中";
+            case COMPLETE: return "已完成";
+            case CANCELLED: return "已取消";
+            default: return "下载失败";
+        }
+    }
+
+    private void retryDownload(DownloadTasks.Job job) {
+        DownloadTasks.Resolve resolve = downloadResolver(job.source);
+        if (resolve == null) {
+            toast("请先连接 " + job.source);
+            return;
+        }
+        downloadTasks.retry(job.id, MusicDownload.directory(this), resolve);
+        refreshDownloads();
+    }
+
+    private void downloadOptions(DownloadTasks.Job job) {
+        List<String> labels = new ArrayList<>();
+        List<Runnable> choices = new ArrayList<>();
+        labels.add("移除记录");
+        choices.add(() -> removeDownload(job, false));
+        if (job.state == DownloadTasks.State.COMPLETE) {
+            labels.add("删除文件");
+            choices.add(() -> new AlertDialog.Builder(this).setTitle("删除已下载文件？")
+                    .setMessage(job.title).setNegativeButton("取消", null)
+                    .setPositiveButton("删除", (dialog, button) -> removeDownload(job, true)).show());
+        } else if (job.state == DownloadTasks.State.FAILED && "TIDAL".equals(job.source)) {
+            labels.add("打开 TIDAL");
+            choices.add(() -> openTidalBrowser(Uri.parse("https://tidal.com/browse/track/" + job.track)));
+        }
+        new AlertDialog.Builder(this).setTitle(job.title)
+                .setItems(labels.toArray(new String[0]), (dialog, index) -> choices.get(index).run()).show();
+    }
+
+    private void openDownload(DownloadTasks.Job job) {
+        worker.submit(() -> {
+            TidalClient.Track track = downloadTasks.playable(job.id);
+            handler.post(() -> {
+                if (isDestroyed() || page != Page.DOWNLOADS) return;
+                if (track == null) toast("找不到已下载文件");
+                else playOffline(java.util.Collections.singletonList(track), 0);
+            });
+        });
+    }
+
+    private void removeDownload(DownloadTasks.Job job, boolean deleteFile) {
+        worker.submit(() -> {
+            boolean removed = downloadTasks.remove(job.id, deleteFile);
+            handler.post(() -> {
+                if (isDestroyed()) return;
+                if (!removed) toast("无法移除此项目");
+                refreshDownloads();
+            });
+        });
+    }
+
+    private void localTrackMenu(TidalClient.Track track) {
+        if (playback == null) return;
+        String playlist = page == Page.LOCAL ? localPlaylist : null;
+        String remove = playlist == null ? "从音乐库移除" : "从歌单移除";
+        new AlertDialog.Builder(this).setTitle(track.title)
+                .setItems(new String[]{"下一首播放", "追加到队列", "加入本地歌单", remove}, (dialog, choice) -> {
+                    if (playback == null) return;
+                    if (choice == 0) playback.enqueue(track, true);
+                    else if (choice == 1) playback.enqueue(track, false);
+                    else if (choice == 2) {
+                        List<String> names = playback.localLibrary.playlists();
+                        names.add("新建歌单…");
+                        new AlertDialog.Builder(this).setTitle("加入歌单").setItems(names.toArray(new String[0]),
+                                (picker, index) -> {
+                                    if (playback == null) return;
+                                    if (index == names.size() - 1) newLocalPlaylist(track);
+                                    else {
+                                        playback.localLibrary.add(names.get(index), track);
+                                        playback.libraryChanged();
+                                        toast("已加入歌单");
+                                    }
+                                }).show();
+                    } else {
+                        playback.localLibrary.remove(playlist, track.id);
+                        if (playlist == null) playback.fileDeleted(track.id);
+                        else playback.libraryChanged();
+                        toast("已从列表移除，文件仍保留");
+                        return;
+                    }
+                    if (choice < 2) toast("已加入播放队列");
+                }).show();
+    }
+
+    private void playRadio(TidalClient.Track track) {
+        TidalClient api = playback.client;
+        if (api == null) return;
+        toast("正在加载歌曲电台");
+        worker.submit(() -> {
+            try {
+                List<TidalClient.Track> mix = api.radio(track.id);
+                runOnUiThread(() -> {
+                    if (isDestroyed() || playback == null || playback.client != api) return;
+                    if (mix.isEmpty()) toast("暂无电台歌曲");
+                    else playList(mix, 0, false);
+                });
+            } catch (Exception error) {
+                runOnUiThread(() -> {
+                    if (!isDestroyed() && playback != null && playback.client == api) toast(readable(error));
+                });
+            }
+        });
+    }
+
+    private void showLyrics() {
+        if (playback == null || playback.current() == null) return;
+        TidalClient.Track track = playback.current();
+        TidalClient api = playback.client;
+        LocalLibrary library = playback.localLibrary;
+        if (track.needsTidal() && api == null) return;
+        NeteaseClient netease = playback.netease();
+        LyricsDialog view = new LyricsDialog(this, track, millis -> {
+            if (playback != null && playback.current() != null && playback.current().id == track.id
+                    && !playback.loading && playback.player.isCurrentMediaItemSeekable()) {
+                playback.player.seekTo(millis);
+            }
+        });
+        lyrics = view;
+        view.show(() -> { if (lyrics == view) lyrics = null; });
+        worker.submit(() -> {
+            try {
+                org.json.JSONObject data = track.isLocal()
+                        ? LocalMusicFiles.lyrics(getContentResolver(), library.latest(track)) : track.isNetease() ? netease.lyrics(track.id) : api.lyrics(track.id);
+                runOnUiThread(() -> {
+                    if (lyrics == view) view.display(data);
+                });
+            } catch (Exception error) {
+                runOnUiThread(() -> {
+                    if (lyrics == view) view.unavailable(readable(error));
+                });
+            }
+        });
+    }
+
+    private void share(TidalClient.Track track) {
+        Intent share = new Intent(Intent.ACTION_SEND).setType("text/plain")
+                .putExtra(Intent.EXTRA_TEXT, track.title + " · " + track.artist
+                        + "\n" + (track.isNetease() ? NeteaseClient.songLink(track.id) : "https://tidal.com/browse/track/" + track.id));
+        startActivity(Intent.createChooser(share, "分享歌曲"));
+    }
+
+    private void changeFavorite(TidalClient.Track track, boolean add) {
+        if (playback == null || !track.needsTidal() || playback.client == null || favoriteBusy) return;
+        TidalClient api = playback.client;
+        favoriteBusy = true;
+        updatePlayer();
+        worker.submit(() -> {
+            try {
+                api.favorite(track.id, add);
+                runOnUiThread(() -> {
+                    if (isDestroyed() || playback == null || playback.client != api) return;
+                    favoriteBusy = false;
+                    if (add) favoriteIds.add(track.id); else favoriteIds.remove(track.id);
+                    toast(add ? "已收藏" : "已取消收藏");
+                    if (page == Page.LIBRARY && libraryFilter == 0) load(false);
+                    else updatePlayer();
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    if (isDestroyed() || playback == null || playback.client != api) return;
+                    favoriteBusy = false;
+                    toast("收藏更新失败 · " + readable(e));
+                    updatePlayer();
+                });
+            }
+        });
+    }
+
+    private void queue() {
+        if (playback == null || playback.queue.isEmpty()) {
+            empty("队列是空的", "从歌曲菜单加入歌曲，或直接播放一张专辑");
+            return;
+        }
+        section(playback.queue.size() + " 首歌曲");
+        int first = pager(playback.queue.size(), true);
+        for (int i = first; i < Math.min(playback.queue.size(), first + LOCAL_PAGE_SIZE); i++) {
+            int at = i;
+            TidalClient.Track track = playback.queue.get(at);
+            boolean playingNow = i == playback.index;
+            LinearLayout entry = entry(displayTitle(track),
+                    playingNow ? "正在播放" + (track.artist.isEmpty() ? "" : " · " + track.artist) : track.artist,
+                    track.cover, () -> playback.playAt(at, 0, true));
+            artwork.load((ImageView) entry.getChildAt(0), track, 160);
+            if (playingNow) {
+                entry.setBackground(shape(RAISED, 12));
+                LinearLayout info = (LinearLayout) entry.getChildAt(1);
+                ((TextView) info.getChildAt(0)).setTextColor(ACCENT);
+                ((TextView) info.getChildAt(1)).setTextColor(ACCENT);
+            }
+            entry.addView(iconButton("more", "调整队列 " + track.title, () -> editQueue(at, track)));
+            content.addView(entry);
+        }
+    }
+
+    private void editQueue(int at, TidalClient.Track track) {
+        new AlertDialog.Builder(this).setTitle(track.title)
+                .setItems(new String[]{"移到上一位", "移到下一位", "移除"}, (dialog, choice) -> {
+                    if (playback == null || at >= playback.queue.size() || playback.queue.get(at) != track) return;
+                    if (choice == 0) playback.move(at, at - 1);
+                    else if (choice == 1) playback.move(at, at + 1);
+                    else if (at == playback.index) toast("正在播放的歌曲不能移除");
+                    else playback.remove(at);
+                    render();
+                }).show();
+    }
+
+    private void tidalSettings() {
+        section("账号状态");
+        empty(playback != null && playback.client != null ? "已登录" : "尚未登录",
+                playback != null && !playback.error.isEmpty() ? playback.error : "用设备链接在 TIDAL 网页完成授权，无需 PC");
+        content.addView(toolbar(withIcon(primary(playback != null && playback.client != null ? "重新登录" : "设备链接登录",
+                this::login), "user", BG)));
+        section("其他方式");
+        content.addView(menuRow("浏览器登录", "浏览器登录", this::startBrowserLogin));
+        content.addView(menuRow("设备授权配置", "设备授权配置", this::configureTidalDevice));
+        content.addView(menuRow("导入已有会话", "导入已有会话", this::pickSession));
+        if (playback != null && playback.client == null && playback.relay != null) {
+            content.addView(menuRow("同步 PC 登录", "同步 PC 登录", () -> {
+                playback.enableDesktopSessionSync();
+                toast("等待 PC 同步 TIDAL 登录");
+            }));
+        }
+        if (playback != null && playback.client != null) {
+            content.addView(menuRow("退出账号", "退出账号", () -> new AlertDialog.Builder(this)
+                    .setTitle("退出 TIDAL 账号？").setNegativeButton("取消", null)
+                    .setPositiveButton("退出", (dialog, which) -> {
+                        cancelLogin();
+                        playback.signOutFromUi();
+                        clearFavorites();
+                        render();
+                    }).show()));
+        }
+    }
+
+    private void settings() {
+        String version = "";
+        try {
+            version = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (android.content.pm.PackageManager.NameNotFoundException ignored) {}
+        LinearLayout updates = panel("应用更新", "当前版本 " + version);
+        checkUpdateButton = primary("检查更新", this::checkUpdate);
+        updates.addView(checkUpdateButton, new LinearLayout.LayoutParams(-2, dp(44)));
+        updateStatus = text("", 13, MUTED, false);
+        updateStatus.setPadding(0, dp(8), 0, 0);
+        updateStatus.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        updates.addView(updateStatus);
+        syncUpdateControls();
+        Uri directory = MusicDownload.directory(this);
+        LinearLayout download = panel("下载目录", directory == null ? "系统默认下载目录"
+                : android.provider.DocumentsContract.getTreeDocumentId(directory));
+        download.addView(menuRow("下载管理", "下载管理", () -> open(Page.DOWNLOADS)));
+        download.addView(menuRow("选择下载目录", "选择下载目录", () ->
+                startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).addFlags(
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+                                | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION), DOWNLOAD_DIRECTORY)));
+        if (directory != null) {
+            download.addView(menuRow("恢复默认目录", "恢复默认下载目录", () -> {
+                getSharedPreferences("tidal", MODE_PRIVATE).edit().remove(MusicDownload.DIRECTORY).apply();
+                render();
+            }));
+        }
+        LinearLayout storage = panel("音乐目录", "添加或重新扫描文件夹。");
+        storage.addView(menuRow("管理扫描目录", "管理扫描目录", this::chooseFolders));
+        LinearLayout connection = panel("设备与连接", "局域网遥控、文件管理和多端后台。");
+        connection.addView(menuRow("设备与连接", "设备与连接", () -> open(Page.CONNECTIONS)));
+        LinearLayout sound = panel("播放设置", "TIDAL 默认流媒体音质。");
+        sound.addView(menuRow("默认音质 · " + qualityLabel(), "选择默认音质", this::chooseQuality));
+    }
+
+    private void connections() {
+        section("播放器账号");
+        android.content.SharedPreferences saved = getSharedPreferences("tidal", MODE_PRIVATE);
+        String username = saved.getString("player_account", "");
+        if (username.isEmpty()) {
+            content.addView(menuRow("登录播放器账号", "登录播放器账号", this::playerAccountLogin));
+        } else {
+            content.addView(text(username, 17, INK, true));
+            relayStatus = text(playback != null && playback.relay != null ? playback.relay.status : "正在连接…",
+                    14, MUTED, false);
+            content.addView(relayStatus);
+            if (!PlayerAccount.ORIGIN.isEmpty()) {
+                content.addView(menuRow("我的设备", "我的设备",
+                        () -> openTidalBrowser(Uri.parse(PlayerAccount.ORIGIN))));
+            }
+            content.addView(menuRow("退出播放器账号", "退出播放器账号", this::playerAccountLogout));
+        }
+        section("局域网遥控");
+        boolean remoteEnabled = playback != null && !playback.remoteLink().isEmpty();
+        if (remoteEnabled) {
+            TextView address = text(playback.remoteAddress(), 13, MUTED, false);
+            address.setTextIsSelectable(true);
+            content.addView(address);
+            TextView code = text(playback.remoteCode(), 25, INK, true);
+            code.setTextIsSelectable(true);
+            content.addView(code);
+            content.addView(text("认证码会保留。刷新认证码后，已配对的浏览器需要重新配对。", 13, MUTED, false));
+            content.addView(menuRow("复制配对码", "复制配对码", () -> copyAuthorization(playback.remoteCode())));
+            content.addView(menuRow("复制遥控链接", "复制遥控链接", () -> copyAuthorization(playback.remoteLink())));
+            content.addView(menuRow("刷新认证码", "刷新认证码", () ->
+                    new AlertDialog.Builder(this).setTitle("刷新认证码？")
+                            .setMessage("已配对的浏览器需要用新码重新配对。")
+                            .setNegativeButton("取消", null).setPositiveButton("刷新", (dialog, button) -> {
+                                try {
+                                    playback.refreshRemoteCode();
+                                } catch (IOException problem) {
+                                    toast(readable(problem));
+                                }
+                                render();
+                            }).show()));
+            android.widget.Switch routed = new android.widget.Switch(this);
+            routed.setText("允许其他私有网段");
+            routed.setTextColor(INK);
+            routed.setChecked(playback.remoteRoutedLan);
+            routed.setOnCheckedChangeListener((view, allowed) -> {
+                if (playback != null) playback.setRemoteRoutedLan(allowed);
+            });
+            content.addView(routed);
+            content.addView(text("电脑与手机在不同私有网段时，且网络允许互访，可打开此项。", 13, MUTED, false));
+            content.addView(menuRow("关闭遥控", "关闭遥控", () -> {
+                playback.disableRemote();
+                render();
+            }));
+        } else if (playback != null && playback.remoteRequested()) {
+            content.addView(text(playback.remoteIssue(), 14, MUTED, false));
+            content.addView(menuRow("关闭遥控", "关闭遥控", () -> {
+                playback.disableRemote();
+                render();
+            }));
+        } else {
+            content.addView(text("让同一 Wi-Fi 下的电脑通过浏览器登录、播放和编辑队列。", 14, MUTED, false));
+            content.addView(menuRow("启用局域网遥控", "启用局域网遥控", () -> {
+                if (playback == null) return;
+                try {
+                    playback.enableRemote();
+                } catch (Exception problem) {
+                    toast(readable(problem));
+                }
+                render();
+            }));
+        }
+        section("远程文件管理");
+        android.widget.Switch files = new android.widget.Switch(this);
+        files.setText("允许已配对浏览器管理音乐文件");
+        files.setTextColor(INK);
+        files.setEnabled(remoteEnabled && playback.localLibrary.hasFolders());
+        files.setChecked(playback != null && playback.remoteFiles);
+        files.setOnCheckedChangeListener((view, enabled) -> {
+            if (playback != null) playback.setRemoteFiles(enabled);
+        });
+        content.addView(files);
+        content.addView(text("管理范围仅限已授权的音乐目录。重新启用遥控时会恢复此前的权限。", 13, MUTED, false));
+        content.addView(menuRow("管理扫描目录", "管理扫描目录", this::chooseFolders));
+    }
+
+    private void playerAccountLogin() {
+        if (playback == null) return;
+        LinearLayout fields = column();
+        fields.setPadding(dp(24), 0, dp(24), 0);
+        EditText username = new EditText(this);
+        username.setHint("用户名");
+        username.setSingleLine(true);
+        EditText password = new EditText(this);
+        password.setHint("密码");
+        password.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+                | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        password.setSingleLine(true);
+        fields.addView(username);
+        fields.addView(password);
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("登录播放器账号")
+                .setView(fields).setNegativeButton("取消", null).setPositiveButton("登录", null).show();
+        Button submit = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
+        submit.setOnClickListener(view -> {
+            String name = username.getText().toString().trim();
+            String pass = password.getText().toString();
+            submit.setEnabled(false);
+            worker.submit(() -> {
+                try {
+                    JSONObject account = PlayerAccount.login(name, pass);
+                    runOnUiThread(() -> {
+                        if (isDestroyed() || playback == null || !dialog.isShowing()) return;
+                        try {
+                            playback.connectPlayerAccount(account);
+                            password.setText("");
+                            dialog.dismiss();
+                            render();
+                        } catch (Exception problem) {
+                            submit.setEnabled(true);
+                            password.setError(CentralRelay.readable(problem));
+                        }
+                    });
+                } catch (Exception problem) {
+                    runOnUiThread(() -> {
+                        if (!dialog.isShowing()) return;
+                        submit.setEnabled(true);
+                        password.setError(CentralRelay.readable(problem));
+                    });
+                }
+            });
+        });
+    }
+
+    private void playerAccountLogout() {
+        String key = getSharedPreferences("tidal", MODE_PRIVATE).getString("relay_key", "");
+        new AlertDialog.Builder(this).setTitle("退出播放器账号？")
+                .setNegativeButton("取消", null).setPositiveButton("退出", (dialog, button) ->
+                    worker.submit(() -> {
+                        try {
+                            PlayerAccount.logout(key);
+                            runOnUiThread(() -> {
+                                if (playback == null || isDestroyed()) return;
+                                playback.disconnectPlayerAccount();
+                                render();
+                            });
+                        } catch (Exception problem) {
+                            runOnUiThread(() -> toast(CentralRelay.readable(problem)));
+                        }
+                    })).show();
+    }
+
+    private void syncUpdateControls() {
+        if (checkUpdateButton != null) {
+            checkUpdateButton.setEnabled(!updateBusy);
+            checkUpdateButton.setText(updateBusy ? "请稍候…" : "检查更新");
+        }
+        if (updateStatus != null) {
+            updateStatus.setText(updateMessage);
+            updateStatus.setVisibility(updateMessage.isEmpty() ? View.GONE : View.VISIBLE);
+        }
+    }
+
+    private void updateState(boolean busy, String message) {
+        updateBusy = busy;
+        updateMessage = message;
+        syncUpdateControls();
+    }
+
+    private void checkUpdate() {
+        if (updateBusy) return;
+        updateState(true, "正在检查更新…");
+        worker.submit(() -> {
+            try {
+                org.json.JSONObject update = AppUpdate.latest();
+                long current = AppUpdate.version(getPackageManager().getPackageInfo(getPackageName(), 0));
+                long latest = update.optLong("versionCode");
+                runOnUiThread(() -> {
+                    if (isDestroyed()) return;
+                    if (latest <= current) {
+                        updateState(false, "当前已是最新版本。");
+                        return;
+                    }
+                    showUpgradePrompt(update);
+                });
+            } catch (Exception problem) {
+                reportUpdateFailure(problem);
+            }
+        });
+    }
+
+    private void showUpgradePrompt(org.json.JSONObject update) {
+        String version = update.optString("versionName", Long.toString(update.optLong("versionCode")));
+        String notes = update.optString("notes").trim();
+        updateState(false, "可升级至 " + version);
+        if (!getLifecycle().getCurrentState().isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)) return;
+        new AlertDialog.Builder(this).setTitle("升级到 " + version + "？")
+                .setMessage(notes.isEmpty() ? "下载后由 Android 系统确认安装。" : notes)
+                .setNegativeButton("稍后", null)
+                .setPositiveButton("立即升级", (dialog, which) -> downloadUpdate(update)).show();
+    }
+
+    private void downloadUpdate(org.json.JSONObject update) {
+        if (updateBusy) return;
+        if (android.os.Build.VERSION.SDK_INT >= 26 && !getPackageManager().canRequestPackageInstalls()) {
+            try {
+                installManifest = update;
+                startActivityForResult(new Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                        Uri.parse("package:" + getPackageName())), INSTALL_PERMISSION);
+            } catch (android.content.ActivityNotFoundException unavailable) {
+                installManifest = null;
+                updateState(false, "当前设备无法从应用内安装更新。");
+            }
+            return;
+        }
+        updateState(true, "正在下载和验证更新…");
+        worker.submit(() -> {
+            try {
+                java.io.File apk = AppUpdate.download(this, update);
+                runOnUiThread(() -> {
+                    if (isDestroyed()) return;
+                    updateState(false, "APK 已验证，请在系统界面确认安装。");
+                    Uri contentUri = androidx.core.content.FileProvider.getUriForFile(
+                            this, getPackageName() + ".updates", apk);
+                    try {
+                        startActivity(new Intent(Intent.ACTION_VIEW).setDataAndType(
+                                contentUri, "application/vnd.android.package-archive")
+                                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION));
+                    } catch (android.content.ActivityNotFoundException unavailable) {
+                        toast("此设备没有可用的 APK 安装程序");
+                    }
+                });
+            } catch (Exception problem) {
+                reportUpdateFailure(problem);
+            }
+        });
+    }
+
+    private void reportUpdateFailure(Exception problem) {
+        runOnUiThread(() -> {
+            if (isDestroyed()) return;
+            String message = "更新失败 · " + CentralRelay.readable(problem);
+            updateState(false, message);
+            if (page != Page.SETTINGS) toast(message);
+        });
+    }
+
+    private void startBrowserLogin() {
+        cancelLogin();
+        if (playback == null) {
+            toast("播放服务正在启动，请重试");
+            return;
+        }
+        int version = ++importGeneration;
+        loginDialog = new AlertDialog.Builder(this).setTitle("浏览器登录 TIDAL")
+                .setMessage("正在准备 TIDAL 登录网页…")
+                .setNegativeButton("取消", (dialog, which) -> cancelLogin())
+                .setOnCancelListener(dialog -> cancelLogin()).show();
+        loginTask = worker.submit(() -> {
+            try {
+                DeviceLogin.BrowserGrant grant = DeviceLogin.startBrowser();
+                runOnUiThread(() -> {
+                    if (isDestroyed() || version != importGeneration) return;
+                    loginDialog.dismiss();
+                    loginDialog = new AlertDialog.Builder(this).setTitle("等待浏览器授权")
+                            .setMessage("在 TIDAL 网页完成登录后，返回听音室。")
+                            .setNegativeButton("取消", (dialog, which) -> cancelLogin())
+                            .setPositiveButton("打开 TIDAL 网页", null)
+                            .setOnCancelListener(dialog -> cancelLogin()).show();
+                    Button browser = loginDialog.getButton(AlertDialog.BUTTON_POSITIVE);
+                    browser.setOnClickListener(view -> openTidalBrowser(grant.url));
+                    if (getLifecycle().getCurrentState().isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)) {
+                        browser.performClick();
+                    }
+                });
+                TidalClient.Session account = DeviceLogin.awaitBrowser(grant);
+                String saved = account.toJson();
+                runOnUiThread(() -> {
+                    if (isDestroyed() || version != importGeneration || playback == null) return;
+                    cancelLogin();
+                    finishSignIn(account, saved, "已登录 TIDAL");
+                });
+            } catch (Exception problem) {
+                runOnUiThread(() -> {
+                    if (isDestroyed() || version != importGeneration) return;
+                    cancelLogin();
+                    new AlertDialog.Builder(this).setTitle("浏览器登录暂不可用")
+                            .setMessage(readable(problem))
+                            .setNegativeButton("关闭", null)
+                            .setNeutralButton("账号设置", (dialog, which) -> open(Page.ACCOUNT)).show();
+                });
+            }
+        });
+    }
+
+    private void openTidalBrowser(Uri address) {
+        try {
+            Intent browser = new Intent(Intent.ACTION_VIEW, address);
+            browser.setSelector(new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_APP_BROWSER));
+            startActivity(browser);
+        } catch (android.content.ActivityNotFoundException missing) {
+            toast("当前设备没有可打开 TIDAL 的浏览器");
+        }
+    }
+
+    private void login() {
+        cancelLogin();
+        if (playback == null) {
+            toast("播放服务正在启动，请重试");
+            return;
+        }
+        DeviceLogin device = playback.tidalDevice();
+        startLogin(device == null ? DeviceLogin.brokered() : device);
+    }
+
+    private void configureTidalDevice() {
+        cancelLogin();
+        LinearLayout fields = column();
+        fields.setPadding(dp(24), 0, dp(24), 0);
+        EditText id = new EditText(this);
+        id.setHint("Client ID");
+        id.setSingleLine();
+        if (playback != null && playback.tidalDevice() != null) id.setText(playback.tidalDevice().clientId);
+        EditText secret = new EditText(this);
+        secret.setHint("Client Secret");
+        secret.setSingleLine();
+        secret.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+                | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        fields.addView(id);
+        fields.addView(secret);
+        AlertDialog configuration = new AlertDialog.Builder(this).setTitle("设备授权配置")
+                .setMessage("首次使用需要获准的 TIDAL 设备客户端。授权成功后，以后登录会直接显示设备码。账号密码在 TIDAL 网页输入。")
+                .setView(fields).setNegativeButton("取消", null)
+                .setPositiveButton("获取设备码", null).show();
+        configuration.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
+            try {
+                DeviceLogin device = new DeviceLogin(id.getText().toString(), secret.getText().toString());
+                configuration.dismiss();
+                startLogin(device);
+            } catch (IOException error) {
+                id.setError(error.getMessage());
+            }
+        });
+    }
+
+    private void startLogin(DeviceLogin device) {
+        if (playback == null) {
+            toast("播放服务正在启动，请重试");
+            return;
+        }
+        playback.configureRemoteLogin(device);
+        int version = ++importGeneration;
+        loginDialog = new AlertDialog.Builder(this).setTitle("连接 TIDAL")
+                .setMessage("正在申请设备授权码…").setNegativeButton("取消", (dialog, which) -> cancelLogin())
+                .setOnCancelListener(dialog -> cancelLogin()).show();
+        loginTask = worker.submit(() -> {
+            try {
+                DeviceLogin.Challenge challenge = device.start();
+                runOnUiThread(() -> {
+                    if (isDestroyed() || version != importGeneration || playback == null) return;
+                    playback.showRemoteAuthorization(challenge);
+                    showDeviceChallenge(challenge);
+                });
+                TidalClient.Session session = device.await(challenge);
+                String saved = session.toJson();
+                runOnUiThread(() -> {
+                    if (isDestroyed() || version != importGeneration || playback == null) return;
+                    cancelLogin();
+                    finishSignIn(session, saved, "已登录 TIDAL");
+                });
+            } catch (Exception error) {
+                runOnUiThread(() -> {
+                    if (isDestroyed() || version != importGeneration) return;
+                    cancelLogin();
+                    AlertDialog.Builder failure = new AlertDialog.Builder(this).setTitle("登录失败")
+                            .setMessage(readable(error)).setPositiveButton("确定", null);
+                    if (device.clientId.isEmpty() && readable(error).contains("客户端")) {
+                        failure.setNeutralButton("手动配置客户端", (dialog, which) -> configureTidalDevice());
+                    }
+                    failure.show();
+                });
+            }
+        });
+    }
+
+    private void showDeviceChallenge(DeviceLogin.Challenge challenge) {
+        loginDialog.dismiss();
+        LinearLayout details = column();
+        details.setPadding(dp(24), dp(8), dp(24), 0);
+        details.addView(text("在 TIDAL 网页完成授权", 16, INK, true));
+        details.addView(text("授权完成后返回听音室。也可以在另一台设备打开下方网址并输入设备码。", 14, MUTED, false));
+        TextView address = text(challenge.verificationPage.toString(), 14, ACCENT, false);
+        address.setTextIsSelectable(true);
+        details.addView(address);
+        TextView code = text(challenge.userCode, 25, INK, true);
+        code.setTextIsSelectable(true);
+        details.addView(code);
+        LinearLayout copy = row();
+        copy.addView(action("复制授权码", "复制授权码", () -> copyAuthorization(challenge.userCode)));
+        copy.addView(action("复制直达链接", "复制直达链接", () -> copyAuthorization(challenge.verification.toString())));
+        details.addView(copy);
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(details);
+        loginDialog = new AlertDialog.Builder(this).setTitle("TIDAL 设备链接")
+                .setView(scroll).setNegativeButton("取消", (dialog, which) -> cancelLogin())
+                .setPositiveButton("本机浏览器登录", null)
+                .setOnCancelListener(dialog -> cancelLogin()).show();
+        Button browser = loginDialog.getButton(AlertDialog.BUTTON_POSITIVE);
+        browser.setOnClickListener(view -> openTidalBrowser(challenge.verification));
+        if (getLifecycle().getCurrentState().isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)) {
+            browser.performClick();
+        }
+    }
+
+    private void copyAuthorization(String value) {
+        android.content.ClipData clip = android.content.ClipData.newPlainText("TIDAL 设备授权", value);
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            android.os.PersistableBundle extras = new android.os.PersistableBundle();
+            extras.putBoolean(android.content.ClipDescription.EXTRA_IS_SENSITIVE, true);
+            clip.getDescription().setExtras(extras);
+        }
+        getSystemService(android.content.ClipboardManager.class).setPrimaryClip(clip);
+        if (android.os.Build.VERSION.SDK_INT < 33) toast("已复制");
+    }
+
+    private void cancelLogin() {
+        importGeneration++;
+        if (loginTask != null) {
+            loginTask.cancel(true);
+            if (playback != null) playback.clearRemoteAuthorization();
+        }
+        if (loginDialog != null) loginDialog.dismiss();
+        loginTask = null;
+        loginDialog = null;
+    }
+
+    private void finishSignIn(TidalClient.Session session, String saved, String message) {
+        playback.changeAccount(session, saved);
+        clearFavorites();
+        toast(message);
+        libraryFilter = 0;
+        navigate(Page.LIBRARY);
+    }
+
+    private void pickAudio() {
+        Intent picker = new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
+                .setType("audio/*").putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        startActivityForResult(picker, IMPORT_AUDIO);
+    }
+
+    private void pickFolder() {
+        startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                        | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION),
+                IMPORT_FOLDER);
+    }
+
+    private void chooseFolders() {
+        if (playback == null) return;
+        List<Uri> folders = playback.localLibrary.folders();
+        if (folders.isEmpty()) {
+            pickFolder();
+            return;
+        }
+        String[] display = new String[folders.size()];
+        for (int i = 0; i < folders.size(); i++) {
+            display[i] = android.provider.DocumentsContract.getTreeDocumentId(folders.get(i));
+        }
+        new AlertDialog.Builder(this).setTitle("音乐文件夹").setItems(display, (dialog, selected) -> {
+            Uri tree = folders.get(selected);
+            new AlertDialog.Builder(this).setTitle(display[selected])
+                    .setItems(new String[]{"重新扫描", "取消目录授权"}, (action, which) -> {
+                        if (which == 0) scanDirectory(tree, false);
+                        else new AlertDialog.Builder(this).setTitle("从音乐库移除此目录？")
+                                .setMessage("文件会保留在原目录。").setNegativeButton("取消", null)
+                                .setPositiveButton("移除目录", (confirm, choice) -> {
+                                    if (playback == null) return;
+                                    for (TidalClient.Track track : playback.localLibrary.managedTracks()) {
+                                        if (tree.toString().equals(track.localRoot)) playback.fileDeleted(track.id);
+                                    }
+                                    playback.localLibrary.forgetFolder(tree);
+                                    if (!playback.localLibrary.hasFolders()) playback.setRemoteFiles(false);
+                                    for (android.content.UriPermission permission : getContentResolver().getPersistedUriPermissions()) {
+                                        if (!permission.getUri().equals(tree)) continue;
+                                        int modes = (permission.isReadPermission() ? Intent.FLAG_GRANT_READ_URI_PERMISSION : 0)
+                                                | (permission.isWritePermission() ? Intent.FLAG_GRANT_WRITE_URI_PERMISSION : 0);
+                                        try { getContentResolver().releasePersistableUriPermission(tree, modes); }
+                                        catch (SecurityException ignored) {}
+                                    }
+                                    playback.libraryChanged();
+                                    if (page == Page.CONNECTIONS) render();
+                                }).show();
+                    }).show();
+        }).setPositiveButton("添加目录", (dialog, which) -> pickFolder()).setNegativeButton("关闭", null).show();
+    }
+
+    private void scanDirectory(Uri tree, boolean added) {
+        if (playback == null || localBusy) {
+            toast("音乐库正在处理文件");
+            return;
+        }
+        if (added) playback.localLibrary.addFolder(tree);
+        scanDirectories(java.util.Collections.singletonList(tree));
+    }
+
+    private void scanDirectories(List<Uri> trees) {
+        if (playback == null || localBusy || trees.isEmpty()) return;
+        PlaybackService service = playback;
+        localBusy = true;
+        localScanSummary = "";
+        if (page != Page.LOCAL) open(Page.LOCAL);
+        else render();
+        worker.submit(() -> {
+            LocalLibrary.ScanResult total = new LocalLibrary.ScanResult();
+            int failures = 0;
+            String lastError = "";
+            for (Uri tree : trees) {
+                try {
+                    LocalLibrary.ScanResult scan = service.localLibrary.scan(tree);
+                    total.total += scan.total;
+                    total.changed += scan.changed;
+                    total.reused += scan.reused;
+                    total.removed += scan.removed;
+                } catch (InterruptedException stopped) {
+                    Thread.currentThread().interrupt();
+                    return;
+                } catch (Exception problem) {
+                    failures++;
+                    lastError = readable(problem);
+                }
+            }
+            String summary = failures == trees.size() ? "扫描失败 · " + lastError
+                    : "本次扫描 " + total.total + " 首 · 更新 " + total.changed
+                    + " · 复用 " + total.reused + " · 移除 " + total.removed
+                    + (failures == 0 ? "" : " · " + failures + " 个目录读取失败");
+            runOnUiThread(() -> {
+                if (isDestroyed() || playback != service) return;
+                localBusy = false;
+                localScanSummary = summary;
+                service.libraryChanged();
+                if (page != Page.LOCAL) toast(summary);
+            });
+        });
+    }
+
+    private void importAudio(Intent data) {
+        if (playback == null || localBusy) return;
+        List<Uri> sources = new ArrayList<>();
+        android.content.ClipData selection = data.getClipData();
+        if (selection != null) {
+            for (int i = 0; i < selection.getItemCount(); i++) {
+                Uri uri = selection.getItemAt(i).getUri();
+                if (uri != null) sources.add(uri);
+            }
+        } else if (data.getData() != null) sources.add(data.getData());
+        if (sources.isEmpty()) return;
+        PlaybackService service = playback;
+        localBusy = true;
+        if (page != Page.LOCAL) open(Page.LOCAL);
+        else render();
+        worker.submit(() -> {
+            List<TidalClient.Track> loaded = new ArrayList<>();
+            for (Uri uri : sources) {
+                try {
+                    TidalClient.Track track = LocalLibrary.inspect(this, uri, null);
+                    getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    loaded.add(track);
+                } catch (Exception ignored) {
+                    // Partial import still keeps valid tracks.
+                }
+            }
+            runOnUiThread(() -> {
+                if (isDestroyed() || playback != service) return;
+                localBusy = false;
+                int count = service.localLibrary.importTracks(loaded);
+                service.libraryChanged();
+                int failed = sources.size() - loaded.size();
+                toast("已导入 " + count + " 首" + (failed > 0 ? "，" + failed + " 首未能读取" : ""));
+            });
+        });
+    }
+
+    private void pickSession() {
+        cancelLogin();
+        startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT)
+                .addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"), IMPORT_SESSION);
+    }
+
+    @Override protected void onSaveInstanceState(Bundle state) {
+        super.onSaveInstanceState(state);
+        if (exportPlaylist != null) state.putString("export_playlist", exportPlaylist);
+    }
+
+    private void pickPlaylistSource() {
+        startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT)
+                .addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"), IMPORT_M3U);
+    }
+
+    private void pickPlaylistDestination() {
+        if (localPlaylist == null) return;
+        exportPlaylist = localPlaylist;
+        String filename = localPlaylist.replaceAll("[/\\\\:*?\"<>|]", "_") + ".m3u8";
+        startActivityForResult(new Intent(Intent.ACTION_CREATE_DOCUMENT)
+                .addCategory(Intent.CATEGORY_OPENABLE).setType("audio/x-mpegurl")
+                .putExtra(Intent.EXTRA_TITLE, filename), EXPORT_M3U);
+    }
+
+    private void importM3u(Uri source) {
+        if (playback == null) return;
+        PlaybackService service = playback;
+        worker.submit(() -> {
+            try {
+                LocalMusicFiles.Playlist parsed = LocalMusicFiles.importM3u(
+                        getContentResolver(), source, service.localLibrary.search("", null));
+                if (parsed.ids.isEmpty()) throw new IOException("歌单没有匹配的音频，请先扫描音乐目录");
+                String name = "导入歌单";
+                try (android.database.Cursor cursor = getContentResolver().query(source,
+                        new String[]{android.provider.OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+                    if (cursor != null && cursor.moveToFirst() && cursor.getString(0) != null) {
+                        name = cursor.getString(0).replaceFirst("(?i)\\.m3u8?$", "");
+                    }
+                }
+                String saved = service.localLibrary.importPlaylist(name, parsed.ids);
+                runOnUiThread(() -> {
+                    if (isDestroyed() || playback != service) return;
+                    localTab = 2;
+                    localPlaylist = saved;
+                    localGroup = null;
+                    localPage = 0;
+                    service.libraryChanged();
+                    toast("已导入 " + parsed.ids.size() + " 首"
+                            + (parsed.missing == 0 ? "" : "，跳过 " + parsed.missing + " 首未匹配"));
+                });
+            } catch (Exception error) {
+                runOnUiThread(() -> { if (!isDestroyed()) toast("歌单导入失败 · " + readable(error)); });
+            }
+        });
+    }
+
+    private void exportM3u(Uri destination, String playlist) {
+        if (playback == null || playlist == null) return;
+        List<TidalClient.Track> tracks = playback.localLibrary.search("", playlist);
+        worker.submit(() -> {
+            try {
+                LocalMusicFiles.exportM3u(getContentResolver(), destination, tracks);
+                runOnUiThread(() -> { if (!isDestroyed()) toast("已导出 " + tracks.size() + " 首歌曲"); });
+            } catch (Exception error) {
+                runOnUiThread(() -> { if (!isDestroyed()) toast("歌单导出失败 · " + readable(error)); });
+            }
+        });
+    }
+
+    @Override protected void onActivityResult(int request, int result, Intent data) {
+        super.onActivityResult(request, result, data);
+        if (request == INSTALL_PERMISSION) {
+            org.json.JSONObject offer = installManifest;
+            installManifest = null;
+            if (offer == null) return;
+            if (android.os.Build.VERSION.SDK_INT >= 26 && getPackageManager().canRequestPackageInstalls()) {
+                downloadUpdate(offer);
+            } else {
+                updateState(false, "安装权限尚未开启，可以稍后再更新。");
+            }
+            return;
+        }
+        if (request == EXPORT_M3U) {
+            String playlist = exportPlaylist;
+            exportPlaylist = null;
+            if (result == RESULT_OK && data != null && data.getData() != null) exportM3u(data.getData(), playlist);
+            return;
+        }
+        if (request == JOB_DOWNLOAD_DIRECTORY) {
+            DownloadChoice callback = pendingDownloadChoice;
+            pendingDownloadChoice = null;
+            if (callback == null) return;
+            Uri directory = pendingDownloadDirectory;
+            if (result == RESULT_OK && data != null && data.getData() != null) {
+                try {
+                    int mask = Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION;
+                    int flags = data.getFlags() & mask;
+                    if (flags != mask) throw new SecurityException();
+                    getContentResolver().takePersistableUriPermission(data.getData(), flags);
+                    directory = data.getData();
+                } catch (SecurityException | IllegalArgumentException error) {
+                    toast("无法保存此目录的读写权限");
+                }
+            }
+            downloadChoices(pendingDownloadTitle, pendingDownloadQuality, directory, callback);
+            return;
+        }
+        if (result != RESULT_OK || data == null) return;
+        if (request == DOWNLOAD_DIRECTORY && data.getData() != null) {
+            Uri directory = data.getData();
+            try {
+                android.provider.DocumentsContract.getTreeDocumentId(directory);
+                int permission = Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION;
+                if ((data.getFlags() & permission) != permission) throw new SecurityException();
+                getContentResolver().takePersistableUriPermission(directory, permission);
+                getSharedPreferences("tidal", MODE_PRIVATE).edit()
+                        .putString(MusicDownload.DIRECTORY, directory.toString()).apply();
+                render();
+            } catch (SecurityException | IllegalArgumentException error) {
+                toast("无法保存此目录的写入权限，请重新选择");
+            }
+            return;
+        }
+        if (request == IMPORT_M3U && data.getData() != null) {
+            importM3u(data.getData());
+            return;
+        }
+        if (request == IMPORT_AUDIO) {
+            importAudio(data);
+            return;
+        }
+        if (request == IMPORT_FOLDER && data.getData() != null) {
+            Uri tree = data.getData();
+            int granted = Intent.FLAG_GRANT_READ_URI_PERMISSION;
+            if ((data.getFlags() & Intent.FLAG_GRANT_WRITE_URI_PERMISSION) != 0) {
+                granted |= Intent.FLAG_GRANT_WRITE_URI_PERMISSION;
+            }
+            try {
+                getContentResolver().takePersistableUriPermission(tree, granted);
+                scanDirectory(tree, true);
+            } catch (SecurityException problem) {
+                toast("无法保存此目录的读取权限");
+            }
+            return;
+        }
+        if (request != IMPORT_SESSION || data.getData() == null) return;
+        Uri uri = data.getData();
+        int version = ++importGeneration;
+        worker.submit(() -> {
+            try (InputStream input = getContentResolver().openInputStream(uri)) {
+                if (input == null) throw new IOException("无法打开会话文件");
+                TidalClient.Session session = new TidalClient.Session(TidalClient.readText(input, 65536));
+                String saved = session.toJson();
+                runOnUiThread(() -> {
+                    if (isDestroyed() || version != importGeneration || playback == null) return;
+                    finishSignIn(session, saved, "已导入 TIDAL 会话");
+                });
+            } catch (Exception error) {
+                runOnUiThread(() -> {
+                    if (!isDestroyed() && version == importGeneration) {
+                        new AlertDialog.Builder(this).setTitle("导入失败").setMessage(readable(error))
+                                .setPositiveButton("确定", null).show();
+                    }
+                });
+            }
+        });
+    }
+
+    private void clearFavorites() {
+        favoriteBusy = false;
+        favoriteIds.clear();
+    }
+
+    private void buildMini() {
+        mini = row();
+        mini.setPadding(dp(8), dp(5), dp(4), dp(5));
+        mini.setBackground(shape(RAISED, 15));
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, dp(65));
+        params.setMargins(dp(10), dp(2), dp(10), dp(3));
+        root.addView(mini, params);
+        miniArt = art(46);
+        mini.addView(miniArt);
+        LinearLayout info = column();
+        info.setGravity(Gravity.CENTER_VERTICAL);
+        info.setPadding(dp(10), 0, 0, 0);
+        miniTitle = single("", 15, INK, true);
+        miniArtist = single("", 12, MUTED, false);
+        info.addView(miniTitle);
+        info.addView(miniArtist);
+        info.setOnClickListener(v -> open(Page.PLAYER));
+        mini.addView(info, new LinearLayout.LayoutParams(0, -1, 1));
+        miniArt.setOnClickListener(v -> open(Page.PLAYER));
+        mini.addView(glyph("queue", ACCENT, 22, "查看播放队列", () -> open(Page.QUEUE)),
+                new LinearLayout.LayoutParams(dp(48), dp(48)));
+        miniPlay = glyph("play", INK, 24, "播放", this::toggle);
+        mini.addView(miniPlay, new LinearLayout.LayoutParams(dp(48), dp(48)));
+    }
+
+    private void buildNowPlaying() {
+        LinearLayout top = row();
+        top.setPadding(dp(12), dp(4), dp(12), 0);
+        top.addView(iconButton("down", "收起正在播放", this::goBack));
+        TextView heading = text("正在播放", 18, INK, true);
+        heading.setGravity(Gravity.CENTER);
+        top.addView(heading, new LinearLayout.LayoutParams(0, -2, 1));
+        top.addView(iconButton("more", "歌曲选项", () -> {
+            if (playback != null && playback.current() != null) trackMenu(playback.current(), false);
+        }));
+        root.addView(top);
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
+        LinearLayout body = column();
+        body.setGravity(Gravity.CENTER_HORIZONTAL);
+        body.setPadding(dp(20), dp(8), dp(20), dp(14));
+        scroll.addView(body);
+        GradientDrawable backdrop = new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
+                new int[]{0xff182b30, BG});
+        body.setBackground(backdrop);
+        cover = art(0);
+        cover.setImageResource(R.drawable.listening_room);
+        int width = getResources().getDisplayMetrics().widthPixels - dp(48);
+        int height = (int) (getResources().getDisplayMetrics().heightPixels * 0.43f);
+        int size = Math.min(Math.min(width, height), dp(450));
+        body.addView(cover, new LinearLayout.LayoutParams(size, size));
+
+        LinearLayout titleRow = row();
+        titleRow.setPadding(0, dp(22), 0, 0);
+        body.addView(titleRow, new LinearLayout.LayoutParams(-1, -2));
+        LinearLayout song = column();
+        title = text("", 26, INK, true);
+        title.setMaxLines(2);
+        title.setEllipsize(TextUtils.TruncateAt.END);
+        subtitle = single("", 15, MUTED, false);
+        song.addView(title);
+        song.addView(subtitle);
+        titleRow.addView(song, new LinearLayout.LayoutParams(0, -2, 1));
+        favorite = glyph("heart", MUTED, 24, "收藏歌曲", () -> {
+            if (playback != null && playback.current() != null) {
+                TidalClient.Track current = playback.current();
+                if (current.isLocal()) {
+                    playback.localLibrary.toggleLike(current);
+                    playback.libraryChanged();
+                    updatePlayer();
+                } else changeFavorite(current, !favoriteIds.contains(current.id));
+            }
+        });
+        titleRow.addView(favorite, new LinearLayout.LayoutParams(dp(48), dp(48)));
+
+        playerQuality = action("", "切换播放音质", this::chooseQuality);
+        playerQuality.setTextSize(12);
+        playerQuality.setBackground(shape(RAISED, 10));
+        playerQuality.setPadding(dp(10), 0, dp(10), 0);
+        playerQuality.setMinHeight(0);
+        playerQuality.setMinimumHeight(0);
+        LinearLayout.LayoutParams chip = new LinearLayout.LayoutParams(-2, dp(28));
+        chip.gravity = Gravity.START;
+        chip.topMargin = dp(8);
+        body.addView(playerQuality, chip);
+
+        seek = new SeekBar(this);
+        seek.setMax(1000);
+        seek.setProgressTintList(ColorStateList.valueOf(ACCENT));
+        seek.setProgressBackgroundTintList(ColorStateList.valueOf(0xff5c7a80));
+        seek.setThumbTintList(ColorStateList.valueOf(INK));
+        seek.setContentDescription("播放进度");
+        seek.setPadding(dp(4), 0, dp(4), 0);
+        LinearLayout.LayoutParams seekLayout = new LinearLayout.LayoutParams(-1, dp(36));
+        seekLayout.topMargin = dp(10);
+        body.addView(seek, seekLayout);
+        seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar bar, int value, boolean fromUser) {
+                if (fromUser && playback != null && !dragging && playback.player.isCurrentMediaItemSeekable()) {
+                    seekTo(bar);
+                }
+            }
+            @Override public void onStartTrackingTouch(SeekBar bar) { dragging = true; }
+            @Override public void onStopTrackingTouch(SeekBar bar) {
+                seekTo(bar);
+                dragging = false;
+            }
+        });
+        time = text("0:00", 12, MUTED, false);
+        total = text("0:00", 12, MUTED, false);
+        total.setGravity(Gravity.END);
+        LinearLayout timing = row();
+        timing.setPadding(dp(4), 0, dp(4), 0);
+        timing.addView(time, new LinearLayout.LayoutParams(0, -2, 1));
+        timing.addView(total, new LinearLayout.LayoutParams(0, -2, 1));
+        body.addView(timing, new LinearLayout.LayoutParams(-1, -2));
+
+        LinearLayout transport = row();
+        transport.setGravity(Gravity.CENTER);
+        body.addView(transport, new LinearLayout.LayoutParams(-1, dp(96)));
+        shuffle = glyph("shuffle", MUTED, 22, "随机播放", () -> { if (playback != null) playback.toggleShuffle(); });
+        repeat = glyph("repeat", MUTED, 22, "循环模式", () -> { if (playback != null) playback.cycleRepeat(); });
+        play = glyph("play", BG, 30, "播放", this::toggle);
+        play.setBackground(shape(ACCENT, 40));
+        transport.addView(shuffle, new LinearLayout.LayoutParams(0, dp(52), 1));
+        transport.addView(glyph("previous", INK, 28, "上一首", () -> { if (playback != null) playback.previous(); }),
+                new LinearLayout.LayoutParams(0, dp(56), 1));
+        transport.addView(play, new LinearLayout.LayoutParams(dp(72), dp(72)));
+        transport.addView(glyph("next", INK, 28, "下一首", () -> { if (playback != null) playback.next(); }),
+                new LinearLayout.LayoutParams(0, dp(56), 1));
+        transport.addView(repeat, new LinearLayout.LayoutParams(0, dp(52), 1));
+
+        LinearLayout extras = row();
+        extras.setGravity(Gravity.CENTER);
+        extras.setPadding(0, dp(4), 0, 0);
+        body.addView(extras, new LinearLayout.LayoutParams(-1, -2));
+        playerDetails = labeledIcon("info", "播放信息", this::showPlayerDetails);
+        playerLyrics = labeledIcon("lyrics", "歌词", this::showLyrics);
+        playerComments = labeledIcon("comment", "评论",
+                () -> showNeteaseComments(playback == null ? null : playback.current()));
+        extras.addView(playerDetails, new LinearLayout.LayoutParams(0, dp(64), 1));
+        extras.addView(playerLyrics, new LinearLayout.LayoutParams(0, dp(64), 1));
+        extras.addView(playerComments, new LinearLayout.LayoutParams(0, dp(64), 1));
+        extras.addView(labeledIcon("queue", "队列", () -> open(Page.QUEUE)), new LinearLayout.LayoutParams(0, dp(64), 1));
+        message = text("", 13, MUTED, false);
+        message.setGravity(Gravity.CENTER);
+        body.addView(message);
+    }
+
+    private void showPlayerDetails() {
+        PlaybackService service = playback;
+        TidalClient.Track track = service == null ? null : service.current();
+        if (track == null) return;
+        androidx.media3.common.Format format = service.loading ? null : service.player.getAudioFormat();
+        int rate = format != null && format.sampleRate > 0 ? format.sampleRate : service.sourceSampleRate;
+        int depth = service.sourceBitDepth > 0 ? service.sourceBitDepth : audioBitDepth(format);
+        int bitrate = format != null && format.bitrate > 0 ? format.bitrate : service.sourceBitrate;
+        int channels = format == null ? 0 : format.channelCount;
+        LinearLayout body = column();
+        body.setPadding(dp(20), dp(8), dp(20), dp(18));
+        body.addView(text(track.title, 17, INK, true));
+        body.addView(text((track.isLocal() ? "本地文件" : track.isNetease() ? "网易云" : "TIDAL")
+                + (service.actualQuality.isEmpty() || track.isLocal() ? "" : " · " + qualityLabel()), 13, MUTED, false));
+        if (!track.isLocal()) {
+            body.addView(text("已选音质 · " + qualityNames()[service.quality], 13, MUTED, false));
+        }
+        audioInfoRow(body, "音源采样率", audioRate(rate), "音源位深", audioValue(depth, " bit"));
+        if (track.needsTidal() && service.quality == 3 && !service.loading
+                && !service.actualQuality.isEmpty() && !"HI_RES_LOSSLESS".equals(service.actualQuality) && depth <= 16) {
+            TextView note = text(service.client != null && service.client.hasHiResSession()
+                    ? "已请求 Hi-Res，本次实际音质为 " + qualityLabel() + "。"
+                    : "当前没有可用的 Hi-Res 会话。请在「音源 → 登录 TIDAL」用设备链接登录。", 13, MUTED, false);
+            note.setPadding(0, dp(6), 0, 0);
+            body.addView(note);
+        }
+        audioInfoRow(body, "比特率", audioValue(bitrate / 1000, " kbps"), "声道",
+                channels == 2 ? "立体声 · 2" : channels == 1 ? "单声道 · 1" : audioValue(channels, " 声道"));
+        body.addView(text("音源格式 · " + audioCodec(format), 14, INK, true));
+        androidx.media3.exoplayer.audio.AudioSink.AudioTrackConfig output = service.outputConfig;
+        TextView heading = text("Android 输出", 15, INK, true);
+        heading.setPadding(0, dp(18), 0, dp(4));
+        body.addView(heading);
+        body.addView(text("输出设备 · " + audioDevice(), 13, MUTED, false));
+        body.addView(text("音轨采样率 · " + (output == null ? "未知" : audioRate(output.sampleRate)), 13, MUTED, false));
+        body.addView(text("输出模式 · " + (output == null ? "未知" : output.offload ? "硬件卸载" : "Android 音轨"), 13, MUTED, false));
+        body.addView(text("系统重采样 · 未知", 13, MUTED, false));
+        float speed = service.player.getPlaybackParameters().speed;
+        if (speed != 1f) body.addView(text("播放速度 · " + speed + "×", 13, MUTED, false));
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(body);
+        AlertDialog.Builder dialog = new AlertDialog.Builder(this).setTitle("播放信息")
+                .setView(scroll).setPositiveButton("关闭", null);
+        if (!track.isLocal()) dialog.setNeutralButton("选择音质", (view, choice) -> chooseQuality());
+        dialog.show();
+    }
+
+    private void audioInfoRow(LinearLayout parent, String left, String leftValue, String right, String rightValue) {
+        LinearLayout row = row();
+        row.setPadding(0, dp(8), 0, dp(4));
+        row.addView(audioInfoTile(left, leftValue), new LinearLayout.LayoutParams(0, -2, 1));
+        LinearLayout.LayoutParams second = new LinearLayout.LayoutParams(0, -2, 1);
+        second.leftMargin = dp(8);
+        row.addView(audioInfoTile(right, rightValue), second);
+        parent.addView(row);
+    }
+
+    private LinearLayout audioInfoTile(String label, String value) {
+        LinearLayout tile = column();
+        tile.setPadding(dp(10), dp(8), dp(10), dp(8));
+        tile.setBackground(shape(SURFACE, 9));
+        tile.addView(text(label, 12, MUTED, false));
+        tile.addView(text(value, 16, INK, true));
+        return tile;
+    }
+
+    private String audioDevice() {
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            try {
+                android.media.AudioAttributes attributes = new android.media.AudioAttributes.Builder()
+                        .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                        .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MUSIC).build();
+                List<android.media.AudioDeviceInfo> routes = getSystemService(android.media.AudioManager.class)
+                        .getAudioDevicesForAttributes(attributes);
+                if (!routes.isEmpty()) {
+                    List<String> names = new ArrayList<>();
+                    for (android.media.AudioDeviceInfo device : routes) {
+                        String name = device.getProductName().toString();
+                        if (!name.isEmpty() && !names.contains(name)) names.add(name);
+                    }
+                    if (!names.isEmpty()) return TextUtils.join("、", names);
+                }
+            } catch (RuntimeException ignored) {}
+        }
+        return "未知";
+    }
+
+    private static String audioRate(int rate) {
+        return rate > 0 ? String.format(Locale.ROOT, "%.1f kHz", rate / 1000.0) : "未知";
+    }
+
+    private static String audioValue(int value, String unit) {
+        return value > 0 ? value + unit : "未知";
+    }
+
+    private static String audioCodec(androidx.media3.common.Format format) {
+        if (format == null || format.sampleMimeType == null) return "未知";
+        switch (format.sampleMimeType) {
+            case "audio/flac": return "FLAC";
+            case "audio/raw": return "PCM";
+            case "audio/mpeg": return "MP3";
+            case "audio/mp4a-latm": return "AAC";
+            case "audio/opus": return "Opus";
+            case "audio/vorbis": return "Vorbis";
+            default: return format.sampleMimeType;
+        }
+    }
+
+    private static int audioBitDepth(androidx.media3.common.Format format) {
+        if (format == null) return 0;
+        switch (format.pcmEncoding) {
+            case androidx.media3.common.C.ENCODING_PCM_8BIT: return 8;
+            case androidx.media3.common.C.ENCODING_PCM_16BIT: return 16;
+            case androidx.media3.common.C.ENCODING_PCM_24BIT: return 24;
+            case androidx.media3.common.C.ENCODING_PCM_32BIT: return 32;
+            default: break;
+        }
+        if ("audio/flac".equals(format.sampleMimeType) && !format.initializationData.isEmpty()) {
+            byte[] data = format.initializationData.get(0);
+            if (data.length >= 42 && data[0] == 'f' && data[1] == 'L' && data[2] == 'a' && data[3] == 'C'
+                    && (data[4] & 0x7f) == 0) {
+                return (((data[20] & 1) << 4) | ((data[21] & 0xf0) >> 4)) + 1;
+            }
+        }
+        return 0;
+    }
+
+    private void seekTo(SeekBar bar) {
+        if (playback == null || playback.loading || !playback.player.isCurrentMediaItemSeekable()) return;
+        long duration = playback.player.getDuration();
+        if (duration > 0) playback.player.seekTo(duration * bar.getProgress() / bar.getMax());
+    }
+
+    private void toggle() {
+        if (playback != null) playback.toggle();
+    }
+
+    private void chooseQuality() {
+        if (playback == null) return;
+        new AlertDialog.Builder(this).setTitle("播放音质")
+                .setSingleChoiceItems(qualityNames(), playback.quality, (dialog, selected) -> {
+                    dialog.dismiss();
+                    playback.setQuality(selected);
+                    if (page == Page.SETTINGS) render();
+                }).setNegativeButton("取消", null).show();
+    }
+
+    private String[] qualityNames() {
+        TidalClient.Track track = playback.current();
+        return track != null && track.isNetease() ? NeteaseClient.QUALITY_NAMES : PlaybackService.QUALITY_NAMES;
+    }
+
+    private String qualityLabel() {
+        if (playback == null) return PlaybackService.QUALITY_NAMES[0];
+        for (int i = 0; i < PlaybackService.QUALITIES.length; i++) {
+            if (PlaybackService.QUALITIES[i].equals(playback.actualQuality)) return PlaybackService.QUALITY_NAMES[i];
+        }
+        return playback.actualQuality.isEmpty() ? qualityNames()[playback.quality] : playback.actualQuality;
+    }
+
+    private void updatePlayer() {
+        if (playback == null || isDestroyed()) return;
+        if (visibleLocalRevision != playback.localRevision
+                && (page == Page.HOME || page == Page.LOCAL || (page == Page.SEARCH && searchSource == SearchSource.LOCAL))) {
+            render();
+            return;
+        }
+        if (visibleAccount != playback.client) {
+            visibleAccount = playback.client;
+            clearFavorites();
+            if ((page == Page.SEARCH && searchSource != SearchSource.LOCAL) || page == Page.LIBRARY || page == Page.COLLECTION) load(false);
+            else render();
+            return;
+        }
+        if ((page == Page.CONNECTIONS && !visibleRemoteLink.equals(playback.remoteLink()))
+                || (page == Page.QUEUE && (visibleQueueIndex != playback.index
+                || visibleQueueRevision != playback.queueRevision))) {
+            render();
+            return;
+        }
+        TidalClient.Track current = playback.current();
+        boolean playing = playback.loading ? playback.intendedPlay
+                : playback.player.getPlayWhenReady() && playback.player.getPlaybackState() != Player.STATE_ENDED;
+        if (mini != null) {
+            applyMiniVisibility();
+            miniTitle.setText(current == null ? "队列已就绪" : displayTitle(current));
+            miniArtist.setText(!playback.error.isEmpty() ? playback.error : current == null ? "点击播放" : current.artist);
+            miniArtist.setVisibility(miniArtist.getText().length() == 0 ? View.GONE : View.VISIBLE);
+            artwork.load(miniArt, current, 160);
+            playIcon(miniPlay, playing);
+        }
+        if (seek == null) return;
+        if (visibleTrack != (current == null ? Long.MIN_VALUE : current.id)) {
+            visibleTrack = current == null ? Long.MIN_VALUE : current.id;
+            artwork.load(cover, current, 640);
+        }
+        title.setText(current == null ? "尚未播放" : displayTitle(current));
+        String byline = current == null ? "" : !current.artist.isEmpty() ? current.artist
+                : !current.album.isEmpty() ? current.album : current.isLocal() ? "本地音频" : "";
+        subtitle.setText(byline);
+        boolean local = current != null && current.isLocal();
+        playerDetails.setEnabled(current != null);
+        playerQuality.setVisibility(current != null ? View.VISIBLE : View.GONE);
+        if (current != null) {
+            String actual = local ? playback.resolution.replaceFirst("^ · ", "")
+                    : qualityLabel() + playback.resolution;
+            playerQuality.setText(local ? (actual.isEmpty() ? "本地文件" : "本地 · " + actual) : actual + "  ▾");
+            playerQuality.setEnabled(!local);
+            boolean hiRes = "HI_RES_LOSSLESS".equals(playback.actualQuality);
+            playerQuality.setTextColor(hiRes ? 0xffe8c77a : ACCENT);
+        }
+        playerLyrics.setVisibility(current == null ? View.GONE : View.VISIBLE);
+        playerComments.setVisibility(current != null && current.isNetease() ? View.VISIBLE : View.GONE);
+        favorite.setVisibility(current != null && current.isNetease() ? View.INVISIBLE : View.VISIBLE);
+        favorite.setEnabled(current != null && !current.isNetease() && !favoriteBusy);
+        boolean liked = current != null && (current.isLocal() ? playback.localLibrary.liked(current.id) : favoriteIds.contains(current.id));
+        favorite.setImageDrawable(new PlayerIcon(liked ? "heart-filled" : "heart", liked ? 0xffff7a90 : MUTED, dp(24)));
+        favorite.setContentDescription(liked ? "取消收藏" : "收藏歌曲");
+        playIcon(play, playing);
+        shuffle.setImageDrawable(new PlayerIcon("shuffle", playback.shuffle ? ACCENT : MUTED, dp(22)));
+        shuffle.setContentDescription(playback.shuffle ? "关闭随机播放" : "打开随机播放");
+        repeat.setImageDrawable(new PlayerIcon(playback.repeat == Player.REPEAT_MODE_ONE ? "repeat-one" : "repeat",
+                playback.repeat == Player.REPEAT_MODE_OFF ? MUTED : ACCENT, dp(22)));
+        repeat.setContentDescription(playback.repeat == Player.REPEAT_MODE_ONE ? "单曲循环"
+                : playback.repeat == Player.REPEAT_MODE_ALL ? "队列循环" : "关闭循环");
+        message.setText(!playback.error.isEmpty() ? playback.error : playback.loading ? "正在获取音频流…"
+                : playback.player.getPlaybackState() == Player.STATE_BUFFERING ? "正在缓冲…" : "");
+        updatePosition();
+    }
+
+    private void applyMiniVisibility() {
+        if (mini != null) mini.setVisibility(keyboardHidden && playback != null && !playback.queue.isEmpty()
+                ? View.VISIBLE : View.GONE);
+    }
+
+    private void playIcon(android.widget.ImageButton button, boolean playing) {
+        int color = button == play ? BG : INK;
+        int size = button == play ? 30 : 24;
+        button.setImageDrawable(new PlayerIcon(playing ? "pause" : "play", color, dp(size)));
+        button.setContentDescription(playing ? "暂停" : "播放");
+    }
+
+    private void updatePosition() {
+        if (playback == null) return;
+        if (lyrics != null && playback.current() != null) {
+            lyrics.sync(playback.current().id, playback.loading ? 0 : playback.player.getCurrentPosition());
+        }
+        if (seek == null) return;
+        long duration = playback.loading ? 0 : Math.max(0, playback.player.getDuration());
+        long elapsed = playback.loading ? 0 : playback.player.getCurrentPosition();
+        seek.setEnabled(duration > 0 && playback.player.isCurrentMediaItemSeekable());
+        if (!dragging) {
+            seek.setProgress(duration == 0 ? 0 : (int) (elapsed * 1000 / duration));
+        }
+        String elapsedText = formatTime(elapsed);
+        String totalText = formatTime(duration);
+        if (!TextUtils.equals(time.getText(), elapsedText)) time.setText(elapsedText);
+        if (!TextUtils.equals(total.getText(), totalText)) total.setText(totalText);
+    }
+
+    private static String formatTime(long millis) {
+        long seconds = Math.max(0, millis / 1000);
+        return String.format(Locale.ROOT, "%d:%02d", seconds / 60, seconds % 60);
+    }
+
+    private static String readable(Exception problem) {
+        if (problem instanceof java.net.UnknownHostException || problem instanceof java.net.ConnectException
+                || problem instanceof java.net.NoRouteToHostException) {
+            return "无法连接服务器，请检查网络后重试";
+        }
+        if (problem instanceof java.net.SocketTimeoutException) return "连接超时，请稍后重试";
+        if (problem instanceof javax.net.ssl.SSLException) return "安全连接失败，请检查网络或系统时间";
+        return problem instanceof IOException && problem.getMessage() != null ? problem.getMessage()
+                : "数据格式无效或网络不可用";
+    }
+
+    private static final java.util.regex.Pattern AUDIO_EXTENSION = java.util.regex.Pattern.compile(
+            "(?i)\\.(flac|wav|mp3|m4a|aac|ogg|oga|opus|ape|wv|aiff?|alac|dsf|dff|wma)$");
+
+    /** Title for display; untagged local files show their name without the extension. */
+    private static String displayTitle(TidalClient.Track track) {
+        if (!track.isLocal()) return track.title;
+        String stripped = AUDIO_EXTENSION.matcher(track.title).replaceFirst("");
+        return stripped.isEmpty() ? track.title : stripped;
+    }
+
+    /** Borderless icon-only button. */
+    private android.widget.ImageButton glyph(String icon, int color, int size, String description, Runnable choose) {
+        android.widget.ImageButton button = new android.widget.ImageButton(this, null, android.R.attr.borderlessButtonStyle);
+        button.setImageDrawable(new PlayerIcon(icon, color, dp(size)));
+        button.setScaleType(ImageView.ScaleType.CENTER);
+        button.setContentDescription(description);
+        button.setPadding(0, 0, 0, 0);
+        button.setMinimumWidth(0);
+        button.setMinimumHeight(0);
+        button.setOnClickListener(v -> choose.run());
+        return button;
+    }
+
+    /** Tonal button: the standard style for secondary actions. */
+    private Button secondary(String label, Runnable choose) {
+        Button button = action(label, label, choose);
+        button.setBackground(shape(RAISED, 14));
+        button.setPadding(dp(14), 0, dp(14), 0);
+        button.setMinHeight(0);
+        button.setMinimumHeight(0);
+        return button;
+    }
+
+    private Button withIcon(Button button, String icon, int color) {
+        button.setCompoundDrawablesRelativeWithIntrinsicBounds(new PlayerIcon(icon, color, dp(17)), null, null, null);
+        button.setCompoundDrawablePadding(dp(6));
+        return button;
+    }
+
+    /** A row of buttons with consistent height and spacing. */
+    private android.widget.HorizontalScrollView toolbar(Button... buttons) {
+        android.widget.HorizontalScrollView scroll = new android.widget.HorizontalScrollView(this);
+        scroll.setHorizontalScrollBarEnabled(false);
+        LinearLayout bar = row();
+        for (Button button : buttons) {
+            button.setMinHeight(0);
+            button.setMinimumHeight(0);
+            LinearLayout.LayoutParams cell = new LinearLayout.LayoutParams(-2, dp(40));
+            cell.setMarginEnd(dp(8));
+            bar.addView(button, cell);
+        }
+        scroll.addView(bar);
+        LinearLayout.LayoutParams layout = new LinearLayout.LayoutParams(-1, -2);
+        layout.topMargin = dp(4);
+        layout.bottomMargin = dp(10);
+        scroll.setLayoutParams(layout);
+        return scroll;
+    }
+
+    /** Icon above a short label, for secondary player actions. */
+    private Button labeledIcon(String icon, String label, Runnable choose) {
+        Button button = action(label, label, choose);
+        button.setTextColor(MUTED);
+        button.setTextSize(12);
+        button.setCompoundDrawablesWithIntrinsicBounds(null, new PlayerIcon(icon, MUTED, dp(22)), null, null);
+        button.setCompoundDrawablePadding(dp(4));
+        button.setPadding(0, dp(8), 0, dp(6));
+        return button;
+    }
+
+    /** Full-width list row with a chevron, for settings-style navigation and commands. */
+    private Button menuRow(String label, String description, Runnable choose) {
+        Button button = action(label, description, choose);
+        boolean destructive = label.startsWith("退出") || label.startsWith("关闭");
+        button.setTextColor(destructive ? 0xffff8f8f : INK);
+        button.setTextSize(15);
+        button.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+        button.setBackground(shape(0x14ffffff, 12));
+        button.setPadding(dp(14), 0, dp(12), 0);
+        if (!destructive) {
+            button.setCompoundDrawablesRelativeWithIntrinsicBounds(null, null,
+                    new PlayerIcon("forward", MUTED, dp(16)), null);
+        }
+        LinearLayout.LayoutParams layout = new LinearLayout.LayoutParams(-1, dp(50));
+        layout.bottomMargin = dp(6);
+        button.setLayoutParams(layout);
+        return button;
+    }
+
+    /** Square-ish shortcut tile with an icon over its label. */
+    private Button tile(String icon, String label, Runnable choose) {
+        Button button = action(label, label, choose);
+        button.setTextColor(INK);
+        button.setTextSize(13);
+        button.setBackground(shape(SURFACE, 14));
+        button.setCompoundDrawablesWithIntrinsicBounds(null, new PlayerIcon(icon, ACCENT, dp(22)), null, null);
+        button.setCompoundDrawablePadding(dp(5));
+        button.setPadding(0, dp(12), 0, dp(10));
+        return button;
+    }
+
+    private void empty(String heading, String detail) {
+        section(heading);
+        if (!detail.isEmpty()) content.addView(text(detail, 14, MUTED, false));
+    }
+
+    private void section(String value) {
+        TextView heading = text(value, 19, INK, true);
+        heading.setPadding(0, dp(12), 0, dp(8));
+        content.addView(heading);
+    }
+
+    private LinearLayout entry(String title, String detail, String art, Runnable choose) {
+        LinearLayout entry = row();
+        entry.setPadding(dp(8), dp(5), dp(3), dp(5));
+        entry.setBackground(shape(SURFACE, 12));
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
+        params.bottomMargin = dp(5);
+        entry.setLayoutParams(params);
+        ImageView image = art(48);
+        artwork.load(image, art, 160, title);
+        image.setOnClickListener(v -> choose.run());
+        entry.addView(image);
+        LinearLayout info = column();
+        info.setPadding(dp(12), 0, dp(4), 0);
+        info.addView(single(title, 15, INK, true));
+        info.addView(single(detail, 12, MUTED, false));
+        info.setOnClickListener(v -> choose.run());
+        entry.addView(info, new LinearLayout.LayoutParams(0, -2, 1));
+        return entry;
+    }
+
+    private ImageView art(int size) {
+        ImageView image = new ImageView(this);
+        image.setBackground(shape(RAISED, 8));
+        image.setClipToOutline(true);
+        image.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        if (size > 0) image.setLayoutParams(new LinearLayout.LayoutParams(dp(size), dp(size)));
+        return image;
+    }
+
+    private TextView single(String value, int size, int color, boolean strong) {
+        TextView label = text(value, size, color, strong);
+        label.setSingleLine();
+        label.setEllipsize(TextUtils.TruncateAt.END);
+        return label;
+    }
+
+    private TextView text(String value, int size, int color, boolean strong) {
+        TextView label = new TextView(this);
+        label.setText(value);
+        label.setTextSize(size);
+        label.setTextColor(color);
+        if (strong) label.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        return label;
+    }
+
+    private Button action(String value, String description, Runnable choose) {
+        Button button = new Button(this, null, android.R.attr.borderlessButtonStyle);
+        button.setText(value);
+        button.setTextColor(ACCENT);
+        button.setTextSize(14);
+        button.setAllCaps(false);
+        button.setContentDescription(description);
+        button.setMinWidth(dp(44));
+        button.setMinimumWidth(dp(44));
+        button.setPadding(dp(7), 0, dp(7), 0);
+        button.setOnClickListener(v -> choose.run());
+        return button;
+    }
+
+    private Button iconButton(String icon, String description, Runnable choose) {
+        Button button = action("", description, choose);
+        PlayerIcon image = new PlayerIcon(icon, ACCENT, dp(22));
+        button.setCompoundDrawablesWithIntrinsicBounds(null, image, null, null);
+        button.setPadding(0, dp(12), 0, dp(8));
+        return button;
+    }
+
+    private Button primary(String label, Runnable choose) {
+        Button button = action(label, label, choose);
+        button.setTextColor(BG);
+        button.setPadding(dp(16), 0, dp(16), 0);
+        button.setBackground(shape(ACCENT, 14));
+        return button;
+    }
+
+    private Button pill(String label, boolean active, Runnable choose) {
+        Button button = action(label, label, choose);
+        button.setTextColor(active ? ACCENT : MUTED);
+        if (active) button.setBackground(shape(RAISED, 14));
+        button.setPadding(dp(11), 0, dp(11), 0);
+        return button;
+    }
+
+    private LinearLayout panel(String heading, String description) {
+        return panel(content, heading, description);
+    }
+
+    private LinearLayout panel(LinearLayout parent, String heading, String description) {
+        LinearLayout box = column();
+        box.setPadding(dp(16), dp(16), dp(16), dp(10));
+        box.setBackground(shape(SURFACE, 16));
+        box.addView(text(heading, 20, INK, true));
+        TextView detail = text(description, 14, MUTED, false);
+        detail.setPadding(0, dp(5), 0, dp(12));
+        box.addView(detail);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
+        params.bottomMargin = dp(12);
+        parent.addView(box, params);
+        return box;
+    }
+
+    private GradientDrawable shape(int color, int corner) {
+        GradientDrawable background = new GradientDrawable();
+        background.setColor(color);
+        background.setCornerRadius(dp(corner));
+        return background;
+    }
+
+    private LinearLayout column() {
+        LinearLayout column = new LinearLayout(this);
+        column.setOrientation(LinearLayout.VERTICAL);
+        return column;
+    }
+
+    private LinearLayout row() {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        return row;
+    }
+
+    private void toast(String message) {
+        android.widget.Toast.makeText(this, message, android.widget.Toast.LENGTH_SHORT).show();
+    }
+
+    private int dp(int value) {
+        return Math.round(value * getResources().getDisplayMetrics().density);
+    }
+}

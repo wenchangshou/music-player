@@ -1,0 +1,9 @@
+{$TIDAL_RELAY_HOST} {
+	header Strict-Transport-Security "max-age=86400"
+	tls {
+		issuer acme {
+			disable_tlsalpn_challenge
+		}
+	}
+	reverse_proxy 127.0.0.1:8765
+}

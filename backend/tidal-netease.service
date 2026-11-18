@@ -1,0 +1,18 @@
+[Unit]
+Description=NetEase guest catalogue for the listening room
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+DynamicUser=yes
+WorkingDirectory=/opt/tidal-netease
+ExecStart=/opt/tidal-netease/node_modules/node-linux-x64/bin/node /opt/tidal-netease/netease_upstream.cjs
+Restart=on-failure
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+MemoryMax=384M
+
+[Install]
+WantedBy=multi-user.target

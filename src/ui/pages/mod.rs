@@ -1,0 +1,9 @@
+pub mod album;
+pub mod artist;
+pub mod downloads;
+pub mod home;
+pub mod library;
+pub mod playlist;
+pub mod qa;
+pub mod search;
+pub mod settings;
