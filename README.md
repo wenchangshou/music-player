@@ -4,16 +4,13 @@
 
 ## 功能与运行截图
 
-截图来自实际运行的播放器，展示收藏、最近聆听和播放队列。公开图片避开了账号设置、配对码和浏览器地址栏。
+以下是 Linux、Android 和 Web 三端的实际运行截图。点击任意截图可查看原图。
 
 ### Linux 桌面
 
 浏览 TIDAL 的曲目、专辑、歌手和歌单，管理收藏、播放队列和下载。播放由 mpv 驱动，也可接入网易云兼容服务。下载工具支持通过 FFmpeg 检查本地音频文件。
 
-![Linux 桌面端首页](docs/screenshots/linux.png)
-
-<details>
-<summary>查看搜索、专辑、歌单与下载</summary>
+[![Linux 桌面端首页](docs/screenshots/linux.png)](docs/screenshots/linux.png)
 
 | 搜索结果 | 专辑详情 |
 | --- | --- |
@@ -23,41 +20,27 @@
 | --- | --- |
 | [![桌面端歌单与曲目](docs/screenshots/linux-playlist.png)](docs/screenshots/linux-playlist.png) | [![桌面端下载配置与队列](docs/screenshots/linux-downloads.png)](docs/screenshots/linux-downloads.png) |
 
-</details>
-
 ### Android
 
 导入本地文件，按歌曲、专辑或歌单浏览，用系统媒体控件进行后台播放。配置对应音源后，可搜索 TIDAL 和网易云，查看歌词并选择音质。更多功能和账号设置见 [Android 使用说明](android/README.md)。
 
-<img src="docs/screenshots/android.png" alt="Android 端最近聆听与收藏" width="300">
-
-<details>
-<summary>查看播放器、专辑、队列与收藏</summary>
-
-| 正在播放 | 专辑详情 |
-| --- | --- |
-| <a href="docs/screenshots/android-player.png"><img src="docs/screenshots/android-player.png" alt="Android 全屏播放器" width="250"></a> | <a href="docs/screenshots/android-album.png"><img src="docs/screenshots/android-album.png" alt="Android 专辑曲目与下载选项" width="250"></a> |
+| 首页与最近聆听 | 正在播放 | 专辑详情 |
+| --- | --- | --- |
+| <a href="docs/screenshots/android.png"><img src="docs/screenshots/android.png" alt="Android 端最近聆听与收藏" width="250"></a> | <a href="docs/screenshots/android-player.png"><img src="docs/screenshots/android-player.png" alt="Android 全屏播放器" width="250"></a> | <a href="docs/screenshots/android-album.png"><img src="docs/screenshots/android-album.png" alt="Android 专辑曲目与下载选项" width="250"></a> |
 
 | 播放队列 | 收藏专辑 |
 | --- | --- |
 | <a href="docs/screenshots/android-queue.png"><img src="docs/screenshots/android-queue.png" alt="Android 播放队列" width="250"></a> | <a href="docs/screenshots/android-favorites.png"><img src="docs/screenshots/android-favorites.png" alt="Android TIDAL 收藏专辑" width="250"></a> |
 
-</details>
-
 ### Web 遥控
 
-通过同一局域网遥控 Android 播放器。部署多端后台后，也可用播放器账号在浏览器中选择已连接设备并控制播放、进度和队列。下图为连接 Android 后的局域网遥控界面。
+通过同一局域网遥控 Android 播放器。部署多端后台后，也可用播放器账号在浏览器中选择已连接设备并控制播放、进度和队列。
 
-![Web 局域网遥控与播放队列](docs/screenshots/web.png)
-
-<details>
-<summary>查看遥控搜索与完整模式音乐库</summary>
+[![Web 局域网遥控与播放队列](docs/screenshots/web.png)](docs/screenshots/web.png)
 
 | 遥控搜索 | 音乐库 |
 | --- | --- |
 | [![浏览器端在播放界面搜索 Fleetwood Mac](docs/screenshots/web-search.png)](docs/screenshots/web-search.png) | [![浏览器完整模式的 TIDAL 专辑音乐库](docs/screenshots/web-library.png)](docs/screenshots/web-library.png) |
-
-</details>
 
 ## 运行
 
