@@ -20,6 +20,14 @@
 | --- | --- |
 | [![桌面端歌单与曲目](docs/screenshots/linux-playlist.png)](docs/screenshots/linux-playlist.png) | [![桌面端下载配置与队列](docs/screenshots/linux-downloads.png)](docs/screenshots/linux-downloads.png) |
 
+| 艺人主页与热门歌曲 | 正在播放与队列 |
+| --- | --- |
+| [![艺人主页与热门歌曲](docs/screenshots/linux-artist.png)](docs/screenshots/linux-artist.png) | [![正在播放与队列](docs/screenshots/linux-queue.png)](docs/screenshots/linux-queue.png) |
+
+| 山灵质检报告（使用测试音轨） |
+| --- |
+| [![山灵质检报告（使用测试音轨）](docs/screenshots/linux-qa.png)](docs/screenshots/linux-qa.png) |
+
 ### Android
 
 导入本地文件，按歌曲、专辑或歌单浏览，用系统媒体控件进行后台播放。配置对应音源后，可搜索 TIDAL 和网易云，查看歌词并选择音质。更多功能和账号设置见 [Android 使用说明](android/README.md)。
@@ -32,6 +40,10 @@
 | --- | --- |
 | <a href="docs/screenshots/android-queue.png"><img src="docs/screenshots/android-queue.png" alt="Android 播放队列" width="250"></a> | <a href="docs/screenshots/android-favorites.png"><img src="docs/screenshots/android-favorites.png" alt="Android TIDAL 收藏专辑" width="250"></a> |
 
+| 在线搜索结果 | 本地音乐库 |
+| --- | --- |
+| <a href="docs/screenshots/android-search.png"><img src="docs/screenshots/android-search.png" alt="在线搜索结果" width="250"></a> | <a href="docs/screenshots/android-local.png"><img src="docs/screenshots/android-local.png" alt="本地音乐库" width="250"></a> |
+
 ### Web 遥控
 
 通过同一局域网遥控 Android 播放器。部署多端后台后，也可用播放器账号在浏览器中选择已连接设备并控制播放、进度和队列。
@@ -41,6 +53,10 @@
 | 遥控搜索 | 音乐库 |
 | --- | --- |
 | [![浏览器端在播放界面搜索 Fleetwood Mac](docs/screenshots/web-search.png)](docs/screenshots/web-search.png) | [![浏览器完整模式的 TIDAL 专辑音乐库](docs/screenshots/web-library.png)](docs/screenshots/web-library.png) |
+
+| 艺人分类 | 已授权音乐目录与文件管理 |
+| --- | --- |
+| [![艺人分类](docs/screenshots/web-artists.png)](docs/screenshots/web-artists.png) | [![已授权音乐目录与文件管理](docs/screenshots/web-files.png)](docs/screenshots/web-files.png) |
 
 ## 运行
 
