@@ -82,6 +82,15 @@ pub enum Ev {
     Qa(Result<AlbumQaReport, String>),
     Auth(Result<(), String>),
     PlayerAccount(Result<Option<crate::relay::PlayerAccount>, String>),
+    RemoteDevices(Result<Vec<crate::remote::DeviceInfo>, String>),
+    RemoteState(u64, Result<crate::remote::RemoteState, String>),
+    RemoteCommand(u64, Result<Option<crate::remote::RemoteState>, String>),
+    RemoteRemoved(String, Result<(), String>),
+    RemoteLoggedOutOthers(Result<(), String>),
+    /// A page of the controlled device's library: (generation, request, append, reply).
+    RemoteLibrary(u64, u64, bool, Result<serde_json::Value, String>),
+    /// Tracks fetched to continue a remote device's playback here: (tracks, index, seconds).
+    TransferHere(Result<(Vec<TrackItem>, usize, f64), String>),
 }
 
 // ───────────────────────────── UI intents ─────────────────────────────
@@ -110,6 +119,8 @@ pub enum Action {
     ClearQueue,
     StopPlayback,
     SetStreamQuality(StreamQuality),
+    /// 网易云 level for NetEase tracks (one of `netease::PLAY_LEVELS`).
+    SetNeteaseLevel(&'static str),
 
     ToggleFav(FavTarget),
     ReloadLibrary,
@@ -126,6 +137,24 @@ pub enum Action {
     PlayerLogin(String, String),
     PlayerLogout,
     RefreshToken,
+    /// Control another device of this player account (`None` = this computer).
+    SelectDevice(Option<String>),
+    RefreshDevices,
+    RemoveDevice(String),
+    /// Sign out every other device and browser of this player account.
+    LogoutOtherDevices,
+    /// Browse the controlled Android device's library: search text, playlist ("" = all songs).
+    RemoteLibraryFilter(String, String),
+    RemoteLibraryMore,
+    /// Play songs of the library page from this index on.
+    RemoteLibraryPlay(usize),
+    /// Queue one song of the device's library: mode "next" or "add".
+    RemoteLibrarySong(i64, &'static str),
+    RemoteLibraryPlayAll(bool),
+    /// Move this computer's queue and position to a device and pause here.
+    TransferTo(String),
+    /// Continue the controlled device's queue on this computer and pause it there.
+    TransferHere,
     Copy(String),
     OpenUrl(String),
 }
@@ -171,6 +200,10 @@ pub struct UiState {
     pub account_password: String,
     pub job_tracks_open: HashSet<u64>,
     pub job_log_open: HashSet<u64>,
+    pub device_remove_confirm: Option<String>,
+    pub remote_volume_drag: Option<f32>,
+    pub devices_logout_confirm: bool,
+    pub remote_library_input: String,
 }
 
 /// Persisted between launches (window geometry is persisted by eframe).
@@ -185,6 +218,7 @@ struct Persist {
     recent_albums: Vec<AlbumItem>,
     recent_searches: Vec<String>,
     stream_quality: StreamQuality,
+    netease_level: String,
 }
 
 impl Default for Persist {
@@ -198,6 +232,7 @@ impl Default for Persist {
             recent_albums: Vec::new(),
             recent_searches: Vec::new(),
             stream_quality: StreamQuality::HiRes,
+            netease_level: "lossless".into(),
         }
     }
 }
@@ -226,6 +261,7 @@ pub struct App {
     relay: Option<crate::relay::Relay>,
     pub player_account: Option<crate::relay::PlayerAccount>,
     pub player_account_busy: bool,
+    pub remote: Option<crate::remote::Remote>,
     pub ui: UiState,
 }
 
@@ -237,6 +273,7 @@ impl App {
         let mut pb = Playback::new();
         pb.player.volume = p.volume;
         pb.quality = p.stream_quality;
+        pb.netease_level = crate::netease::play_level(&p.netease_level);
 
         let mut app = Self {
             api: TidalApi::new(),
@@ -261,6 +298,7 @@ impl App {
             relay: None,
             player_account: crate::relay::PlayerAccount::load(),
             player_account_busy: false,
+            remote: None,
             ui: UiState {
                 volume: p.volume,
                 show_queue: p.show_queue,
@@ -277,6 +315,7 @@ impl App {
         } else {
             crate::relay::Relay::configured(app.api.clone(), app.ctx.clone(), initial)
         };
+        app.remote = app.player_account.as_ref().and_then(crate::relay::PlayerAccount::remote);
         app.load_library();
 
         // `tidal-gui <tidal link>` opens that page directly.
@@ -353,6 +392,7 @@ impl App {
                     Ev::Playlist(uuid, r)
                 });
             }
+            Route::RemoteLibrary(tab) => self.load_remote_library(*tab, false),
             Route::Search(source, q) => {
                 let key = (*source, q.clone());
                 if !q.is_empty() && !self.cache.searches.contains_key(&key) {
@@ -410,7 +450,8 @@ impl App {
         let seq = self.next_seq();
         self.pb.req = seq;
         let q = self.pb.quality;
-        self.spawn(move |api| Ev::Stream(seq, api.get_stream(id, q)));
+        let level = self.pb.netease_level;
+        self.spawn(move |api| Ev::Stream(seq, api.get_stream(id, q, level)));
     }
 
     fn remember_album(&mut self, i: usize) {
@@ -429,9 +470,21 @@ impl App {
             self.notify("没有可播放的曲目");
             return;
         }
+        if self.remote_target().is_some() {
+            self.remote_tracks(tracks, index, shuffle, "play", 0.0);
+            return;
+        }
+        self.start_queue_local(tracks, index, shuffle, context, 0.0);
+    }
+
+    /// Replace this computer's queue, even while another device is being controlled.
+    fn start_queue_local(&mut self, tracks: Vec<TrackItem>, index: usize, shuffle: bool, context: Option<PlayContext>, start: f64) {
+        if tracks.is_empty() {
+            return;
+        }
         self.pb.set_queue(tracks, index, shuffle);
         self.pb.context = context;
-        self.play_index(self.pb.index);
+        self.play_index_at(self.pb.index, start);
     }
 
     /// Play an album/playlist; if not cached yet, load it and play when it arrives.
@@ -592,12 +645,88 @@ impl App {
                                 self.api.clone(), self.ctx.clone(),
                                 crate::relay::snapshot(&self.pb, self.api.is_authenticated()), account,
                             ));
+                            self.remote = account.as_ref().and_then(crate::relay::PlayerAccount::remote);
                             self.player_account = account;
+                            if self.route == Route::Devices && self.remote.is_none() {
+                                self.go(Route::Settings);
+                            }
                             self.notify(if self.player_account.is_some() { "播放器账号已登录" } else { "已退出播放器账号" });
                         }
                         Err(error) => self.notify(error),
                     }
                 }
+                Ev::RemoteDevices(result) => {
+                    if let Some(remote) = &mut self.remote {
+                        remote.set_devices(result);
+                        // Fall back to this computer when the controlled device is gone or offline.
+                        let lost = remote.devices_loaded
+                            && remote.target.is_some()
+                            && remote.target_device().is_none_or(|device| !device.online);
+                        if lost {
+                            let name = remote.target_name();
+                            remote.select(None);
+                            self.notify(format!("{name} 已离线，已切回本机"));
+                        }
+                    }
+                }
+                Ev::RemoteState(generation, result) => {
+                    if let Some(remote) = &mut self.remote {
+                        remote.set_state(generation, result);
+                    }
+                }
+                Ev::RemoteCommand(generation, result) => {
+                    let error = self.remote.as_mut().and_then(|remote| remote.command_done(generation, result));
+                    if let Some(error) = error {
+                        self.notify(error);
+                    }
+                }
+                Ev::RemoteRemoved(id, result) => match result {
+                    Ok(()) => {
+                        if let Some(remote) = &mut self.remote {
+                            if remote.target.as_deref() == Some(id.as_str()) {
+                                remote.select(None);
+                            }
+                            remote.devices.retain(|device| device.id != id);
+                            remote.refresh_devices_soon();
+                        }
+                        self.notify("设备已移除，该设备需要重新登录播放器账号");
+                    }
+                    Err(error) => self.notify(error),
+                },
+                Ev::RemoteLoggedOutOthers(result) => match result {
+                    Ok(()) => {
+                        if let Some(remote) = &mut self.remote {
+                            remote.select(None);
+                            remote.devices.retain(|device| device.is_self);
+                            remote.refresh_devices_soon();
+                        }
+                        self.notify("已退出其他所有设备，它们需要重新登录播放器账号");
+                    }
+                    Err(error) => self.notify(error),
+                },
+                Ev::RemoteLibrary(generation, request, append, result) => {
+                    if let Some(remote) = &mut self.remote {
+                        let library = &mut remote.library;
+                        if remote.generation == generation && library.request == request {
+                            library.loading = false;
+                            match result {
+                                Ok(page) => {
+                                    library.apply(&page, append);
+                                    library.error = None;
+                                }
+                                Err(error) => library.error = Some(error),
+                            }
+                        }
+                    }
+                }
+                Ev::TransferHere(result) => match result {
+                    Ok((tracks, index, start)) => {
+                        let title = tracks.get(index).map(TrackItem::full_title).unwrap_or_default();
+                        self.start_queue_local(tracks, index, false, None, start);
+                        self.notify(format!("已在本机继续播放：{title}"));
+                    }
+                    Err(error) => self.notify(error),
+                },
                 Ev::Auth(r) => {
                     self.auth_busy = false;
                     match r {
@@ -628,214 +757,385 @@ impl App {
 
     fn apply(&mut self, actions: Vec<Action>) {
         for a in actions {
-            match a {
-                Action::Go(r) => self.go(r),
-                Action::Back => {
-                    if let Some(r) = self.history.back.pop() {
-                        let cur = std::mem::replace(&mut self.route, r.clone());
-                        self.history.fwd.push(cur);
-                        self.sync_search_inputs(&r);
-                        self.ensure_loaded(&r);
-                    }
-                }
-                Action::Forward => {
-                    if let Some(r) = self.history.fwd.pop() {
-                        let cur = std::mem::replace(&mut self.route, r.clone());
-                        self.history.back.push(cur);
-                        self.sync_search_inputs(&r);
-                        self.ensure_loaded(&r);
-                    }
-                }
-                Action::Refresh => {
-                    let r = self.route.clone();
-                    match r {
-                        Route::Home | Route::Library(_) => {
-                            self.lib.state = LibState::Idle;
-                            self.load_library();
-                        }
-                        _ => {
-                            self.cache.forget(&r);
-                            self.ensure_loaded(&r);
-                        }
-                    }
-                }
-                Action::Search(q) => {
-                    let q = q.trim().to_string();
-                    if !q.is_empty() {
-                        self.recent_searches.retain(|x| x != &q);
-                        self.recent_searches.insert(0, q.clone());
-                        self.recent_searches.truncate(12);
-                    }
-                    self.ui.search_text = q.clone();
-                    self.ui.search_filter = SearchFilter::All;
-                    self.go(Route::Search(self.ui.search_source, q));
-                }
+            if let Some(a) = self.remote_action(a) {
+                self.apply_local(a);
+            }
+        }
+    }
 
-                Action::PlayTracks { tracks, index, shuffle, context } => self.start_queue(tracks, index, shuffle, context),
-                Action::PlayAlbum { id, shuffle } => self.play_collection(Route::Album(id), shuffle),
-                Action::PlayPlaylist { uuid, shuffle } => self.play_collection(Route::Playlist(uuid), shuffle),
-                Action::PlayNext(ts) => {
-                    let n = ts.len();
-                    let was_empty = self.pb.queue.is_empty();
-                    self.pb.insert_next(ts);
-                    if was_empty {
-                        self.play_index(0);
-                    }
-                    self.notify(format!("已添加 {} 首到“下一首播放”", n));
+    /// Apply an action to this computer, never to the controlled remote device.
+    fn apply_local(&mut self, a: Action) {
+        match a {
+            Action::Go(r) => self.go(r),
+            Action::Back => {
+                if let Some(r) = self.history.back.pop() {
+                    let cur = std::mem::replace(&mut self.route, r.clone());
+                    self.history.fwd.push(cur);
+                    self.sync_search_inputs(&r);
+                    self.ensure_loaded(&r);
                 }
-                Action::Enqueue(ts) => {
-                    let n = ts.len();
-                    let was_empty = self.pb.queue.is_empty();
-                    self.pb.append(ts);
-                    if was_empty {
-                        self.play_index(0);
-                    }
-                    self.notify(format!("已添加 {} 首到播放队列", n));
+            }
+            Action::Forward => {
+                if let Some(r) = self.history.fwd.pop() {
+                    let cur = std::mem::replace(&mut self.route, r.clone());
+                    self.history.back.push(cur);
+                    self.sync_search_inputs(&r);
+                    self.ensure_loaded(&r);
                 }
-                Action::TogglePause => {
-                    if self.pb.player.snapshot().active {
-                        self.pb.player.toggle_pause();
-                    } else if self.pb.current().is_some() && !self.pb.is_loading() {
-                        self.play_index(self.pb.index);
+            }
+            Action::Refresh => {
+                let r = self.route.clone();
+                match r {
+                    Route::Home | Route::Library(_) => {
+                        self.lib.state = LibState::Idle;
+                        self.load_library();
+                    }
+                    Route::RemoteLibrary(tab) => {
+                        if let Some(remote) = &mut self.remote {
+                            remote.library.loaded = None;
+                            remote.library.error = None;
+                        }
+                        self.load_remote_library(tab, false);
+                    }
+                    _ => {
+                        self.cache.forget(&r);
+                        self.ensure_loaded(&r);
                     }
                 }
-                Action::Next => {
-                    if let Some(i) = self.pb.next_index(false) {
-                        self.play_index(i);
-                    }
+            }
+            Action::Search(q) => {
+                let q = q.trim().to_string();
+                if !q.is_empty() {
+                    self.recent_searches.retain(|x| x != &q);
+                    self.recent_searches.insert(0, q.clone());
+                    self.recent_searches.truncate(12);
                 }
-                Action::Prev => {
+                self.ui.search_text = q.clone();
+                self.ui.search_filter = SearchFilter::All;
+                self.go(Route::Search(self.ui.search_source, q));
+            }
+
+            Action::PlayTracks { tracks, index, shuffle, context } => self.start_queue(tracks, index, shuffle, context),
+            Action::PlayAlbum { id, shuffle } => self.play_collection(Route::Album(id), shuffle),
+            Action::PlayPlaylist { uuid, shuffle } => self.play_collection(Route::Playlist(uuid), shuffle),
+            Action::PlayNext(ts) => {
+                let n = ts.len();
+                let was_empty = self.pb.queue.is_empty();
+                self.pb.insert_next(ts);
+                if was_empty {
+                    self.play_index(0);
+                }
+                self.notify(format!("已添加 {} 首到“下一首播放”", n));
+            }
+            Action::Enqueue(ts) => {
+                let n = ts.len();
+                let was_empty = self.pb.queue.is_empty();
+                self.pb.append(ts);
+                if was_empty {
+                    self.play_index(0);
+                }
+                self.notify(format!("已添加 {} 首到播放队列", n));
+            }
+            Action::TogglePause => {
+                if self.pb.player.snapshot().active {
+                    self.pb.player.toggle_pause();
+                } else if self.pb.current().is_some() && !self.pb.is_loading() {
+                    self.play_index(self.pb.index);
+                }
+            }
+            Action::Next => {
+                if let Some(i) = self.pb.next_index(false) {
+                    self.play_index(i);
+                }
+            }
+            Action::Prev => {
+                let st = self.pb.player.snapshot();
+                if st.active && st.position > 3.0 {
+                    self.pb.player.seek(0.0);
+                } else if let Some(i) = self.pb.prev_index() {
+                    self.play_index(i);
+                }
+            }
+            Action::Seek(s) => self.pb.player.seek(s),
+            Action::SetVolume(v) => self.pb.player.set_volume(v),
+            Action::ToggleShuffle => self.pb.toggle_shuffle(),
+            Action::CycleRepeat => self.pb.cycle_repeat(),
+            Action::JumpQueue(i) => self.play_index(i),
+            Action::RemoveQueue(i) => self.pb.remove(i),
+            Action::ClearQueue => self.pb.clear_upcoming(),
+            Action::StopPlayback => self.pb.stop(),
+            Action::SetStreamQuality(q) => {
+                if q != self.pb.quality {
+                    self.pb.quality = q;
+                    self.notify(format!("试听音质：{}（{}）", q.short(), q.describe()));
+                    // Re-open the current track at the same position with the new quality.
                     let st = self.pb.player.snapshot();
-                    if st.active && st.position > 3.0 {
-                        self.pb.player.seek(0.0);
-                    } else if let Some(i) = self.pb.prev_index() {
-                        self.play_index(i);
+                    if self.pb.current().is_some() && (st.active || self.pb.is_loading()) {
+                        let pos = st.position;
+                        self.play_index_at(self.pb.index, pos);
                     }
                 }
-                Action::Seek(s) => self.pb.player.seek(s),
-                Action::SetVolume(v) => self.pb.player.set_volume(v),
-                Action::ToggleShuffle => self.pb.toggle_shuffle(),
-                Action::CycleRepeat => self.pb.cycle_repeat(),
-                Action::JumpQueue(i) => self.play_index(i),
-                Action::RemoveQueue(i) => self.pb.remove(i),
-                Action::ClearQueue => self.pb.clear_upcoming(),
-                Action::StopPlayback => self.pb.stop(),
-                Action::SetStreamQuality(q) => {
-                    if q != self.pb.quality {
-                        self.pb.quality = q;
-                        self.notify(format!("试听音质：{}（{}）", q.short(), q.describe()));
-                        // Re-open the current track at the same position with the new quality.
-                        let st = self.pb.player.snapshot();
-                        if self.pb.current().is_some() && (st.active || self.pb.is_loading()) {
-                            let pos = st.position;
-                            self.play_index_at(self.pb.index, pos);
-                        }
-                    }
-                }
+            }
 
-                Action::ToggleFav(t) => {
-                    if t.is_netease() {
-                        continue;
+            Action::SetNeteaseLevel(level) => {
+                if level != self.pb.netease_level {
+                    self.pb.netease_level = level;
+                    self.notify(format!("网易云音质：{}", crate::netease::level_name(level)));
+                    let st = self.pb.player.snapshot();
+                    let netease = self.pb.current().is_some_and(|t| crate::netease::native_id(t.id).is_some());
+                    if netease && (st.active || self.pb.is_loading()) {
+                        let pos = st.position;
+                        self.play_index_at(self.pb.index, pos);
                     }
-                    if let FavTarget::Playlist(p) = &t {
-                        if self.lib.is_mine(&p.uuid) {
-                            self.notify("这是你自己创建的歌单");
-                            continue;
-                        }
+                }
+            }
+
+            Action::ToggleFav(t) => {
+                if t.is_netease() {
+                    return;
+                }
+                if let FavTarget::Playlist(p) = &t {
+                    if self.lib.is_mine(&p.uuid) {
+                        self.notify("这是你自己创建的歌单");
+                        return;
                     }
-                    let add = !self.lib.is_fav(&t);
-                    self.lib.apply(&t, add);
-                    self.notify(if add { format!("♥ 已收藏：{}", t.name()) } else { format!("已取消收藏：{}", t.name()) });
-                    self.spawn(move |api| {
-                        let r = api.set_favorite(t.kind(), &t.id(), add);
-                        Ev::Fav(t, add, r)
+                }
+                let add = !self.lib.is_fav(&t);
+                self.lib.apply(&t, add);
+                self.notify(if add { format!("♥ 已收藏：{}", t.name()) } else { format!("已取消收藏：{}", t.name()) });
+                self.spawn(move |api| {
+                    let r = api.set_favorite(t.kind(), &t.id(), add);
+                    Ev::Fav(t, add, r)
+                });
+            }
+            Action::ReloadLibrary => {
+                self.lib.state = LibState::Idle;
+                self.load_library();
+            }
+
+            Action::Download { url, quality, title } => {
+                let name = title.clone().unwrap_or_else(|| url.clone());
+                if self.enqueue_download(url, quality, title) {
+                    self.notify(format!("⬇ 已加入下载队列：{}", name));
+                } else {
+                    self.notify("该任务已在下载队列中");
+                }
+            }
+            Action::EnqueueInput => {
+                let input = std::mem::take(&mut self.ui.dl_input);
+                let q = self.ui.dl_quality.clone();
+                let n = input
+                    .split_whitespace()
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .filter(|u| self.enqueue_download(u.clone(), &q, None))
+                    .count();
+                self.notify(format!("已加入 {} 个下载任务", n));
+            }
+            Action::CancelJob(id) => {
+                if let Some(j) = self.jobs.iter_mut().find(|j| j.id == id) {
+                    j.cancel();
+                }
+            }
+            Action::RemoveJob(id) => self.jobs.retain(|j| j.id != id),
+            Action::RetryJob(id) => {
+                if let Some(pos) = self.jobs.iter().position(|j| j.id == id) {
+                    let old = self.jobs.remove(pos);
+                    let mut nj = DownloadJob::new(self.next_job, old.url, old.quality, old.atmos, old.dest);
+                    nj.meta.title = old.meta.title;
+                    nj.meta.subtitle = old.meta.subtitle;
+                    nj.meta.cover = old.meta.cover;
+                    self.next_job += 1;
+                    self.jobs.push(nj);
+                }
+            }
+            Action::ClearFinishedJobs => self.jobs.retain(|j| !j.status.is_finished()),
+
+            Action::RunQa => {
+                if !self.qa_running {
+                    self.qa_running = true;
+                    let target = PathBuf::from(&self.ui.qa_folder);
+                    let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+                    thread::spawn(move || {
+                        let _ = tx.send(Ev::Qa(run_shanling_qa(&target)));
+                        ctx.request_repaint();
                     });
                 }
-                Action::ReloadLibrary => {
-                    self.lib.state = LibState::Idle;
-                    self.load_library();
+            }
+            Action::PlayerLogin(username, password) => {
+                if !self.player_account_busy {
+                    self.player_account_busy = true;
+                    self.spawn(move |_| Ev::PlayerAccount(crate::relay::PlayerAccount::login(username, password).map(Some)));
                 }
-
-                Action::Download { url, quality, title } => {
-                    let name = title.clone().unwrap_or_else(|| url.clone());
-                    if self.enqueue_download(url, quality, title) {
-                        self.notify(format!("⬇ 已加入下载队列：{}", name));
-                    } else {
-                        self.notify("该任务已在下载队列中");
+            }
+            Action::PlayerLogout => {
+                if !self.player_account_busy {
+                    self.player_account_busy = true;
+                    self.spawn(|_| Ev::PlayerAccount(crate::relay::PlayerAccount::logout().map(|_| None)));
+                }
+            }
+            Action::ReloadAuth => {
+                self.api.reload_auth();
+                self.notify("已重新读取 auth.json");
+                self.lib.state = LibState::Idle;
+                self.load_library();
+            }
+            Action::RefreshToken => {
+                if !self.auth_busy {
+                    self.auth_busy = true;
+                    self.spawn(|api| Ev::Auth(api.refresh_token()));
+                }
+            }
+            Action::Copy(s) => {
+                self.ctx.copy_text(s);
+                self.notify("链接已复制到剪贴板");
+            }
+            Action::OpenUrl(u) => {
+                let _ = open::that(u);
+            }
+            Action::SelectDevice(target) => {
+                let Some(remote) = &mut self.remote else { return };
+                let target = target.filter(|id| remote.devices.iter().any(|device| &device.id == id && !device.is_self));
+                remote.select(target);
+                let message = match remote.target_device() {
+                    Some(device) => format!("{} 正在遥控：{}", device.icon(), device.name),
+                    None => "已切回本机播放".to_string(),
+                };
+                self.notify(message);
+            }
+            Action::RemoteLibraryFilter(query, playlist) => {
+                if let Some(remote) = &mut self.remote {
+                    remote.library.query = query.trim().to_string();
+                    remote.library.playlist = playlist;
+                }
+            }
+            Action::RemoteLibraryMore => {
+                if let Route::RemoteLibrary(tab) = self.route {
+                    self.load_remote_library(tab, true);
+                }
+            }
+            Action::RemoteLibraryPlay(index) => {
+                let Some(remote) = self.remote_target() else { return };
+                let library = &remote.library;
+                let Some(track) = library.tracks.get(index) else { return };
+                let command = if library.tab == Some(crate::route::RemoteTab::Songs) && track.local() {
+                    // Local files play as a list from the chosen song on, like this computer's lists.
+                    let ids: Vec<i64> = library.tracks[index..].iter().filter(|track| track.local()).map(|track| track.id).take(50).collect();
+                    serde_json::json!({"op": "library", "action": "play-list", "ids": ids, "shuffle": false})
+                } else {
+                    serde_json::json!({"op": "library", "action": "song", "id": track.id, "mode": "play"})
+                };
+                let message = format!("正在 {} 播放：{}", remote.target_name(), track.title);
+                if self.remote_send(command) {
+                    self.notify(message);
+                }
+            }
+            Action::RemoteLibrarySong(id, mode) => {
+                let name = self.remote_target().map(crate::remote::Remote::target_name).unwrap_or_default();
+                if self.remote_send(serde_json::json!({"op": "library", "action": "song", "id": id, "mode": mode})) {
+                    self.notify(if mode == "next" { format!("已加入 {name} 的下一首") } else { format!("已加入 {name} 的队列") });
+                }
+            }
+            Action::RemoteLibraryPlayAll(shuffle) => {
+                let Some(remote) = self.remote_target() else { return };
+                let ids: Vec<i64> = remote.library.tracks.iter().filter(|track| track.local()).map(|track| track.id).take(50).collect();
+                if ids.is_empty() {
+                    self.notify("此页没有可播放的本地歌曲");
+                    return;
+                }
+                let name = remote.target_name();
+                if self.remote_send(serde_json::json!({"op": "library", "action": "play-list", "ids": ids, "shuffle": shuffle})) {
+                    self.notify(format!("正在 {name} 播放本页歌曲"));
+                }
+            }
+            Action::LogoutOtherDevices => {
+                if let Some(remote) = &self.remote {
+                    let connection = remote.connection.clone();
+                    self.spawn(move |_| Ev::RemoteLoggedOutOthers(connection.logout_others()));
+                }
+            }
+            Action::TransferTo(id) => {
+                let Some(remote) = &mut self.remote else { return };
+                let Some(name) = remote.devices.iter().find(|device| device.id == id && device.online && !device.is_self)
+                    .map(|device| device.name.clone()) else {
+                    self.notify("设备离线");
+                    return;
+                };
+                match self.pb.current() {
+                    None => {
+                        self.notify("本机没有正在播放的歌曲");
+                        return;
                     }
-                }
-                Action::EnqueueInput => {
-                    let input = std::mem::take(&mut self.ui.dl_input);
-                    let q = self.ui.dl_quality.clone();
-                    let n = input
-                        .split_whitespace()
-                        .map(str::to_string)
-                        .collect::<Vec<_>>()
-                        .into_iter()
-                        .filter(|u| self.enqueue_download(u.clone(), &q, None))
-                        .count();
-                    self.notify(format!("已加入 {} 个下载任务", n));
-                }
-                Action::CancelJob(id) => {
-                    if let Some(j) = self.jobs.iter_mut().find(|j| j.id == id) {
-                        j.cancel();
+                    Some(track) if crate::netease::native_id(track.id).is_some() => {
+                        self.notify("网易云歌曲只能在本机播放");
+                        return;
                     }
+                    Some(_) => {}
                 }
-                Action::RemoveJob(id) => self.jobs.retain(|j| j.id != id),
-                Action::RetryJob(id) => {
-                    if let Some(pos) = self.jobs.iter().position(|j| j.id == id) {
-                        let old = self.jobs.remove(pos);
-                        let mut nj = DownloadJob::new(self.next_job, old.url, old.quality, old.atmos, old.dest);
-                        nj.meta.title = old.meta.title;
-                        nj.meta.subtitle = old.meta.subtitle;
-                        nj.meta.cover = old.meta.cover;
-                        self.next_job += 1;
-                        self.jobs.push(nj);
+                remote.select(Some(id));
+                let player = self.pb.player.snapshot();
+                let position = if player.active { player.position } else { 0.0 };
+                let (tracks, index) = (self.pb.queue.clone(), self.pb.index);
+                if self.remote_tracks(tracks, index, false, "play", position) > 0 {
+                    if player.active && !player.paused {
+                        self.pb.player.toggle_pause();
                     }
+                    self.notify(format!("已转到 {name} 继续播放"));
                 }
-                Action::ClearFinishedJobs => self.jobs.retain(|j| !j.status.is_finished()),
-
-                Action::RunQa => {
-                    if !self.qa_running {
-                        self.qa_running = true;
-                        let target = PathBuf::from(&self.ui.qa_folder);
-                        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
-                        thread::spawn(move || {
-                            let _ = tx.send(Ev::Qa(run_shanling_qa(&target)));
-                            ctx.request_repaint();
-                        });
-                    }
+            }
+            Action::TransferHere => {
+                let Some(remote) = self.remote_target() else { return };
+                let Some(state) = &remote.state else {
+                    self.notify("尚未读取到设备状态，请稍候");
+                    return;
+                };
+                let Some(index) = state.index else {
+                    self.notify("该设备没有正在播放的歌曲");
+                    return;
+                };
+                if state.queue[index].tidal_id.is_none() {
+                    self.notify("当前歌曲是该设备的本地或网易云歌曲，无法在本机继续");
+                    return;
                 }
-                Action::PlayerLogin(username, password) => {
-                    if !self.player_account_busy {
-                        self.player_account_busy = true;
-                        self.spawn(move |_| Ev::PlayerAccount(crate::relay::PlayerAccount::login(username, password).map(Some)));
-                    }
+                // Same 50-track window around the current track as when sending a list.
+                let tidal: Vec<(usize, u64)> = state.queue.iter().enumerate()
+                    .filter_map(|(at, track)| track.tidal_id.map(|id| (at, id))).collect();
+                let current = tidal.iter().position(|(at, _)| *at == index).unwrap_or(0);
+                let start = current.min(tidal.len().saturating_sub(50));
+                let ids: Vec<u64> = tidal[start..tidal.len().min(start + 50)].iter().map(|(_, id)| *id).collect();
+                let current_id = tidal[current].1;
+                let position = state.position();
+                let pause = state.playing.then(|| (remote.connection.clone(), remote.target.clone().unwrap_or_default()));
+                let name = remote.target_name();
+                // Pause the device directly: the command queue is dropped when switching back here.
+                if let Some((connection, target)) = pause {
+                    thread::spawn(move || { let _ = connection.control(&target, &serde_json::json!({"op": "toggle"})); });
                 }
-                Action::PlayerLogout => {
-                    if !self.player_account_busy {
-                        self.player_account_busy = true;
-                        self.spawn(|_| Ev::PlayerAccount(crate::relay::PlayerAccount::logout().map(|_| None)));
-                    }
+                if let Some(remote) = &mut self.remote {
+                    remote.select(None);
                 }
-                Action::ReloadAuth => {
-                    self.api.reload_auth();
-                    self.notify("已重新读取 auth.json");
-                    self.lib.state = LibState::Idle;
-                    self.load_library();
+                self.notify(format!("正在把 {name} 的播放转到本机…"));
+                self.spawn(move |api| {
+                    let tracks: Vec<TrackItem> = crate::relay::fetch_tracks(&api, &ids).into_iter().flatten().collect();
+                    Ev::TransferHere(match tracks.iter().position(|track| track.id == current_id) {
+                        Some(index) => Ok((tracks, index, position)),
+                        None => Err("无法读取当前歌曲，未能在本机继续".into()),
+                    })
+                });
+            }
+            Action::RefreshDevices => {
+                if let Some(remote) = &mut self.remote {
+                    remote.refresh_devices_soon();
                 }
-                Action::RefreshToken => {
-                    if !self.auth_busy {
-                        self.auth_busy = true;
-                        self.spawn(|api| Ev::Auth(api.refresh_token()));
-                    }
-                }
-                Action::Copy(s) => {
-                    self.ctx.copy_text(s);
-                    self.notify("链接已复制到剪贴板");
-                }
-                Action::OpenUrl(u) => {
-                    let _ = open::that(u);
+            }
+            Action::RemoveDevice(id) => {
+                if let Some(remote) = &self.remote {
+                    let connection = remote.connection.clone();
+                    self.spawn(move |_| {
+                        let result = connection.remove(&id);
+                        Ev::RemoteRemoved(id, result)
+                    });
                 }
             }
         }
@@ -901,13 +1201,41 @@ impl App {
                 self.pb.move_track(from, to);
                 return Ok(());
             }
+            "tracks" => {
+                let tracks: Vec<TrackItem> = serde_json::from_value(body["tracks"].clone()).map_err(|_| "曲目信息无效")?;
+                match body["mode"].as_str() {
+                    Some("play") => {
+                        let index = body["index"].as_u64().map_or(0, |index| index as usize).min(tracks.len().saturating_sub(1));
+                        let start = body["position"].as_u64().unwrap_or(0) as f64 / 1000.0;
+                        self.start_queue_local(tracks, index, body["shuffle"] == true, None, start);
+                        return Ok(());
+                    }
+                    Some("next") => Action::PlayNext(tracks),
+                    Some("end") => Action::Enqueue(tracks),
+                    _ => return Err("无效播放操作".into()),
+                }
+            }
+            "clear" => Action::ClearQueue,
+            "quality" => match body["value"].as_str().unwrap_or_default().strip_prefix("netease:") {
+                Some(level) => Action::SetNeteaseLevel(
+                    crate::netease::PLAY_LEVELS.iter().find(|(code, _, _)| *code == level).map(|(code, _, _)| *code).ok_or("音质无效")?,
+                ),
+                None => Action::SetStreamQuality(
+                    body["value"].as_str().and_then(crate::remote::stream_quality).ok_or("音质无效")?,
+                ),
+            },
+            "volume" => {
+                let volume = body["value"].as_f64().filter(|value| (0.0..=100.0).contains(value)).ok_or("音量无效")? as f32;
+                self.ui.volume = volume;
+                Action::SetVolume(volume)
+            }
             "add" => {
                 let track = serde_json::from_value(body["track"].clone()).map_err(|_| "曲目信息无效")?;
                 if body["next"] == true { Action::PlayNext(vec![track]) } else { Action::Enqueue(vec![track]) }
             }
             _ => return Err("未知遥控操作".into()),
         };
-        self.apply(vec![action]);
+        self.apply_local(action);
         Ok(())
     }
 
@@ -942,6 +1270,7 @@ impl eframe::App for App {
             recent_albums: self.recent_albums.clone(),
             recent_searches: self.recent_searches.clone(),
             stream_quality: self.pb.quality,
+            netease_level: self.pb.netease_level.to_string(),
         };
         eframe::set_value(storage, eframe::APP_KEY, &p);
     }
@@ -950,6 +1279,7 @@ impl eframe::App for App {
         self.handle_events();
         self.tick_playback();
         self.relay_tick();
+        self.remote_tick();
         self.schedule_jobs();
         let r = self.route.clone();
         self.ensure_loaded(&r);
@@ -961,5 +1291,160 @@ impl eframe::App for App {
         ui::render(ctx, self, &mut st, &mut acts);
         self.ui = st;
         self.apply(acts);
+    }
+}
+
+// ───────────────────────────── remote control ─────────────────────────────
+
+impl App {
+    /// The remote-control state while another device of this account is selected.
+    pub fn remote_target(&self) -> Option<&crate::remote::Remote> {
+        self.remote.as_ref().filter(|remote| remote.target.is_some())
+    }
+
+    fn remote_send(&mut self, command: serde_json::Value) -> bool {
+        let Some(remote) = &mut self.remote else { return false };
+        if remote.pending() >= 60 {
+            self.notify("遥控命令过多，请稍后再试");
+            return false;
+        }
+        remote.push(command);
+        self.ctx.request_repaint();
+        true
+    }
+
+    /// Send a track list to the remote device in one command. `mode` is "play" (replace the queue
+    /// and start at `index`), "next" or "end". The device looks tracks up by TIDAL id, so NetEase
+    /// tracks only play on this computer. Returns how many tracks were sent.
+    fn remote_tracks(&mut self, tracks: Vec<TrackItem>, index: usize, shuffle: bool, mode: &str, start_at: f64) -> usize {
+        let chosen = tracks.get(index).map(|track| track.id);
+        let tracks: Vec<_> = tracks.into_iter().filter(|track| crate::netease::native_id(track.id).is_none()).collect();
+        if tracks.is_empty() {
+            self.notify("网易云歌曲只能在本机播放");
+            return 0;
+        }
+        let index = chosen.and_then(|id| tracks.iter().position(|track| track.id == id)).unwrap_or(0);
+        // One command carries at most 50 tracks: keep the chosen track inside the window.
+        let start = index.min(tracks.len().saturating_sub(50));
+        let window = &tracks[start..tracks.len().min(start + 50)];
+        let ids: Vec<u64> = window.iter().map(|track| track.id).collect();
+        let name = self.remote.as_ref().map(crate::remote::Remote::target_name).unwrap_or_default();
+        let first = index - start;
+        let sent = self.remote_send(serde_json::json!({"op": "tracks", "ids": ids, "index": first,
+            "shuffle": shuffle, "mode": mode, "position": (start_at.max(0.0) * 1000.0) as u64}));
+        if sent && mode == "play" {
+            self.notify(format!("正在 {name} 播放：{}", window[first].full_title()));
+        }
+        if sent { ids.len() } else { 0 }
+    }
+
+    /// Send playback actions to the selected remote device. Returns the action back when it
+    /// should run on this computer instead.
+    fn remote_action(&mut self, action: Action) -> Option<Action> {
+        use serde_json::json;
+        let Some(remote) = self.remote_target() else { return Some(action) };
+        let state = remote.state.as_ref();
+        let revision = state.map(|state| state.revision.clone()).unwrap_or_default();
+        let queue_len = state.map_or(0, |state| state.queue.len());
+        let current = state.and_then(|state| state.index);
+        let name = remote.target_name();
+        match action {
+            Action::TogglePause => { self.remote_send(json!({"op": "toggle"})); }
+            Action::Next => { self.remote_send(json!({"op": "next"})); }
+            Action::Prev => { self.remote_send(json!({"op": "previous"})); }
+            Action::ToggleShuffle => { self.remote_send(json!({"op": "shuffle"})); }
+            Action::CycleRepeat => { self.remote_send(json!({"op": "repeat"})); }
+            Action::Seek(seconds) => { self.remote_send(json!({"op": "seek", "ms": (seconds.max(0.0) * 1000.0) as u64})); }
+            Action::JumpQueue(index) if index < queue_len => {
+                self.remote_send(json!({"op": "play", "index": index, "revision": revision}));
+            }
+            Action::RemoveQueue(index) if index < queue_len && Some(index) != current => {
+                self.remote_send(json!({"op": "remove", "index": index, "revision": revision}));
+            }
+            Action::JumpQueue(_) | Action::RemoveQueue(_) => {}
+            Action::PlayNext(tracks) => {
+                let count = self.remote_tracks(tracks, 0, false, "next", 0.0);
+                if count > 0 {
+                    self.notify(format!("已发送 {count} 首到 {name} 的“下一首播放”"));
+                }
+            }
+            Action::Enqueue(tracks) => {
+                let count = self.remote_tracks(tracks, 0, false, "end", 0.0);
+                if count > 0 {
+                    self.notify(format!("已发送 {count} 首到 {name} 的播放队列"));
+                }
+            }
+            Action::SetVolume(volume) => { self.remote_send(json!({"op": "volume", "value": volume.clamp(0.0, 100.0).round()})); }
+            Action::ClearQueue => { self.remote_send(json!({"op": "clear"})); }
+            Action::SetStreamQuality(quality) => { self.remote_send(json!({"op": "quality", "value": quality.api_name()})); }
+            Action::SetNeteaseLevel(level) => { self.remote_send(json!({"op": "quality", "value": format!("netease:{level}")})); }
+            Action::StopPlayback => {
+                self.notify(format!("请在 {name} 上进行此操作"));
+            }
+            other => return Some(other),
+        }
+        None
+    }
+
+    /// Fetch a page of the controlled Android device's library for its library page.
+    fn load_remote_library(&mut self, tab: crate::route::RemoteTab, append: bool) {
+        let Some(remote) = self.remote.as_mut().filter(|remote| remote.target.is_some() && remote.target_has_library()) else { return };
+        let library = &mut remote.library;
+        let key = (tab, library.query.clone(), library.playlist.clone());
+        if library.loading || (!append && library.loaded.as_ref() == Some(&key)) || (append && library.next.is_none()) {
+            return;
+        }
+        let offset = if append { library.next.unwrap_or(0) } else { 0 };
+        library.loading = true;
+        library.loaded = Some(key);
+        library.tab = Some(tab);
+        library.request += 1;
+        let (request, generation) = (library.request, remote.generation);
+        let action = match tab {
+            crate::route::RemoteTab::Songs => "local",
+            crate::route::RemoteTab::Recent => "recent",
+        };
+        let command = serde_json::json!({"op": "library", "action": action, "query": library.query,
+            "playlist": library.playlist, "offset": offset});
+        let (connection, target) = (remote.connection.clone(), remote.target.clone().unwrap_or_default());
+        self.spawn(move |_| Ev::RemoteLibrary(generation, request, append, connection.query(&target, &command)));
+    }
+
+    fn remote_tick(&mut self) {
+        let Some(remote) = &mut self.remote else { return };
+        let period = if remote.target.is_some() || self.route == Route::Devices {
+            Duration::from_secs(3)
+        } else {
+            Duration::from_secs(10)
+        };
+        if remote.devices_due(period) {
+            remote.devices_started();
+            let connection = remote.connection.clone();
+            let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+            thread::spawn(move || {
+                let _ = tx.send(Ev::RemoteDevices(connection.devices()));
+                ctx.request_repaint();
+            });
+        }
+        let Some(target) = remote.target.clone() else { return };
+        let generation = remote.generation;
+        if let Some(command) = remote.next_command() {
+            let connection = remote.connection.clone();
+            let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+            thread::spawn(move || {
+                let _ = tx.send(Ev::RemoteCommand(generation, connection.control(&target, &command)));
+                ctx.request_repaint();
+            });
+        } else if remote.state_due() {
+            remote.state_started();
+            let connection = remote.connection.clone();
+            let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+            thread::spawn(move || {
+                let _ = tx.send(Ev::RemoteState(generation, connection.state(&target)));
+                ctx.request_repaint();
+            });
+        }
+        // Keep the progress bar moving and keep polling.
+        self.ctx.request_repaint_after(Duration::from_millis(250));
     }
 }

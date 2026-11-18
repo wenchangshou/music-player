@@ -51,6 +51,14 @@ pub fn show(ctx: &egui::Context, app: &App, st: &crate::app::UiState, acts: &mut
             nav(ui, *r == Route::Home, "🏠", "首页", None, Route::Home);
             nav(ui, matches!(r, Route::Search(..)), "🔍", "搜索", None, Route::Search(st.search_source, app.recent_searches.first().cloned().unwrap_or_default()));
 
+            // The controlled phone's own library comes first, since playback happens there.
+            if let Some(remote) = app.remote_target().filter(|remote| remote.target_has_library()) {
+                group_label(ui, &format!("📱 {}", remote.target_name()));
+                use crate::route::RemoteTab;
+                nav(ui, *r == Route::RemoteLibrary(RemoteTab::Songs), "🎵", "设备音乐库", None, Route::RemoteLibrary(RemoteTab::Songs));
+                nav(ui, *r == Route::RemoteLibrary(RemoteTab::Recent), "🕘", "最近播放", None, Route::RemoteLibrary(RemoteTab::Recent));
+            }
+
             group_label(ui, "我的收藏");
             let d = &app.lib.data;
             let ready = app.lib.state == LibState::Ready;
@@ -71,6 +79,10 @@ pub fn show(ctx: &egui::Context, app: &App, st: &crate::app::UiState, acts: &mut
             let active = app.active_downloads();
             nav(ui, *r == Route::Downloads, "⬇", "下载", (active > 0).then(|| active.to_string()), Route::Downloads);
             nav(ui, *r == Route::Qa, "🛡", "山灵质检", None, Route::Qa);
+            if let Some(remote) = &app.remote {
+                let online = remote.devices.iter().filter(|device| device.online && !device.is_self).count();
+                nav(ui, *r == Route::Devices, "📡", "设备", (online > 0).then(|| format!("{online} 在线")), Route::Devices);
+            }
             nav(ui, *r == Route::Settings, "⚙", "设置", None, Route::Settings);
 
             let lists: Vec<_> = d.my_playlists.iter().chain(d.playlists.iter().map(|f| &f.item)).collect();

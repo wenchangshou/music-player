@@ -21,6 +21,7 @@ pub fn render(ctx: &egui::Context, app: &App, st: &mut UiState, acts: &mut Vec<A
         queue::show(ctx, app, st, acts);
     }
     topbar::show(ctx, app, st, acts);
+    remote_banner(ctx, app, acts);
 
     egui::CentralPanel::default()
         .frame(egui::Frame::new().fill(theme::BG).inner_margin(egui::Margin { left: 24, right: 16, top: 4, bottom: 0 }))
@@ -34,9 +35,40 @@ pub fn render(ctx: &egui::Context, app: &App, st: &mut UiState, acts: &mut Vec<A
             Route::Downloads => pages::downloads::show(app, st, ui, acts),
             Route::Qa => pages::qa::show(app, st, ui, acts),
             Route::Settings => pages::settings::show(app, st, ui, acts),
+            Route::Devices => pages::devices::show(app, st, ui, acts),
+            Route::RemoteLibrary(tab) => pages::remote_library::show(app, st, ui, acts, tab),
         });
 
     toast(ctx, app);
+}
+
+/// Shown on every page while another device is controlled.
+fn remote_banner(ctx: &egui::Context, app: &App, acts: &mut Vec<Action>) {
+    let Some(remote) = app.remote_target() else { return };
+    let device = remote.target_device();
+    let icon = device.map_or("📡", crate::remote::DeviceInfo::icon);
+    let name = remote.target_name();
+    let library = if device.is_some_and(|device| device.platform == "android") { "播放、队列和音乐库" } else { "播放和队列" };
+    egui::TopBottomPanel::top("remote_banner")
+        .exact_height(38.0)
+        .show_separator_line(false)
+        .frame(egui::Frame::new().fill(theme::ACCENT.gamma_multiply(0.16)).inner_margin(egui::Margin::symmetric(20, 6)))
+        .show(ctx, |ui| {
+            ui.horizontal_centered(|ui| {
+                ui.label(RichText::new(format!("{icon} 正在遥控 {name}")).strong().color(theme::ACCENT));
+                ui.label(RichText::new(format!("· {library}都来自这台设备，操作会在它上面执行")).color(theme::TEXT_WEAK));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("切回本机").clicked() {
+                        acts.push(Action::SelectDevice(None));
+                    }
+                    if remote.state.as_ref().and_then(crate::remote::RemoteState::current).is_some_and(|track| track.tidal_id.is_some())
+                        && ui.button("在本机继续").on_hover_text("把队列和进度转到这台电脑").clicked()
+                    {
+                        acts.push(Action::TransferHere);
+                    }
+                });
+            });
+        });
 }
 
 fn toast(ctx: &egui::Context, app: &App) {

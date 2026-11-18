@@ -407,15 +407,15 @@ final class TidalClient {
                 || (("LOSSLESS".equals(actual) || actual.isEmpty()) && (depth > 16 || rate > 48000));
         if (max && !hiRes) {
             throw new DownloadTasks.QualityUnavailable("该会话只返回 " + (actual.isEmpty() ? "未知音质" : actual)
-                    + "，无法确认 Hi-Res。可选择无损或检查 TIDAL 会话");
+                    + "，无法确认 Max。可选择 High 或检查 TIDAL 会话");
         }
         if ("application/dash+xml".equals(data.optString("manifestMimeType"))) {
             if (losslessRequest(quality) && !actual.isEmpty() && !losslessRequest(actual)) {
-                throw new DownloadTasks.QualityUnavailable("TIDAL 返回 " + actual + "，未满足所选无损音质");
+                throw new DownloadTasks.QualityUnavailable("TIDAL 返回 " + actual + "，未满足所选音质（High 或 Max）");
             }
             byte[] dash = Base64.decode(data.getString("manifest"), Base64.DEFAULT);
             DashFlacDownload.select(dash);
-            String resolution = hiRes ? "Hi-Res 无损 FLAC" : "无损 FLAC";
+            String resolution = hiRes ? "Max · HiRes FLAC" : "High · FLAC";
             if (depth > 0 && rate > 0) resolution += " · " + depth + " bit / " + (rate / 1000.0) + " kHz";
             return new DownloadAudio(null, "flac", resolution, dash);
         }
@@ -444,10 +444,10 @@ final class TidalClient {
         if (losslessRequest(quality) && (!"flac".equals(extension)
                 || (!actual.isEmpty() && !losslessRequest(actual)))) {
             throw new DownloadTasks.QualityUnavailable("TIDAL 返回 " + (actual.isEmpty() ? extension : actual + " / " + extension)
-                    + "，未满足所选无损音质");
+                    + "，未满足所选音质（High 或 Max）");
         }
-        String resolution = hiRes ? "Hi-Res 无损"
-                : "flac".equals(extension) ? "无损 FLAC" : actual;
+        String resolution = hiRes ? "Max · HiRes FLAC"
+                : "flac".equals(extension) ? "High · FLAC" : actual;
         if (depth > 0 && rate > 0) resolution += " · " + depth + " bit / " + (rate / 1000.0) + " kHz";
         return new DownloadAudio(uri, extension, resolution, null);
     }

@@ -103,6 +103,14 @@ class Accounts:
                               "WHERE username=? AND platform!='web' AND expires>? ORDER BY name,id",
                               (username, int(time.time()))).fetchall()
 
+    def revoke_others(self, username, keep):
+        """End every session of ``username`` except ``keep``; returns the removed session ids."""
+        with closing(self.connect()) as db, db:
+            removed = [row["id"] for row in db.execute(
+                "SELECT id FROM sessions WHERE username=? AND id!=?", (username, keep))]
+            db.execute("DELETE FROM sessions WHERE username=? AND id!=?", (username, keep))
+            return removed
+
     def revoke(self, username, identifier):
         with closing(self.connect()) as db, db:
             return db.execute("DELETE FROM sessions WHERE username=? AND id=?",

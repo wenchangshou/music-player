@@ -286,19 +286,15 @@ impl StreamQuality {
             StreamQuality::Low => "LOW",
         }
     }
+    /// TIDAL's own name for the level (see [`tidal_quality_name`]).
     pub fn short(self) -> &'static str {
-        match self {
-            StreamQuality::HiRes => "Hi-Res",
-            StreamQuality::Lossless => "无损",
-            StreamQuality::High => "高",
-            StreamQuality::Low => "低",
-        }
+        tidal_quality_name(self.api_name()).unwrap_or("Max")
     }
     pub fn describe(self) -> &'static str {
         match self {
-            StreamQuality::HiRes => "FLAC 最高 24bit/192kHz",
+            StreamQuality::HiRes => "HiRes FLAC 最高 24bit/192kHz",
             StreamQuality::Lossless => "FLAC 16bit/44.1kHz",
-            StreamQuality::High => "AAC 320kbps",
+            StreamQuality::High => "AAC 最高 320kbps",
             StreamQuality::Low => "AAC 96kbps",
         }
     }
@@ -317,17 +313,30 @@ pub struct StreamInfo {
     pub note: Option<String>,
 }
 
+/// TIDAL's names for its audio quality levels, as in the TIDAL apps: Max (HiRes FLAC), High
+/// (16-bit FLAC) and Low (AAC up to 320 kbps). The API's 96 kbps AAC level, which the apps no
+/// longer offer, is "Low 96k". Every screen and every platform uses these names.
+pub fn tidal_quality_name(api: &str) -> Option<&'static str> {
+    Some(match api {
+        "HI_RES_LOSSLESS" | "HIRES_LOSSLESS" => "Max",
+        "LOSSLESS" => "High",
+        "HIGH" => "Low",
+        "LOW" => "Low 96k",
+        _ => return None,
+    })
+}
+
 impl StreamInfo {
     pub fn label(&self) -> String {
         let fmt = |b: Option<u32>, r: Option<u32>| match (b, r) {
-            (Some(b), Some(r)) => format!("{}bit/{}kHz", b, (r as f32 / 1000.0).to_string()),
+            (Some(b), Some(r)) => format!(" {}bit/{}kHz", b, (r as f32 / 1000.0).to_string()),
             _ => String::new(),
         };
         match self.quality.as_str() {
-            "HI_RES_LOSSLESS" => format!("Hi-Res {}", fmt(self.bit_depth, self.sample_rate)),
-            "LOSSLESS" => format!("FLAC {}", fmt(self.bit_depth, self.sample_rate)),
-            "HIGH" => "AAC 320kbps".into(),
-            "LOW" => "AAC 96kbps".into(),
+            "HI_RES_LOSSLESS" | "LOSSLESS" => format!("{}{}", tidal_quality_name(&self.quality).unwrap_or_default(),
+                fmt(self.bit_depth, self.sample_rate)),
+            "HIGH" => "Low 320kbps".into(),
+            "LOW" => "Low 96kbps".into(),
             q => q.to_string(),
         }
     }

@@ -237,6 +237,38 @@ struct Audio {
     format: Option<String>,
 }
 
+/// 网易云's playback levels, best first: (level, official name, what it delivers).
+pub const PLAY_LEVELS: [(&str, &str, &str); 8] = [
+    ("jymaster", "超清母带", "母带音质，最高 24bit/192kHz"),
+    ("sky", "沉浸环绕声", "空间音频"),
+    ("jyeffect", "高清环绕声", "环绕声"),
+    ("hires", "Hi-Res", "最高 24bit/192kHz"),
+    ("lossless", "无损", "FLAC 16bit/44.1kHz"),
+    ("exhigh", "极高", "最高 320kbps"),
+    ("higher", "较高", "192kbps"),
+    ("standard", "标准", "128kbps"),
+];
+
+/// A known playback level, or 无损 for anything else (e.g. an old saved setting).
+pub fn play_level(level: &str) -> &'static str {
+    PLAY_LEVELS.iter().find(|(code, _, _)| *code == level).map_or("lossless", |(code, _, _)| *code)
+}
+
+/// 网易云's own names for its levels (标准 / 较高 / 极高 / 无损 / Hi-Res / 超清母带…).
+pub fn level_name(level: &str) -> &str {
+    match level {
+        "standard" => "标准",
+        "higher" => "较高",
+        "exhigh" => "极高",
+        "lossless" => "无损",
+        "hires" => "Hi-Res",
+        "jyeffect" => "高清环绕声",
+        "sky" => "沉浸环绕声",
+        "jymaster" => "超清母带",
+        other => other,
+    }
+}
+
 pub fn level(quality: StreamQuality) -> &'static str {
     match quality {
         StreamQuality::HiRes => "hires",
@@ -362,7 +394,11 @@ impl Netease<'_> {
     }
 
     pub fn stream(&self, id: u64, quality: StreamQuality) -> Result<(StreamInfo, String), String> {
-        let level = level(quality);
+        self.stream_level(id, level(quality), quality)
+    }
+
+    /// Stream at one of [`PLAY_LEVELS`]; `quality` is only recorded as the TIDAL-side request.
+    pub fn stream_level(&self, id: u64, level: &str, quality: StreamQuality) -> Result<(StreamInfo, String), String> {
         let body: StreamResponse =
             self.get("song/url/v1", &[("id", &id.to_string()), ("level", level)])?;
         let Some(audio) = body.data.into_iter().find(|audio| audio.id == id) else {
@@ -380,11 +416,11 @@ impl Netease<'_> {
         let format = audio.format.unwrap_or_default().to_ascii_lowercase();
         let info = StreamInfo {
             url: url.to_string(),
-            quality: format!("网易云 · {actual}"),
+            quality: format!("网易云 · {}", level_name(actual)),
             bit_depth: None,
             sample_rate: None,
             requested: quality,
-            note: (actual != level).then(|| format!("网易云提供的实际音质为 {actual}")),
+            note: (actual != level).then(|| format!("网易云提供的实际音质为 {}", level_name(actual))),
         };
         Ok((info, format))
     }

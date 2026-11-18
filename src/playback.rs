@@ -30,6 +30,8 @@ pub struct Playback {
     pub context: Option<PlayContext>,
     /// Preview quality to request.
     pub quality: StreamQuality,
+    /// 网易云 level for NetEase tracks, one of `netease::PLAY_LEVELS`.
+    pub netease_level: &'static str,
     /// Where to start the pending stream (used when switching quality mid-track).
     pub pending_start: f64,
 }
@@ -61,6 +63,7 @@ impl Playback {
             stream: None,
             context: None,
             quality: StreamQuality::HiRes,
+            netease_level: "lossless",
             pending_start: 0.0,
         }
     }

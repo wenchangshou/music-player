@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """TIDAL GUI device relay. Run behind an HTTPS reverse proxy."""
+import base64
 import hmac
 import json
 import os
@@ -20,8 +21,17 @@ from tidal_browser import CALLBACK, TidalBrowser
 ROOT = Path(__file__).resolve().parent
 ASSETS = Path(os.environ.get("TIDAL_REMOTE_ASSETS", ROOT.parent / "android/app/src/main/assets/remote"))
 ID = re.compile(r"[a-zA-Z0-9_-]{1,64}\Z")
-COMMANDS = {"library", "search", "add", "toggle", "next", "previous", "seek", "shuffle", "repeat", "play", "remove", "move"}
+COMMANDS = {"library", "search", "add", "toggle", "next", "previous", "seek", "shuffle", "repeat", "play", "remove", "move",
+            "tracks", "volume", "clear", "quality"}
 MAX_JSON = 1024 * 1024
+# Long polling: a device poll waits this long for a command, a receipt request for its result.
+# Short enough that device state stays fresh and request slots are freed quickly.
+POLL_HOLD = 2.5
+RECEIPT_HOLD = 5.0
+# Cover thumbnails a device uploads for local files that viewers cannot open themselves.
+ARTWORK_KEY = re.compile(r"[A-Za-z0-9:._-]{1,128}\Z")
+ARTWORK_TOKEN = re.compile(r"/artwork/([A-Za-z0-9_-]{24})\.jpg\Z")
+MAX_ARTWORK = 96 * 1024
 
 
 class APIError(Exception):
@@ -44,6 +54,8 @@ class Device:
         self.inflight = {}
         self.completed = {}
         self.pairing = None
+        # (key, token) of the uploaded cover for the current local track; token None = no cover.
+        self.artwork = None
 
 
 class Relay:
@@ -61,7 +73,10 @@ class Relay:
             raise ValueError("origin must be the public HTTPS origin")
         self.releases = Path(config["releases"])
         self.lock = threading.Lock()
+        # Woken when a command is queued, completed or a device is removed.
+        self.signal = threading.Condition(self.lock)
         self.desktop_sessions = {}
+        self.artworks = {}
         self.account_devices = {}
         account_db = config.get("account_db") or os.environ.get("TIDAL_ACCOUNT_DB")
         self.accounts = Accounts(account_db) if account_db else None
@@ -86,16 +101,28 @@ class Relay:
                 self.account_devices[identifier] = Device(identifier, dict(session))
             return self.account_devices[identifier]
 
+    def revoke_other_devices(self, username, keep):
+        with self.lock:
+            for identifier in self.accounts.revoke_others(username, keep):
+                self.forget_account_device(username, identifier)
+            self.signal.notify_all()
+
     def revoke_account_device(self, username, identifier):
         with self.lock:
             if not self.accounts.revoke(username, identifier):
                 raise APIError(404, "设备不存在")
-            device = self.account_devices.pop(identifier, None)
-            if device is not None:
-                device.revoked = True
-            published = self.desktop_sessions.get(username)
-            if published and published[0].id == identifier:
-                del self.desktop_sessions[username]
+            self.forget_account_device(username, identifier)
+
+    def forget_account_device(self, username, identifier):
+        """Drop a revoked session's live state. The caller holds the lock."""
+        device = self.account_devices.pop(identifier, None)
+        if device is not None:
+            device.revoked = True
+            self.drop_artwork(device)
+            self.signal.notify_all()
+        published = self.desktop_sessions.get(username)
+        if published and published[0].id == identifier:
+            del self.desktop_sessions[username]
 
     def device_access(self, identifier, auth):
         entry = self.devices.get(identifier)
@@ -112,12 +139,39 @@ class Relay:
     def online(device):
         return device.last_seen is not None and time.monotonic() - device.last_seen < 12
 
-    def list_devices(self, owner=None):
+    @staticmethod
+    def now_playing(device):
+        """Short summary of what an online device is playing, for device pickers."""
+        state = device.state
+        queue, index = state.get("queue"), state.get("index")
+        if not isinstance(queue, list) or type(index) is not int or not 0 <= index < len(queue):
+            return None
+        track = queue[index]
+        if not isinstance(track, dict):
+            return None
+        summary = {key: track[key][:300] for key in ("title", "artist", "cover")
+                   if isinstance(track.get(key), str)}
+        summary["playing"] = state.get("playing") is True
+        return summary
+
+    def list_devices(self, owner=None, current=None):
         devices = (list(self.devices.values()) if owner is None else
                    [self.account_device(session) for session in self.accounts.devices(owner)])
         with self.lock:
-            return {"devices": [{"id": device.id, "name": device.name, "platform": device.platform,
-                                 "online": self.online(device), "version": device.state.get("version", "")} for device in devices]}
+            listing = []
+            for device in devices:
+                online = self.online(device)
+                entry = {"id": device.id, "name": device.name, "platform": device.platform,
+                         "online": online, "version": device.state.get("version", "")}
+                if owner is not None:
+                    entry["self"] = device.id == current
+                    # Seconds since the last poll, measured here so device clocks do not matter.
+                    # Unknown until the device polls after a relay restart.
+                    entry["lastSeenAgo"] = (None if device.last_seen is None
+                                            else int(time.monotonic() - device.last_seen))
+                    entry["nowPlaying"] = self.now_playing(device) if online else None
+                listing.append(entry)
+            return {"devices": listing}
 
     def issue_pairing(self, device):
         if device.platform != "android":
@@ -163,6 +217,7 @@ class Relay:
                 raise APIError(429, "设备命令过多，请稍后重试")
             command_id = uuid.uuid4().hex
             device.pending.append((now + 12, command_id, command))
+            self.signal.notify_all()
         return {"command": command_id}
 
     @staticmethod
@@ -171,14 +226,21 @@ class Relay:
         device.inflight = {key: expiry for key, expiry in device.inflight.items() if expiry > now}
         device.completed = {key: item for key, item in device.completed.items() if item[0] > now}
 
-    def receipt(self, device, command):
+    def receipt(self, device, command, wait=False):
+        """With ``wait``, hold the request until the device reports the result (``held`` tells
+        clients they need not pause before asking again)."""
         with self.lock:
-            self.cleanup(device, time.monotonic())
-            if command in device.completed:
-                return {"result": device.completed[command][1]}
-            if command in device.inflight or any(item[1] == command for item in device.pending):
-                return {"pending": True}
-            raise APIError(404, "命令已过期或设备未返回结果")
+            deadline = time.monotonic() + RECEIPT_HOLD
+            while True:
+                self.cleanup(device, time.monotonic())
+                if command in device.completed:
+                    return {"result": device.completed[command][1]}
+                if not (command in device.inflight or any(item[1] == command for item in device.pending)):
+                    raise APIError(404, "命令已过期或设备未返回结果")
+                remaining = deadline - time.monotonic()
+                if not wait or remaining <= 0:
+                    return {"pending": True, "held": True} if wait else {"pending": True}
+                self.signal.wait(remaining)
 
     def sync_session(self, device, message):
         now = int(time.time())
@@ -221,6 +283,45 @@ class Relay:
             return {"desktop_session": payload}
         return {}
 
+    def drop_artwork(self, device):
+        if device.artwork and device.artwork[1]:
+            self.artworks.pop(device.artwork[1], None)
+        device.artwork = None
+
+    def sync_artwork(self, device, message, state, reply):
+        """Store a cover the device uploaded and link it from the current track. The caller holds
+        the lock. Asks for the cover with ``artwork_needed`` when the current track changes."""
+        key = message.get("artwork_key")
+        if not isinstance(key, str) or not ARTWORK_KEY.fullmatch(key):
+            return state
+        upload = message.get("artwork")
+        if isinstance(upload, dict) and upload.get("key") == key:
+            data = None
+            if isinstance(upload.get("jpeg"), str) and len(upload["jpeg"]) <= MAX_ARTWORK * 4 // 3 + 4:
+                try:
+                    data = base64.b64decode(upload["jpeg"], validate=True)
+                except ValueError:
+                    data = None
+            self.drop_artwork(device)
+            if data and len(data) <= MAX_ARTWORK and data.startswith(b"\xff\xd8\xff"):
+                token = secrets.token_urlsafe(18)
+                self.artworks[token] = data
+                device.artwork = (key, token)
+            else:
+                device.artwork = (key, None)
+        if device.artwork is None or device.artwork[0] != key:
+            reply["artwork_needed"] = key
+            return state
+        token = device.artwork[1]
+        queue, index = state.get("queue"), state.get("index")
+        if (token and isinstance(queue, list) and type(index) is int and 0 <= index < len(queue)
+                and isinstance(queue[index], dict)
+                and not str(queue[index].get("cover", "")).startswith("https://")):
+            queue = list(queue)
+            queue[index] = {**queue[index], "cover": f"{self.origin}/artwork/{token}.jpg"}
+            state = {**state, "queue": queue}
+        return state
+
     def poll(self, device, message):
         state = message.get("state")
         if not isinstance(state, dict):
@@ -231,16 +332,32 @@ class Relay:
             now = time.monotonic()
             self.cleanup(device, now)
             device.last_seen = now
-            device.state = state
             reply = self.sync_session(device, message)
+            device.state = self.sync_artwork(device, message, state, reply)
             result = message.get("result")
             if isinstance(result, dict):
                 identifier = result.get("id")
                 if isinstance(identifier, str) and identifier in device.inflight:
                     del device.inflight[identifier]
                     device.completed[identifier] = (now + 30, result.get("payload", {}))
+                    self.signal.notify_all()
+            long_poll = message.get("wait") is True
+            if long_poll:
+                # ``wait`` in the reply tells the device this relay holds polls, so it may poll
+                # again right away instead of pausing.
+                reply["wait"] = True
             # A receipt heartbeat only acknowledges the last command. The next heartbeat requests work.
-            if result is not None or not device.pending:
+            if result is not None:
+                return reply
+            if long_poll:
+                # Long poll: answer as soon as a command arrives.
+                self.signal.wait_for(lambda: device.pending or device.revoked, POLL_HOLD)
+                if device.revoked:
+                    raise APIError(401, "设备已移除，请重新登录")
+                now = time.monotonic()
+                self.cleanup(device, now)
+                device.last_seen = now
+            if not device.pending:
                 return reply
             _, identifier, command = device.pending.pop(0)
             device.inflight[identifier] = now + 60
@@ -253,7 +370,8 @@ class Server(ThreadingHTTPServer):
     def __init__(self, address, relay):
         super().__init__(address, Handler)
         self.relay = relay
-        self.slots = threading.BoundedSemaphore(32)
+        # Each online device keeps one long poll open, so leave room for controllers and pages.
+        self.slots = threading.BoundedSemaphore(64)
 
     def service_actions(self):
         self.relay.browser.expire()
@@ -338,6 +456,14 @@ class Handler(BaseHTTPRequestHandler):
                 if photo.is_file():
                     self.respond(photo.read_bytes(), "image/webp")
                     return
+            artwork = ARTWORK_TOKEN.fullmatch(path)
+            if not post and artwork:
+                with relay.lock:
+                    data = relay.artworks.get(artwork.group(1))
+                if data is None:
+                    raise APIError(404, "封面不存在")
+                self.respond(data, "image/jpeg")
+                return
             if not post and path == "/app.js":
                 self.respond((ASSETS / "app.js").read_bytes(), "text/javascript; charset=utf-8")
                 return
@@ -383,6 +509,10 @@ class Handler(BaseHTTPRequestHandler):
                 if not post and path == "/account/me":
                     self.respond({"username": session["username"], "id": session["id"]})
                     return
+                if post and path == "/account/logout-others":
+                    relay.revoke_other_devices(session["username"], session["id"])
+                    self.respond({})
+                    return
                 if post and path in ("/account/logout", "/account/remove-device"):
                     identifier = session["id"]
                     if path == "/account/remove-device":
@@ -417,7 +547,7 @@ class Handler(BaseHTTPRequestHandler):
                 owner = account["username"] if account else None
                 query = parse_qs(parsed.query)
                 if not post and path == "/api/devices":
-                    self.respond(relay.list_devices(owner))
+                    self.respond(relay.list_devices(owner, account["id"] if account else None))
                     return
                 identifier = query.get("device", [""])[0]
                 if account:
@@ -438,7 +568,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.respond(relay.control(device, self.payload(4096)))
                     return
                 if not post and path == "/api/receipt":
-                    self.respond(relay.receipt(device, query.get("command", [""])[0]))
+                    self.respond(relay.receipt(device, query.get("command", [""])[0], query.get("wait") == ["1"]))
                     return
             raise APIError(404, "接口不存在")
         except TidalError as error:

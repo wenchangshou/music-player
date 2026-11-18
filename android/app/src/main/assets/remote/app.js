@@ -54,7 +54,18 @@ let filesPage = false;
 let roots = [];
 let directoryItems = [];
 let directoryLoading = false;
-let selectedItem = null;
+// Selected files and folders, by kind and name, so a refresh keeps the selection.
+let selected = new Set();
+let selectionAnchor = null;
+let multiSelect = false;
+let filesRevision;
+let refreshPending = false;
+const fileKey = item => (item.folder ? "d:" : "f:") + item.name;
+const selectedItems = () => directoryItems.filter(item => selected.has(fileKey(item)));
+function clearSelection() {
+  selected.clear();
+  selectionAnchor = null;
+}
 let selectedRoot = "";
 let directory = "";
 let listing = 0;
@@ -151,9 +162,12 @@ async function call(op, fields = {}) {
     body: JSON.stringify({op, ...fields})
   }, op === "library-scan" ? 120000 : 22000);
   if (!central) return result;
+  // wait=1 lets the relay hold the request until the device answers; pause only when it did not.
+  let held = false;
   for (let i = 0; i < 50; i++) {
-    await new Promise(resolve => setTimeout(resolve, 750));
-    const receipt = await fetchJson("/api/receipt" + suffix + "&command=" + encodeURIComponent(result.command));
+    if (!held) await new Promise(resolve => setTimeout(resolve, 750));
+    const receipt = await fetchJson("/api/receipt" + suffix + "&wait=1&command=" + encodeURIComponent(result.command));
+    held = receipt.held === true;
     if (receipt.pending) continue;
     if (receipt.result.error) throw new Error(receipt.result.error);
     return receipt.result;
@@ -261,9 +275,11 @@ function trackRow(track, active = false) {
   return row;
 }
 
-const qualityNames = {HI_RES_LOSSLESS: "Hi-Res", HI_RES: "Hi-Res", LOSSLESS: "无损", HIGH: "高", LOW: "低"};
+// TIDAL's names for its levels, the same on every client.
+const qualityNames = {HI_RES_LOSSLESS: "Max", HI_RES: "Max", LOSSLESS: "High", HIGH: "Low", LOW: "Low 96k"};
 
 function render(state) {
+  filesChanged(state.filesRevision);
   const allowFiles = !central && state.remoteFiles === true;
   filesEnabled = allowFiles;
   $("openFiles").hidden = !allowFiles;
@@ -283,12 +299,15 @@ function render(state) {
   const current = state.queue[state.index];
   $("title").textContent = current ? displayTitle(current) : "尚未播放";
   $("artist").textContent = [current?.artist, current?.album].filter(Boolean).join(" · ");
+  // Local files show their path on the device; the tooltip keeps the full path.
+  const path = current?.source === "本地音乐" ? state.sourcePath || "" : "";
   $("sourceName").textContent = current?.source || "正在播放";
+  $("sourceName").title = path ? "文件路径：" + path : "";
   const quality = qualityNames[state.actualQuality] || "";
   const chip = $("qualityChip");
   chip.hidden = !current || (!quality && !state.resolution);
   chip.textContent = [quality, state.resolution].filter(Boolean).join(" · ");
-  chip.classList.toggle("hires", quality === "Hi-Res");
+  chip.classList.toggle("hires", quality === "Max");
   document.title = current ? displayTitle(current) + (current.artist ? " · " + current.artist : "") + " — 听音室" : "听音室 · 遥控";
   const artwork = $("artwork");
   const name = current ? current.album || current.title : "";
@@ -381,7 +400,7 @@ function openDirectory(root, path) {
   if (selectedRoot === root && directory === path) return;
   selectedRoot = root;
   directory = path;
-  selectedItem = null;
+  clearSelection();
   directoryItems = [];
   loadDirectory();
 }
@@ -412,7 +431,7 @@ function renderFiles() {
   });
   for (const item of directoryItems) {
     const row = document.createElement("li");
-    const tile = button("", () => selectFile(item));
+    const tile = button("", event => selectFile(item, event));
     tile.className = "file-tile";
     const icon = document.createElement("span");
     icon.className = "tile-icon " + (item.folder ? "tile-folder" : "tile-audio");
@@ -440,19 +459,54 @@ function renderFiles() {
   updateFileSelection();
 }
 
-function selectFile(item) {
+// Click selects one item; Ctrl/⌘-click or 多选 toggles; Shift-click selects a range.
+function selectFile(item, event) {
   if (fileBusy) return;
-  selectedItem = item;
+  const key = fileKey(item);
+  const adding = multiSelect || event?.ctrlKey || event?.metaKey;
+  if (event?.shiftKey && selectionAnchor) {
+    const from = directoryItems.findIndex(entry => fileKey(entry) === selectionAnchor);
+    const to = directoryItems.indexOf(item);
+    if (from >= 0 && to >= 0) {
+      if (!adding) selected.clear();
+      for (let i = Math.min(from, to); i <= Math.max(from, to); i++) selected.add(fileKey(directoryItems[i]));
+      updateFileSelection();
+      return;
+    }
+  }
+  if (adding) {
+    if (selected.has(key)) selected.delete(key);
+    else selected.add(key);
+  } else {
+    selected.clear();
+    selected.add(key);
+  }
+  selectionAnchor = key;
+  updateFileSelection();
+}
+
+function selectAllFiles() {
+  if (fileBusy) return;
+  if (selected.size && selected.size === directoryItems.length) clearSelection();
+  else selected = new Set(directoryItems.map(fileKey));
   updateFileSelection();
 }
 
 function updateFileSelection() {
-  for (const item of directoryItems) item.tile?.setAttribute("aria-pressed", String(item === selectedItem));
-  $("fileOpen").disabled = !selectedItem?.folder || fileBusy;
-  $("fileDownload").disabled = !selectedItem || selectedItem.folder || fileBusy;
-  $("fileRename").disabled = $("fileDownload").disabled || !!selectedItem?.attachment;
-  $("fileDelete").disabled = !selectedItem || fileBusy;
-  $("fileSelection").textContent = selectedItem?.name || "";
+  const items = selectedItems();
+  const one = items.length === 1 ? items[0] : null;
+  for (const item of directoryItems) item.tile?.setAttribute("aria-pressed", String(selected.has(fileKey(item))));
+  $("fileOpen").disabled = !one?.folder || fileBusy;
+  $("fileDownload").disabled = !items.length || items.some(item => item.folder) || fileBusy;
+  $("fileRename").disabled = !one || one.folder || !!one.attachment || fileBusy;
+  $("fileDelete").disabled = !items.length || fileBusy;
+  $("fileAll").disabled = !directoryItems.length || fileBusy;
+  $("fileAll").textContent = items.length && items.length === directoryItems.length ? "取消全选" : "全选";
+  $("fileMulti").setAttribute("aria-pressed", String(multiSelect));
+  const folders = items.filter(item => item.folder).length;
+  $("fileSelection").textContent = one ? one.name : items.length
+    ? "已选 " + items.length + " 项" + (folders ? "（" + folders + " 个文件夹，" + (items.length - folders) + " 个文件）" : "")
+    : "";
 }
 
 function itemPath(item) {
@@ -465,27 +519,47 @@ function activateFile(item) {
   else downloadFile(item);
 }
 
-function deleteSelected() {
-  const item = selectedItem;
-  if (!item || fileBusy) return;
-  if (item.folder) {
-    if (!window.confirm("永久删除手机上的文件夹「" + item.name + "」及其中的所有文件？")) return;
-    changeFile("file-delete-directory", {
-      root: selectedRoot, path: itemPath(item), directoryId: item.id, confirmed: true
-    }, "已删除文件夹");
-  } else if (window.confirm("永久删除手机上的文件「" + item.name + "」？")) {
-    if (item.attachment) {
-      changeFile("file-delete-attachment", {root: selectedRoot, path: directory, name: item.name, confirmed: true}, "已删除文件");
-    } else changeFile("file-delete", {id: item.id, confirmed: true}, "已删除文件");
-  }
+function deleteCommand(item) {
+  if (item.folder) return ["file-delete-directory", {root: selectedRoot, path: itemPath(item), directoryId: item.id, confirmed: true}];
+  if (item.attachment) return ["file-delete-attachment", {root: selectedRoot, path: directory, name: item.name, confirmed: true}];
+  return ["file-delete", {id: item.id, confirmed: true}];
 }
 
-async function loadDirectory() {
+function deleteSelected() {
+  const items = selectedItems();
+  if (!items.length || fileBusy) return;
+  const folders = items.filter(item => item.folder).length;
+  const question = items.length > 1
+    ? "永久删除手机上的 " + items.length + " 项" + (folders ? "（含 " + folders + " 个文件夹及其中的所有文件）" : "") + "？"
+    : items[0].folder ? "永久删除手机上的文件夹「" + items[0].name + "」及其中的所有文件？"
+      : "永久删除手机上的文件「" + items[0].name + "」？";
+  if (!window.confirm(question)) return;
+  fileTask(async () => {
+    let failed = 0;
+    let reason = "";
+    for (const item of items) {
+      try {
+        await fileCommand(...deleteCommand(item));
+      } catch (error) {
+        failed++;
+        reason = error.message;
+      }
+    }
+    await listFiles();
+    if (failed) return "已删除 " + (items.length - failed) + " 项，" + failed + " 项失败：" + reason;
+    return items.length > 1 ? "已删除 " + items.length + " 项" : folders ? "已删除文件夹" : "已删除文件";
+  });
+}
+
+// quiet: keep the listing and selection on screen while reloading, e.g. after a download.
+async function loadDirectory(quiet = false) {
   const sequence = ++listing;
-  directoryLoading = true;
-  directoryItems = [];
-  selectedItem = null;
-  renderFiles();
+  if (!quiet) {
+    directoryLoading = true;
+    directoryItems = [];
+    clearSelection();
+    renderFiles();
+  }
   try {
     if (!selectedRoot) return;
     let result = await fileCommand("file-directory", {root: selectedRoot, path: directory});
@@ -500,6 +574,8 @@ async function loadDirectory() {
       ...result.directories.sort(compare).map(item => ({...item, folder: true})),
       ...result.files.sort(compare)
     ];
+    const present = new Set(directoryItems.map(fileKey));
+    selected = new Set([...selected].filter(key => present.has(key)));
   } catch (error) {
     if (sequence === listing) $("fileMessage").textContent = error.message;
   } finally {
@@ -510,7 +586,7 @@ async function loadDirectory() {
   }
 }
 
-async function listFiles() {
+async function listFiles(quiet = false) {
   const sequence = ++listing;
   try {
     const result = await fileCommand("files", {rootsOnly: true});
@@ -519,8 +595,9 @@ async function listFiles() {
     if (!roots.some(item => item.id === selectedRoot)) {
       selectedRoot = roots[0]?.id || "";
       directory = "";
+      quiet = false;
     }
-    await loadDirectory();
+    await loadDirectory(quiet);
   } catch (error) {
     if (sequence === listing) $("fileMessage").textContent = error.message;
   }
@@ -541,7 +618,21 @@ async function fileTask(work, success) {
     fileBusy = false;
     $("refreshFiles").disabled = false;
     renderFiles();
+    if (refreshPending) {
+      refreshPending = false;
+      listFiles(true);
+    }
   }
+}
+
+// The phone reports filesRevision; it changes when downloads or the library add or remove files.
+function filesChanged(revision) {
+  if (revision === undefined) return;
+  const changed = filesRevision !== undefined && revision !== filesRevision;
+  filesRevision = revision;
+  if (!changed || !filesPage) return;
+  if (fileBusy) refreshPending = true;
+  else listFiles(true);
 }
 
 function changeFile(op, fields, success) {
@@ -549,7 +640,24 @@ function changeFile(op, fields, success) {
 }
 
 function downloadFile(file) {
+  return fileTask(() => fetchFile(file), "文件已下载");
+}
+
+function downloadSelected() {
+  const files = selectedItems().filter(item => !item.folder);
+  if (!files.length) return;
+  if (files.length === 1) return downloadFile(files[0]);
   return fileTask(async () => {
+    for (const [index, file] of files.entries()) {
+      $("fileMessage").textContent = "正在下载 " + (index + 1) + "/" + files.length + " · " + file.name;
+      await fetchFile(file);
+    }
+    return "已下载 " + files.length + " 个文件";
+  });
+}
+
+async function fetchFile(file) {
+  {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 120000);
     try {
@@ -575,7 +683,7 @@ function downloadFile(file) {
     } finally {
       clearTimeout(timer);
     }
-  }, "文件已下载");
+  }
 }
 
 $("openPlayer").addEventListener("click", () => showView("player"));
@@ -584,19 +692,32 @@ $("cover").addEventListener("load", () => { $("cover").hidden = false; });
 $("cover").addEventListener("error", () => { $("cover").hidden = true; });
 $("refreshFiles").addEventListener("click", listFiles);
 $("parentFolder").addEventListener("click", () => openDirectory(selectedRoot, directory.split("/").slice(0, -1).join("/")));
-$("fileOpen").addEventListener("click", () => activateFile(selectedItem));
-$("fileDownload").addEventListener("click", () => selectedItem && downloadFile(selectedItem));
+$("fileOpen").addEventListener("click", () => activateFile(selectedItems()[0]));
+$("fileDownload").addEventListener("click", downloadSelected);
+$("fileAll").addEventListener("click", selectAllFiles);
+$("fileMulti").addEventListener("click", () => {
+  multiSelect = !multiSelect;
+  updateFileSelection();
+});
 $("fileRename").addEventListener("click", () => {
-  const item = selectedItem;
+  const items = selectedItems();
+  const item = items.length === 1 ? items[0] : null;
   if (!item || item.folder || fileBusy) return;
   const name = window.prompt("新的文件名（含扩展名）", item.name);
   if (name && name !== item.name) changeFile("file-rename", {id: item.id, name}, "已重命名");
 });
 $("fileDelete").addEventListener("click", deleteSelected);
 $("files").addEventListener("keydown", event => {
-  if (event.key === "Delete" && selectedItem) {
+  if (event.key === "Delete" && selected.size) {
     event.preventDefault();
     deleteSelected();
+  } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a") {
+    event.preventDefault();
+    selected = new Set(directoryItems.map(fileKey));
+    updateFileSelection();
+  } else if (event.key === "Escape" && selected.size) {
+    clearSelection();
+    updateFileSelection();
   }
 });
 

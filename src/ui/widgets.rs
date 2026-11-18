@@ -14,14 +14,15 @@ pub const CARD_W: f32 = 170.0;
 
 /// tiddl `-q` values, best first. MAX is the default everywhere.
 pub const QUALITIES: [(&str, &str, &str); 4] = [
-    ("max", "MAX", "Hi-Res FLAC 最高 24bit/192kHz"),
-    ("high", "HIGH", "FLAC 16bit/44.1kHz"),
-    ("normal", "NORMAL", "AAC 320kbps"),
-    ("low", "LOW", "AAC 96kbps"),
+    // tiddl's quality flags, with TIDAL's names for them (see `types::tidal_quality_name`).
+    ("max", "Max", "HiRes FLAC 最高 24bit/192kHz"),
+    ("high", "High", "FLAC 16bit/44.1kHz"),
+    ("normal", "Low", "AAC 最高 320kbps"),
+    ("low", "Low 96k", "AAC 96kbps"),
 ];
 
 pub fn quality_label(q: &str) -> &'static str {
-    QUALITIES.iter().find(|(k, _, _)| *k == q).map(|(_, n, _)| *n).unwrap_or("MAX")
+    QUALITIES.iter().find(|(k, _, _)| *k == q).map(|(_, n, _)| *n).unwrap_or("Max")
 }
 
 // ───────────────────────────── primitives ─────────────────────────────
@@ -64,13 +65,13 @@ pub fn quality_badges(ui: &mut egui::Ui, tags: &[String]) {
         ui.spacing_mut().item_spacing.x = 4.0;
         for t in tags {
             let (label, color) = match t.as_str() {
-                "HIRES_LOSSLESS" => ("Hi-Res", theme::GOLD),
-                "LOSSLESS" => ("Lossless", Color32::from_rgb(0, 185, 175)),
+                "HIRES_LOSSLESS" => ("Max", theme::GOLD),
+                "LOSSLESS" => ("High", Color32::from_rgb(0, 185, 175)),
                 "DOLBY_ATMOS" => ("Atmos", Color32::from_rgb(90, 140, 255)),
                 "SONY_360RA" => ("360RA", Color32::from_rgb(170, 110, 240)),
                 "MQA" | "HI_RES" => ("MQA", Color32::from_rgb(200, 120, 60)),
-                "HIGH" => ("AAC 320", Color32::GRAY),
-                "LOW" => ("AAC 96", Color32::GRAY),
+                "HIGH" => ("Low", Color32::GRAY),
+                "LOW" => ("Low 96k", Color32::GRAY),
                 other => (other, Color32::GRAY),
             };
             badge(ui, label, color);
@@ -215,7 +216,7 @@ pub fn download_items(ui: &mut egui::Ui, url: &str, title: &str, acts: &mut Vec<
     ui.set_min_width(260.0);
     ui.label(RichText::new("选择下载音质").color(TEXT_WEAK).small());
     let qualities = if crate::netease::song_link_id(url).is_some() {
-        [("max", "Hi-Res", "hires"), ("high", "无损", "lossless"), ("normal", "极高", "exhigh"), ("low", "标准", "standard")]
+        [("max", "Hi-Res", "最高 24bit/192kHz"), ("high", "无损", "FLAC"), ("normal", "极高", "最高 320kbps"), ("low", "标准", "128kbps")]
     } else {
         QUALITIES
     };
@@ -319,13 +320,15 @@ pub fn playlist_menu(ui: &mut egui::Ui, app: &App, p: &PlaylistItem, acts: &mut 
 
 pub fn track_menu(ui: &mut egui::Ui, app: &App, tracks: &[TrackItem], i: usize, ctx: &Option<PlayContext>, acts: &mut Vec<Action>) {
     let t = &tracks[i];
-    if item(ui, "▶ 播放") {
+    // While another device is selected, these entries send the track there.
+    let device = app.remote_target().map(|remote| format!(" · {}", remote.target_name())).unwrap_or_default();
+    if item(ui, &format!("▶ 播放{device}")) {
         acts.push(Action::PlayTracks { tracks: tracks.to_vec(), index: i, shuffle: false, context: ctx.clone() });
     }
-    if item(ui, "⤵ 下一首播放") {
+    if item(ui, &format!("⤵ 下一首播放{device}")) {
         acts.push(Action::PlayNext(vec![t.clone()]));
     }
-    if item(ui, "☰ 添加到播放队列") {
+    if item(ui, &format!("☰ 添加到播放队列{device}")) {
         acts.push(Action::Enqueue(vec![t.clone()]));
     }
     ui.separator();

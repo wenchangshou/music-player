@@ -1,6 +1,7 @@
 use eframe::egui::{self, RichText};
 
 use crate::app::{Action, App, UiState};
+use crate::route::Route;
 use crate::theme::{self, OK_GREEN, TEXT_WEAK};
 
 fn card(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) {
@@ -23,9 +24,14 @@ pub fn show(app: &App, st: &mut UiState, ui: &mut egui::Ui, acts: &mut Vec<Actio
                 if let Some(account) = &app.player_account {
                     ui.label(&account.username);
                     if let Some(origin) = account.origin() {
-                        if ui.button("我的设备").clicked() {
-                            acts.push(Action::OpenUrl(origin));
-                        }
+                        ui.horizontal(|ui| {
+                            if ui.button("📡 我的设备").on_hover_text("查看并遥控同一账号的所有设备").clicked() {
+                                acts.push(Action::Go(Route::Devices));
+                            }
+                            if ui.button("网页遥控").on_hover_text("在浏览器打开多端遥控").clicked() {
+                                acts.push(Action::OpenUrl(origin));
+                            }
+                        });
                     }
                     if ui.button("退出播放器账号").clicked() {
                         acts.push(Action::PlayerLogout);
@@ -84,7 +90,7 @@ pub fn show(app: &App, st: &mut UiState, ui: &mut egui::Ui, acts: &mut Vec<Actio
         });
 
         card(ui, "下载", |ui| {
-            ui.label(RichText::new("默认音质始终为 MAX（Hi-Res 最高 24bit/192kHz），每次下载时都可在菜单中改选。").color(TEXT_WEAK));
+            ui.label(RichText::new("默认音质始终为 Max（HiRes FLAC 最高 24bit/192kHz），每次下载时都可在菜单中改选。").color(TEXT_WEAK));
             ui.horizontal(|ui| {
                 ui.label("Dolby Atmos");
                 ui.selectable_value(&mut st.dl_atmos, "none".to_string(), "纯立体声（推荐）");
@@ -111,7 +117,7 @@ pub fn show(app: &App, st: &mut UiState, ui: &mut egui::Ui, acts: &mut Vec<Actio
                 }
             });
             ui.label(
-                RichText::new("Hi-Res 为 TIDAL 原始 FLAC（最高 24bit/192kHz）；曲目没有 Hi-Res 版本时自动播放无损。也可以在底部播放条的音质标签上随时切换。")
+                RichText::new("Max 为 TIDAL 的 HiRes FLAC（最高 24bit/192kHz）；曲目没有 Max 版本时自动播放 High（16bit/44.1kHz FLAC）。也可以在底部播放条的音质标签上随时切换。")
                     .color(TEXT_WEAK),
             );
         });

@@ -15,6 +15,8 @@ import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
@@ -81,18 +83,47 @@ final class CentralRelay implements AutoCloseable {
         loop.start();
     }
 
+    /** The current local track, whose cover other devices cannot open themselves. */
+    private static final class LocalCover {
+        final String key;
+        final android.net.Uri uri;
+        LocalCover(String key, android.net.Uri uri) { this.key = key; this.uri = uri; }
+    }
+
+    private LocalCover localCover() {
+        TidalClient.Track track = playback.current();
+        if (track == null || !track.isLocal()) return null;
+        return new LocalCover(track.id + ":" + track.payload.optLong("scan_modified") + ":"
+                + track.payload.optLong("scan_size"), track.localUri);
+    }
+
     private void run() {
         JSONObject receipt = null;
+        JSONObject artwork = null;
         long nextSessionSync = 0;
         while (!closed) {
+            boolean held = false;
             try {
                 JSONObject state = onMain(this::snapshot);
-                JSONObject body = new JSONObject().put("state", state);
+                // "wait" asks the relay to hold the poll until a command arrives (long polling).
+                JSONObject body = new JSONObject().put("state", state).put("wait", true);
                 if (receipt != null) body.put("result", receipt);
+                LocalCover local = onMain(this::localCover);
+                if (local != null) body.put("artwork_key", local.key);
+                if (artwork != null && local != null && local.key.equals(artwork.optString("key"))) body.put("artwork", artwork);
                 long now = android.os.SystemClock.elapsedRealtime();
                 boolean sync = now >= nextSessionSync && onMain(playback::canSyncDesktopSession);
                 if (sync) body.put("sync_desktop_session", true);
                 JSONObject reply = json("/device/poll", body);
+                held = reply.optBoolean("wait");
+                artwork = null;
+                // The relay asks once per track for a cover thumbnail, which it then links for viewers.
+                if (local != null && local.key.equals(reply.optString("artwork_needed"))) {
+                    byte[] jpeg = ArtworkLoader.localJpeg(playback, local.uri, 320, 90 * 1024);
+                    artwork = new JSONObject().put("key", local.key);
+                    if (jpeg == null) artwork.put("none", true);
+                    else artwork.put("jpeg", android.util.Base64.encodeToString(jpeg, android.util.Base64.NO_WRAP));
+                }
                 if (sync) {
                     nextSessionSync = now + 10_000;
                     JSONObject account = reply.optJSONObject("desktop_session");
@@ -126,7 +157,8 @@ final class CentralRelay implements AutoCloseable {
                 status = "连接失败 · " + readable(error);
             }
             try {
-                Thread.sleep("已连接".equals(status) ? 1500 : 4500);
+                // A relay that held the request can be polled again right away.
+                if (!held || !"已连接".equals(status)) Thread.sleep("已连接".equals(status) ? 1500 : 4500);
             } catch (InterruptedException ignored) {
                 return;
             }
@@ -153,11 +185,51 @@ final class CentralRelay implements AutoCloseable {
                 return snapshot();
             });
         }
+        if ("tracks".equals(operation)) return playTracks(command);
         if ("login".equals(operation) || "cancel-login".equals(operation)) {
             throw new IOException("请在此设备登录 TIDAL");
         }
         return onMain(() -> {
             playback.remoteControl(operation, command);
+            return snapshot();
+        });
+    }
+
+    /** Play or queue a list of TIDAL tracks sent by another device of this account. */
+    private JSONObject playTracks(JSONObject command) throws Exception {
+        TidalClient api = onMain(() -> playback.client);
+        if (api == null) throw new IOException("请先在此设备登录 TIDAL");
+        JSONArray ids = command.getJSONArray("ids");
+        if (ids.length() < 1 || ids.length() > 50) throw new IOException("每次可发送 1–50 首歌曲");
+        String mode = command.getString("mode");
+        if (!"play".equals(mode) && !"next".equals(mode) && !"end".equals(mode)) throw new IOException("无效播放操作");
+        // Look the tracks up a few at a time so a whole album arrives within the receipt window.
+        java.util.concurrent.ExecutorService lookups = java.util.concurrent.Executors.newFixedThreadPool(6);
+        List<TidalClient.Track> tracks = new ArrayList<>();
+        try {
+            List<java.util.concurrent.Future<TidalClient.Track>> pending = new ArrayList<>();
+            for (int i = 0; i < ids.length(); i++) {
+                long id = ids.getLong(i);
+                pending.add(lookups.submit(() -> api.track(id)));
+            }
+            for (java.util.concurrent.Future<TidalClient.Track> track : pending) {
+                try {
+                    tracks.add(track.get(15, TimeUnit.SECONDS));
+                } catch (java.util.concurrent.ExecutionException error) {
+                    if (error.getCause() instanceof IOException) throw (IOException) error.getCause();
+                    throw new IOException("读取曲目失败");
+                }
+            }
+        } finally {
+            lookups.shutdownNow();
+        }
+        int start = Math.max(0, Math.min(command.optInt("index"), tracks.size() - 1));
+        boolean shuffled = command.optBoolean("shuffle");
+        long position = Math.max(0, command.optLong("position"));
+        return onMain(() -> {
+            if (playback.client != api) throw new IOException("账号已切换");
+            if ("play".equals(mode)) playback.replaceQueue(tracks, start, shuffled, position);
+            else playback.enqueueTracks(tracks, "next".equals(mode));
             return snapshot();
         });
     }

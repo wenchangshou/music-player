@@ -1,9 +1,11 @@
 pub mod album;
 pub mod artist;
+pub mod devices;
 pub mod downloads;
 pub mod home;
 pub mod library;
 pub mod playlist;
 pub mod qa;
+pub mod remote_library;
 pub mod search;
 pub mod settings;

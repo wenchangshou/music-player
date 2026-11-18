@@ -15,6 +15,10 @@ import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+/**
+ * Lyrics that follow playback, either as a dialog or inline in place of the cover on Now Playing.
+ * Inline: tapping goes back to the cover, long-pressing a line seeks to it.
+ */
 final class LyricsDialog {
     interface Seek { void at(long millis); }
 
@@ -23,6 +27,9 @@ final class LyricsDialog {
     private static final int ACTIVE = 0xffaaf0d8;
     private static final int INACTIVE = 0xffa6b9bd;
     private final AlertDialog dialog;
+    /** Inline only: tap (back to the cover) and the track changing. */
+    private final Runnable tap;
+    private final Runnable changed;
     private final ScrollView scroll;
     private final LinearLayout body;
     private final long trackId;
@@ -41,20 +48,48 @@ final class LyricsDialog {
     }
 
     LyricsDialog(Context context, TidalClient.Track track, Seek seek) {
+        this(context, track, seek, false, null, null);
+    }
+
+    /** Lyrics shown in place of the cover; add {@link #view()} to the page. */
+    static LyricsDialog inline(Context context, TidalClient.Track track, Seek seek, Runnable tap, Runnable changed) {
+        return new LyricsDialog(context, track, seek, true, tap, changed);
+    }
+
+    private LyricsDialog(Context context, TidalClient.Track track, Seek seek, boolean inline,
+            Runnable tap, Runnable changed) {
         trackId = track.id;
         this.seek = seek;
+        this.tap = tap;
+        this.changed = changed;
         scroll = new ScrollView(context);
         body = new LinearLayout(context);
         body.setOrientation(LinearLayout.VERTICAL);
-        body.setPadding(dp(24), dp(8), dp(24), dp(12));
         scroll.setMinimumHeight(dp(170));
         scroll.addView(body);
-        dialog = new AlertDialog.Builder(context).setTitle(track.title).setView(scroll)
-                .setPositiveButton("关闭", null).create();
+        if (inline) {
+            body.setPadding(dp(12), dp(16), dp(12), dp(16));
+            body.setGravity(android.view.Gravity.CENTER_HORIZONTAL);
+            scroll.setVerticalScrollBarEnabled(false);
+            scroll.setFillViewport(true);
+            scroll.setContentDescription("歌词，轻点返回封面");
+            scroll.setOnClickListener(ignored -> tap.run());
+            body.setOnClickListener(ignored -> tap.run());
+            dialog = null;
+        } else {
+            body.setPadding(dp(24), dp(8), dp(24), dp(12));
+            dialog = new AlertDialog.Builder(context).setTitle(track.title).setView(scroll)
+                    .setPositiveButton("关闭", null).create();
+        }
         body.addView(text("正在加载歌词…"));
     }
 
+    View view() {
+        return scroll;
+    }
+
     void show(Runnable dismissed) {
+        if (dialog == null) return;
         dialog.setOnDismissListener(ignored -> dismissed.run());
         dialog.show();
     }
@@ -89,14 +124,22 @@ final class LyricsDialog {
         } else {
             for (Line line : lines) {
                 TextView view = text(line.text);
-                view.setOnClickListener(ignored -> seek.at(line.at));
+                if (dialog == null) {
+                    view.setOnClickListener(ignored -> tap.run());
+                    view.setOnLongClickListener(ignored -> {
+                        seek.at(line.at);
+                        return true;
+                    });
+                } else {
+                    view.setOnClickListener(ignored -> seek.at(line.at));
+                }
                 body.addView(view);
             }
         }
     }
 
     void dismiss() {
-        dialog.dismiss();
+        if (dialog != null) dialog.dismiss();
     }
 
     void unavailable(String reason) {
@@ -106,7 +149,8 @@ final class LyricsDialog {
 
     void sync(long currentTrack, long position) {
         if (currentTrack != trackId) {
-            dialog.dismiss();
+            if (dialog != null) dialog.dismiss();
+            else if (changed != null) changed.run();
             return;
         }
         int next = -1;
@@ -124,6 +168,10 @@ final class LyricsDialog {
     private TextView text(String value) {
         TextView view = new TextView(body.getContext());
         view.setText(value);
+        if (dialog == null) {
+            view.setGravity(android.view.Gravity.CENTER);
+            if (tap != null) view.setOnClickListener(ignored -> tap.run());
+        }
         view.setTextSize(17);
         view.setTextColor(INACTIVE);
         view.setPadding(0, dp(8), 0, dp(8));

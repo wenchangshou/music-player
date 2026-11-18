@@ -168,6 +168,30 @@ final class ArtworkLoader {
         }
     }
 
+    /**
+     * The embedded cover of a local file as a small JPEG for other devices, or null when the file
+     * has none. Kept under {@code limit} bytes by lowering the quality.
+     */
+    static byte[] localJpeg(Context context, Uri uri, int size, int limit) {
+        android.media.MediaMetadataRetriever reader = new android.media.MediaMetadataRetriever();
+        try {
+            reader.setDataSource(context, uri);
+            byte[] cover = reader.getEmbeddedPicture();
+            Bitmap bitmap = cover == null || cover.length > 16 * 1024 * 1024 ? null : thumbnail(cover, size);
+            if (bitmap == null) return null;
+            for (int quality = 85; quality >= 40; quality -= 15) {
+                java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+                bitmap.compress(Bitmap.CompressFormat.JPEG, quality, out);
+                if (out.size() <= limit) return out.toByteArray();
+            }
+            return null;
+        } catch (Exception ignored) {
+            return null;
+        } finally {
+            try { reader.release(); } catch (Exception ignored) {}
+        }
+    }
+
     private static Bitmap thumbnail(byte[] cover, int size) {
         BitmapFactory.Options options = new BitmapFactory.Options();
         options.inJustDecodeBounds = true;

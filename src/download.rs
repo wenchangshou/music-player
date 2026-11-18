@@ -698,7 +698,7 @@ mod netease_tests {
         assert_eq!(api.get_album_page(album_id).unwrap().tracks[0].id, track.id);
         assert_eq!(api.get_artist_page(artist_id).unwrap().top_tracks[0].id, track.id);
         assert_eq!(api.get_playlist_page(playlist_id).unwrap().tracks[0].id, track.id);
-        let playback = api.get_stream(track.id, StreamQuality::Lossless).unwrap();
+        let playback = api.get_stream(track.id, StreamQuality::Lossless, "lossless").unwrap();
         assert_eq!(playback.url, format!("{base}/audio"));
 
         let stamp = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_nanos();

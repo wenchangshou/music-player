@@ -18,11 +18,12 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.Future;
 
 final class DownloadTasks {
     static final int HIGHEST = 4;
-    static final String[] QUALITY_NAMES = {"无损", "高", "低", "Hi-Res", "最高可用（无损）"};
+    static final String[] QUALITY_NAMES = {"High", "Low", "Low 96k", "Max", "最高可用（Max 或 High）"};
 
     static final class QualityUnavailable extends IOException {
         QualityUnavailable(String reason) { super(reason); }
@@ -51,6 +52,9 @@ final class DownloadTasks {
 
     interface Resolve {
         Audio resolve(long track, int quality) throws Exception;
+
+        /** Lyrics in the TIDAL shape ("subtitles" holds synced LRC), or null when unavailable. */
+        default JSONObject lyrics(long track) throws Exception { return null; }
     }
 
     static final class Audio {
@@ -80,12 +84,17 @@ final class DownloadTasks {
         String albumId = "";
         String albumTitle = "";
         String albumArtist = "";
+        /** Album cover: a TIDAL image id or a NetEase image URL. */
+        String cover = "";
         String resolution = "";
         boolean verifiedLossless;
         boolean checkedDash;
         int number;
         int disc;
         int volumes;
+        /** Tracks on this disc of the album (0 when unknown) and the release date, for tags. */
+        int totalTracks;
+        String date = "";
         String batch = "";
         int order = Integer.MAX_VALUE;
         boolean hidden;
@@ -120,6 +129,9 @@ final class DownloadTasks {
             albumId = saved.optString("albumId");
             albumTitle = saved.optString("albumTitle");
             albumArtist = saved.optString("albumArtist");
+            cover = saved.optString("cover");
+            totalTracks = saved.optInt("totalTracks");
+            date = saved.optString("date");
             resolution = saved.optString("resolution");
             verifiedLossless = saved.optBoolean("verifiedLossless");
             checkedDash = saved.optBoolean("checkedDash");
@@ -137,7 +149,7 @@ final class DownloadTasks {
                     .put("state", state.name()).put("error", error).put("systemId", systemId)
                     .put("document", document == null ? "" : document.toString())
                     .put("albumId", albumId).put("albumTitle", albumTitle).put("batch", batch)
-                    .put("albumArtist", albumArtist).put("resolution", resolution).put("verifiedLossless", verifiedLossless).put("checkedDash", checkedDash).put("number", number)
+                    .put("albumArtist", albumArtist).put("cover", cover).put("totalTracks", totalTracks).put("date", date).put("resolution", resolution).put("verifiedLossless", verifiedLossless).put("checkedDash", checkedDash).put("number", number)
                     .put("disc", disc).put("volumes", volumes)
                     .put("order", order).put("hidden", hidden);
         }
@@ -158,12 +170,19 @@ final class DownloadTasks {
     private final Context context;
     private final SharedPreferences preferences;
     private final DownloadManager system;
-    private final ExecutorService queue = Executors.newSingleThreadExecutor();
+    /** Songs downloaded at the same time; the user picks 1–{@link #MAX_PARALLEL} in settings. */
+    static final int MAX_PARALLEL = 5;
+    private static final String PARALLEL = "parallel_downloads";
+    private final java.util.concurrent.ThreadPoolExecutor queue;
     private final Map<String, Job> jobs = new LinkedHashMap<>();
 
     private DownloadTasks(Context context) {
         this.context = context;
         preferences = context.getSharedPreferences("music_downloads", Context.MODE_PRIVATE);
+        int parallel = Math.max(1, Math.min(MAX_PARALLEL, preferences.getInt(PARALLEL, 3)));
+        queue = new java.util.concurrent.ThreadPoolExecutor(parallel, parallel, 30, TimeUnit.SECONDS,
+                new java.util.concurrent.LinkedBlockingQueue<>());
+        queue.allowCoreThreadTimeOut(true);
         system = context.getSystemService(DownloadManager.class);
         boolean interrupted = false;
         try {
@@ -183,6 +202,70 @@ final class DownloadTasks {
         if (interrupted) save();
     }
 
+    /** What has been downloaded, for marking songs and albums in lists so they are not fetched twice. */
+    static final class Downloaded {
+        private final Map<String, String> tracks = new java.util.HashMap<>();
+        private final Map<String, Integer> albums = new java.util.HashMap<>();
+
+        private static String source(TidalClient.Track track) {
+            return track.isNetease() ? "网易云" : "TIDAL";
+        }
+
+        /** "已下载 · Max", or null when the song has not been downloaded. */
+        String label(TidalClient.Track track) {
+            if (track.isLocal()) return null;
+            String quality = tracks.get(source(track) + ":" + track.id);
+            return quality == null ? null : quality.isEmpty() ? "已下载" : "已下载 · " + quality;
+        }
+
+        /** Songs of this album already downloaded. */
+        int album(TidalClient.Collection album) {
+            Integer count = albums.get((album.isNetease() ? "网易云" : "TIDAL") + ":" + album.id);
+            return count == null ? 0 : count;
+        }
+    }
+
+    synchronized Downloaded downloaded() {
+        Downloaded result = new Downloaded();
+        for (Job job : jobs.values()) {
+            if (job.state != State.COMPLETE) continue;
+            // The quality actually saved, e.g. "Max" from "Max · HiRes FLAC · 24 bit / 96 kHz".
+            String quality = job.resolution.isEmpty() ? (job.quality < QUALITY_NAMES.length && job.quality != HIGHEST
+                    ? QUALITY_NAMES[job.quality] : "") : job.resolution.split(" · ")[0];
+            if (result.tracks.put(job.source + ":" + job.track, quality) == null && !job.albumId.isEmpty()) {
+                String albumKey = job.source + ":" + job.albumId;
+                Integer count = result.albums.get(albumKey);
+                result.albums.put(albumKey, count == null ? 1 : count + 1);
+            }
+        }
+        return result;
+    }
+
+    /** Goes up whenever a download adds or removes a file, so file browsers know to reload. */
+    private long revision;
+
+    int parallel() {
+        return queue.getCorePoolSize();
+    }
+
+    /** Change how many songs download at once; running downloads continue, the queue adapts. */
+    synchronized void setParallel(int count) {
+        int parallel = Math.max(1, Math.min(MAX_PARALLEL, count));
+        preferences.edit().putInt(PARALLEL, parallel).apply();
+        if (parallel > queue.getMaximumPoolSize()) {
+            queue.setMaximumPoolSize(parallel);
+            queue.setCorePoolSize(parallel);
+        } else {
+            queue.setCorePoolSize(parallel);
+            queue.setMaximumPoolSize(parallel);
+        }
+    }
+
+    synchronized long revision() {
+        refreshActive();
+        return revision;
+    }
+
     synchronized int add(List<TidalClient.Track> tracks, String source, int quality, Uri directory, Resolve resolve) {
         return add(tracks, source, quality, directory, resolve, null);
     }
@@ -192,8 +275,17 @@ final class DownloadTasks {
         refreshActive();
         String batchId = album == null ? "" : source + ":" + album.id + ":" + quality + ":" + directory;
         int skipped = 0;
+        // Tracks per disc of the album, for TOTALTRACKS tags.
+        Map<Integer, Integer> perDisc = new java.util.HashMap<>();
+        if (album != null) {
+            for (TidalClient.Track track : tracks) {
+                int disc = track.payload.optInt("volumeNumber", 1);
+                Integer count = perDisc.get(disc);
+                perDisc.put(disc, count == null ? 1 : count + 1);
+            }
+        }
         Resolve batch = new Resolve() {
-            private TidalClient.DownloadAccessDenied denied;
+            private volatile TidalClient.DownloadAccessDenied denied;
 
             @Override public Audio resolve(long track, int quality) throws Exception {
                 if (denied != null) throw denied;
@@ -203,6 +295,10 @@ final class DownloadTasks {
                     if (error.sessionDenied) denied = error;
                     throw error;
                 }
+            }
+
+            @Override public JSONObject lyrics(long track) throws Exception {
+                return resolve.lyrics(track);
             }
         };
         for (int index = 0; index < tracks.size(); index++) {
@@ -222,19 +318,21 @@ final class DownloadTasks {
             }
             if (reusable != null) {
                 if (album != null) {
-                    assignAlbum(reusable, track, album, batchId, index);
+                    assignAlbum(reusable, track, album, batchId, index, perDisc);
                 }
                 reusable.hidden = false;
+                // Already downloaded: check its tags, cover and lyrics, and repair what is missing.
+                if (reusable.state == State.COMPLETE) verify(reusable, batch);
                 skipped++;
                 continue;
             }
             if (failed != null) {
-                if (album != null) assignAlbum(failed, track, album, batchId, index);
+                if (album != null) assignAlbum(failed, track, album, batchId, index, perDisc);
                 reset(failed, directory, batch);
                 continue;
             }
             Job job = new Job(UUID.randomUUID().toString(), track.id, track.title, track.artist, source, quality, directory);
-            assignAlbum(job, track, album, batchId, index);
+            assignAlbum(job, track, album, batchId, index, perDisc);
             jobs.put(job.id, job);
             submit(job, batch);
         }
@@ -242,9 +340,11 @@ final class DownloadTasks {
         return skipped;
     }
 
-    private void assignAlbum(Job job, TidalClient.Track track, TidalClient.Collection album, String batch, int index) {
+    private void assignAlbum(Job job, TidalClient.Track track, TidalClient.Collection album, String batch, int index,
+                             Map<Integer, Integer> perDisc) {
         job.albumId = album == null ? (track.albumId == 0 ? "" : Long.toString(track.albumId)) : album.id;
         job.albumTitle = album == null ? track.album : album.title;
+        job.cover = album != null && !album.cover.isEmpty() ? album.cover : track.cover;
         JSONObject release = track.payload.optJSONObject("album");
         JSONObject author = release == null ? null : release.optJSONObject("artist");
         job.albumArtist = album != null && !album.albumArtist.isEmpty() ? album.albumArtist
@@ -252,6 +352,9 @@ final class DownloadTasks {
         job.number = track.payload.optInt("trackNumber", album == null ? 0 : index + 1);
         job.disc = track.payload.optInt("volumeNumber", 1);
         job.volumes = album == null ? (release == null ? 1 : release.optInt("numberOfVolumes", 1)) : album.volumes;
+        Integer count = perDisc.get(job.disc);
+        job.totalTracks = count == null ? 0 : count;
+        job.date = releaseDate(track, album);
         job.batch = batch;
         job.order = album == null ? track.payload.optInt("trackNumber", Integer.MAX_VALUE) : index;
     }
@@ -261,6 +364,51 @@ final class DownloadTasks {
         if (job == null || (job.state != State.FAILED && job.state != State.CANCELLED)) return;
         reset(job, directory, resolve);
         save();
+    }
+
+    /** Release date from the album or the track's album, e.g. "2004-01-01"; "" when unknown. */
+    private static String releaseDate(TidalClient.Track track, TidalClient.Collection album) {
+        JSONObject release = track.payload.optJSONObject("album");
+        String date = release == null ? "" : release.optString("releaseDate");
+        if (date.isEmpty()) date = track.payload.optString("releaseDate");
+        if (date.isEmpty()) date = track.payload.optString("streamStartDate");
+        if (date.isEmpty() && track.payload.optLong("publishTime") > 0) {
+            date = new java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.ROOT)
+                    .format(new java.util.Date(track.payload.optLong("publishTime")));
+        }
+        return date.length() >= 10 ? date.substring(0, 10) : date;
+    }
+
+    /**
+     * For a song already downloaded: when it lacks tags or an embedded cover (as downloads from
+     * before tagging do), delete it and download it again; otherwise add a missing cover.jpg or
+     * .lrc. Runs on the download queue.
+     */
+    private void verify(Job job, Resolve resolve) {
+        Uri file = available(job);
+        if (file == null) return;
+        int attempt = job.attempt;
+        queue.submit(() -> {
+            boolean tagged;
+            try (java.io.InputStream input = context.getContentResolver().openInputStream(file)) {
+                tagged = input == null || AudioTags.complete(input);
+            } catch (Exception unreadable) {
+                tagged = true;
+            }
+            if (tagged) {
+                MusicDownload.saveExtras(context, job, MusicDownload.extension(context, file), job.directory, job.document, resolve);
+                synchronized (this) { revision++; }
+                return;
+            }
+            synchronized (this) {
+                if (job.attempt != attempt || job.state != State.COMPLETE) return;
+                if (job.systemId == 0) deleteDocument(job.document);
+                job.document = null;
+                revision++;
+                reset(job, job.directory, resolve);
+                save();
+            }
+        });
     }
 
     private void reset(Job job, Uri directory, Resolve resolve) {
@@ -300,7 +448,7 @@ final class DownloadTasks {
                 job.checkedDash = true;
                 save();
             }
-            MusicDownload.Transfer result = MusicDownload.save(context, job, audio, directory, new MusicDownload.Progress() {
+            final MusicDownload.Transfer result = MusicDownload.save(context, job, audio, directory, new MusicDownload.Progress() {
                         @Override public void created(Uri document) throws IOException {
                             synchronized (DownloadTasks.this) {
                                 if (!current(job, attempt)) throw new IOException("下载已取消");
@@ -326,8 +474,13 @@ final class DownloadTasks {
                 job.systemId = result.systemId;
                 job.document = result.document;
                 job.state = result.document == null ? State.WAITING : State.COMPLETE;
+                if (job.state == State.COMPLETE) revision++;
                 save();
             }
+            // Cover and synced lyrics next to the song, as Shanling and most players expect.
+            // Best effort: the song counts as downloaded either way.
+            MusicDownload.saveExtras(context, job, audio.format, directory, result.document, resolve);
+            synchronized (this) { revision++; }
         } catch (Exception error) {
             synchronized (this) {
                 if (!current(job, attempt)) return;
@@ -362,6 +515,7 @@ final class DownloadTasks {
         if (deleteFile && job.state == State.COMPLETE) {
             if (job.systemId > 0 && system.remove(job.systemId) == 0) return false;
             if (job.document != null && !deleteDocument(job.document)) return false;
+            revision++;
         }
         if (!deleteFile && job.state == State.COMPLETE) job.hidden = true;
         else jobs.remove(id);
@@ -470,7 +624,10 @@ final class DownloadTasks {
                 job.total = rows.getLong(rows.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES));
                 int status = rows.getInt(rows.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS));
                 State previous = job.state;
-                if (status == DownloadManager.STATUS_SUCCESSFUL) job.state = State.COMPLETE;
+                if (status == DownloadManager.STATUS_SUCCESSFUL) {
+                    if (job.state != State.COMPLETE) revision++;
+                    job.state = State.COMPLETE;
+                }
                 else if (status == DownloadManager.STATUS_RUNNING) job.state = State.TRANSFERRING;
                 else if (status == DownloadManager.STATUS_FAILED) {
                     job.state = State.FAILED;

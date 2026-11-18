@@ -110,6 +110,21 @@ final class LocalMusicFiles {
         return body.toString();
     }
 
+    /** Where a local file lives, as a storage path when the provider has one, for display. */
+    static String displayPath(Uri uri) {
+        if (uri == null) return "";
+        String path = documentPath(uri);
+        if (path != null && !path.isEmpty()) return path;
+        try {
+            String document = DocumentsContract.getDocumentId(uri);
+            int colon = document.indexOf(':');
+            return colon >= 0 ? document.substring(colon + 1) : document;
+        } catch (IllegalArgumentException notDocument) {
+            String name = uri.getLastPathSegment();
+            return name == null ? uri.toString() : name;
+        }
+    }
+
     private static String documentPath(Uri uri) {
         if (!"com.android.externalstorage.documents".equals(uri.getAuthority())) return null;
         String document;

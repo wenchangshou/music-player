@@ -87,6 +87,9 @@ final class PlayerIcon extends Drawable {
                 canvas.drawCircle(12,8.5f,4,paint); path(canvas,4.5f,20,5.5f,16.5f,9,14.5f,15,14.5f,18.5f,16.5f,19.5f,20); break;
             case "folder":
                 path(canvas,3,6.5f,3,19,21,19,21,8.5f,11.5f,8.5f,9.5f,5.5f,4,5.5f,3,6.5f); break;
+            case "devices":
+                canvas.drawRoundRect(new RectF(2.5f,4.5f,15.5f,14.5f),1.5f,1.5f,paint); path(canvas,6,19,12,19); path(canvas,9,14.5f,9,19);
+                canvas.drawRoundRect(new RectF(16.5f,8.5f,21.5f,19.5f),1.5f,1.5f,paint); path(canvas,18.5f,17,19.5f,17); break;
             case "note":
                 canvas.drawCircle(8,17,3,paint); path(canvas,11,17,11,4.5f,19,3,19,14);
                 canvas.drawCircle(16,14,3,paint); break;

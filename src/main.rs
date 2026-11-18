@@ -7,6 +7,7 @@ mod playback;
 mod player;
 mod qa;
 mod relay;
+mod remote;
 mod route;
 mod theme;
 mod types;

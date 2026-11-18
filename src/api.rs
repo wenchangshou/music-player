@@ -374,9 +374,10 @@ impl TidalApi {
     /// Dolby Atmos E-AC-3 for tracks that have it). Responses are MPEG-DASH manifests (written
     /// to a temp file for mpv) or single-URL BTS manifests. If the capability token can't be
     /// obtained we fall back to the normal token (and LOSSLESS for Hi-Res) and say why in `note`.
-    pub fn get_stream(&self, track_id: u64, q: StreamQuality) -> Result<StreamInfo, String> {
+    /// `netease_level` is the 网易云 level (see `netease::PLAY_LEVELS`) for NetEase tracks.
+    pub fn get_stream(&self, track_id: u64, q: StreamQuality, netease_level: &str) -> Result<StreamInfo, String> {
         if let Some(id) = crate::netease::native_id(track_id) {
-            return self.netease().stream(id, q).map(|(info, _)| info);
+            return self.netease().stream_level(id, netease_level, q).map(|(info, _)| info);
         }
         self.get_stream_as(TokenKind::HiRes, track_id, q)
     }
@@ -428,8 +429,8 @@ impl TidalApi {
             Some("TIDAL 返回的是 Dolby Atmos 音频流".to_string())
         } else {
             (quality != q.api_name()).then(|| match q {
-                StreamQuality::HiRes => "该曲目没有 Hi-Res 版本，正在播放无损".to_string(),
-                _ => format!("TIDAL 提供的音质为 {}", quality),
+                StreamQuality::HiRes => "该曲目没有 Max 版本，正在播放 High".to_string(),
+                _ => format!("TIDAL 提供的音质为 {}", crate::types::tidal_quality_name(&quality).unwrap_or(&quality)),
             })
         };
         Ok(StreamInfo {

@@ -39,7 +39,11 @@ import java.util.concurrent.Future;
 public final class PlaybackService extends MediaSessionService {
     static final String LOCAL_BIND = "com.tidalgui.player.LOCAL";
     static final String[] QUALITIES = {"LOSSLESS", "HIGH", "LOW", "HI_RES_LOSSLESS"};
-    static final String[] QUALITY_NAMES = {"无损", "高", "低", "Hi-Res"};
+    /** TIDAL's names for {@link #QUALITIES}, as in the TIDAL apps; the API's 96 kbps level is "Low 96k". */
+    static final String[] QUALITY_NAMES = {"High", "Low", "Low 96k", "Max"};
+    /** Names with what each level delivers, for quality pickers. */
+    static final String[] QUALITY_CHOICES = {"High · FLAC 16bit/44.1kHz", "Low · AAC 最高 320kbps",
+            "Low 96k · AAC 96kbps", "Max · HiRes FLAC 最高 24bit/192kHz"};
 
     final class LocalBinder extends Binder {
         PlaybackService service() { return PlaybackService.this; }
@@ -55,6 +59,11 @@ public final class PlaybackService extends MediaSessionService {
     private Future<?> request;
     private int generation;
     private long resumePosition;
+    /** Quality for the next {@link #playAt} only, when recovering from a stream this phone cannot decode. */
+    private String qualityOverride;
+    /** Automatic retries left for the current track; reset whenever a track is chosen. */
+    private int retriesLeft;
+    private boolean retrying;
     private LanRemote remote;
     private android.content.SharedPreferences remoteSettings;
     private boolean remoteRequested;
@@ -88,6 +97,8 @@ public final class PlaybackService extends MediaSessionService {
     long localRevision;
     int index = -1;
     int quality;
+    /** 网易云 level for NetEase tracks, one of {@link NeteaseClient#PLAY_LEVELS}. */
+    String neteaseLevel = "lossless";
     int repeat;
     boolean shuffle;
     boolean loading;
@@ -110,6 +121,8 @@ public final class PlaybackService extends MediaSessionService {
         remoteFiles = remoteSettings.getBoolean("files", false) && localLibrary.hasFolders();
         remoteRoutedLan = remoteSettings.getBoolean("routed", false);
         quality = Math.max(0, Math.min(QUALITIES.length - 1, settings.getInt("quality", 0)));
+        String level = settings.getString("netease_level", "lossless");
+        neteaseLevel = NeteaseClient.knownLevel(level) ? level : "lossless";
         repeat = settings.getInt("repeat", Player.REPEAT_MODE_OFF);
         shuffle = settings.getBoolean("shuffle", false);
         try {
@@ -155,7 +168,9 @@ public final class PlaybackService extends MediaSessionService {
             }
 
             @Override public void onPlayerError(PlaybackException problem) {
-                error = "播放失败 · " + problem.getErrorCodeName();
+                if (recover(problem)) return;
+                error = "播放失败 · " + describe(problem);
+                changed();
             }
 
             @Override public void onIsPlayingChanged(boolean playing) {
@@ -366,6 +381,11 @@ public final class PlaybackService extends MediaSessionService {
     }
 
     void replaceQueue(List<TidalClient.Track> tracks, int start, boolean shuffled) {
+        replaceQueue(tracks, start, shuffled, 0);
+    }
+
+    /** Replace the queue and start at {@code position} ms, e.g. when playback moves here from another device. */
+    void replaceQueue(List<TidalClient.Track> tracks, int start, boolean shuffled, long position) {
         queue.clear();
         queue.addAll(tracks);
         queueRevision++;
@@ -378,11 +398,27 @@ public final class PlaybackService extends MediaSessionService {
             queue.add(0, first);
             start = 0;
         }
-        playAt(start, 0, true);
+        playAt(start, Math.max(0, position), true);
     }
 
     void enqueue(TidalClient.Track track, boolean playNext) {
-        queue.add(playNext ? index + 1 : queue.size(), track);
+        enqueueTracks(Collections.singletonList(track), playNext);
+    }
+
+    /** Remove everything after the current track. */
+    void clearUpcoming() {
+        if (index < 0 || index + 1 >= queue.size()) return;
+        queue.subList(index + 1, queue.size()).clear();
+        queueRevision++;
+        saveQueue();
+        changed();
+    }
+
+    /** Insert after the current track, or append. An empty queue just receives the tracks. */
+    void enqueueTracks(List<TidalClient.Track> tracks, boolean playNext) {
+        if (tracks.isEmpty()) return;
+        int at = playNext && index >= 0 && index < queue.size() ? index + 1 : queue.size();
+        queue.addAll(at, tracks);
         queueRevision++;
         saveQueue();
         changed();
@@ -453,6 +489,21 @@ public final class PlaybackService extends MediaSessionService {
         } else changed();
     }
 
+    void setNeteaseLevel(String level) {
+        if (!NeteaseClient.knownLevel(level)) return;
+        if (!level.equals(neteaseLevel)) {
+            neteaseLevel = level;
+            settings.edit().putString("netease_level", level).apply();
+        }
+        TidalClient.Track track = current();
+        boolean hasMedia = player.getMediaItemCount() > 0;
+        if (track != null && track.isNetease() && (loading || hasMedia || !error.isEmpty())) {
+            long position = loading || !hasMedia ? resumePosition : player.getCurrentPosition();
+            boolean play = loading || !hasMedia ? intendedPlay : player.getPlayWhenReady();
+            playAt(index, position, play);
+        } else changed();
+    }
+
     void advance() {
         if (loading || current() == null) return;
         if (repeat == Player.REPEAT_MODE_ONE) {
@@ -514,7 +565,11 @@ public final class PlaybackService extends MediaSessionService {
         outputConfig = null;
         int selectedQuality = quality;
         NeteaseClient netease = netease();
-        String selected = QUALITIES[selectedQuality];
+        String level = neteaseLevel;
+        String selected = qualityOverride != null ? qualityOverride : QUALITIES[selectedQuality];
+        qualityOverride = null;
+        if (retrying) retrying = false;
+        else retriesLeft = 1;
         actualQuality = "";
         resolution = "";
         error = "";
@@ -551,7 +606,7 @@ public final class PlaybackService extends MediaSessionService {
         request = network.submit(() -> {
             try {
                 TidalClient.Stream stream = track.isNetease()
-                        ? netease.audio(track.id, selectedQuality).stream : api.stream(track.id, selected);
+                        ? netease.audio(track.id, level).stream : api.stream(track.id, selected);
                 DashManifest dash = stream.dash == null ? null : new DashManifestParser().parse(
                         Uri.EMPTY, new ByteArrayInputStream(stream.dash));
                 if (dash != null && dash.dynamic) throw new IOException("暂不支持动态 DASH 清单");
@@ -864,7 +919,8 @@ public final class PlaybackService extends MediaSessionService {
         Uri cover = TidalClient.artwork(track.cover, 640);
         return new JSONObject().put("id", track.id).put("title", track.title)
                 .put("artist", track.artist).put("album", track.album)
-                .put("source", track.isLocal() ? "本地音乐" : "TIDAL")
+                .put("source", track.isLocal() ? "本地音乐" : track.isNetease() ? "网易云" : "TIDAL")
+                .put("kind", track.isLocal() ? "local" : track.isNetease() ? "netease" : "tidal")
                 .put("cover", cover == null ? "" : cover.toString());
     }
 
@@ -878,7 +934,10 @@ public final class PlaybackService extends MediaSessionService {
                 .put("seekable", !loading && player.isCurrentMediaItemSeekable())
                 .put("remoteFiles", remoteFiles).put("fullMode", true).put("quality", quality)
                 .put("loggedIn", client != null).put("loginPending", remoteLoginPending)
-                .put("shuffle", shuffle).put("repeat", repeat).put("error", error)
+                .put("shuffle", shuffle).put("repeat", remoteRepeat()).put("volume", mediaVolume()).put("requestedQuality", QUALITIES[quality]).put("requestedNetease", neteaseLevel)
+                // Changes when the music library or a download adds or removes files.
+                .put("filesRevision", localRevision + "." + DownloadTasks.get(this).revision())
+                .put("sourcePath", current() != null && current().isLocal() ? LocalMusicFiles.displayPath(current().localUri) : "").put("error", error)
                 .put("loginError", remoteLoginError)
                 .put("actualQuality", loading ? "" : actualQuality)
                 .put("resolution", loading ? "" : resolution.replaceFirst("^ · ", ""));
@@ -890,7 +949,74 @@ public final class PlaybackService extends MediaSessionService {
         return state;
     }
 
-    void remoteControl(String operation, JSONObject input) throws Exception {
+    /** Media stream volume as 0–100, which is what the phone's volume keys change. */
+    private int mediaVolume() {
+        android.media.AudioManager audio = getSystemService(android.media.AudioManager.class);
+        int max = audio.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC);
+        return max <= 0 ? 0 : Math.round(audio.getStreamVolume(android.media.AudioManager.STREAM_MUSIC) * 100f / max);
+    }
+
+    private void setMediaVolume(double percent) throws IOException {
+        if (!(percent >= 0 && percent <= 100)) throw new IOException("音量无效");
+        android.media.AudioManager audio = getSystemService(android.media.AudioManager.class);
+        int max = audio.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC);
+        audio.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, (int) Math.round(percent * max / 100), 0);
+    }
+
+    /**
+     * Retry a TIDAL stream once when playback fails for a reason a new stream can fix: Hi-Res audio
+     * this phone cannot decode plays again as lossless, an expired or dropped stream is fetched again.
+     * Continues from the same position. Returns false when the error should be shown instead.
+     */
+    private boolean recover(PlaybackException problem) {
+        TidalClient.Track track = current();
+        if (track == null || !track.needsTidal() || retriesLeft <= 0 || loading) return false;
+        boolean decoding = undecodable(problem.errorCode);
+        boolean stream = problem.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS
+                || problem.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED
+                || problem.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT;
+        boolean hiRes = "HI_RES_LOSSLESS".equals(actualQuality);
+        if (!(decoding && hiRes) && !stream) return false;
+        retriesLeft--;
+        retrying = true;
+        if (decoding) qualityOverride = "LOSSLESS";
+        long position = Math.max(0, player.getCurrentPosition());
+        main.post(() -> playAt(index, position, true));
+        return true;
+    }
+
+    private static boolean undecodable(int code) {
+        return code == PlaybackException.ERROR_CODE_DECODING_FAILED
+                || code == PlaybackException.ERROR_CODE_DECODER_INIT_FAILED
+                || code == PlaybackException.ERROR_CODE_DECODER_QUERY_FAILED
+                || code == PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED
+                || code == PlaybackException.ERROR_CODE_DECODING_FORMAT_EXCEEDS_CAPABILITIES
+                || code == PlaybackException.ERROR_CODE_AUDIO_TRACK_INIT_FAILED
+                || code == PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED;
+    }
+
+    /** Readable cause, keeping the player's code for reference. */
+    private static String describe(PlaybackException problem) {
+        int code = problem.errorCode;
+        String reason;
+        if (undecodable(code)) reason = "此设备无法解码该音频，可在播放音质中改用 High 或更低音质";
+        else if (code == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS) reason = "音频地址已失效或无权访问";
+        else if (code == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED
+                || code == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT) reason = "网络连接失败";
+        else if (code == PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED
+                || code == PlaybackException.ERROR_CODE_PARSING_MANIFEST_MALFORMED) reason = "音频文件或清单已损坏";
+        else if (code == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND
+                || code == PlaybackException.ERROR_CODE_IO_NO_PERMISSION) reason = "无法读取本地文件";
+        else return problem.getErrorCodeName();
+        return reason + "（" + problem.getErrorCodeName() + "）";
+    }
+
+    /** Repeat mode in the relay's convention (0 off, 1 queue, 2 single track), shared by every client. */
+    private int remoteRepeat() {
+        return repeat == Player.REPEAT_MODE_ONE ? 2 : repeat == Player.REPEAT_MODE_ALL ? 1 : 0;
+    }
+
+        void remoteControl(String operation, JSONObject input) throws Exception {
         switch (operation) {
             case "login": beginRemoteLogin(); break;
             case "cancel-login":
@@ -901,6 +1027,20 @@ public final class PlaybackService extends MediaSessionService {
             case "next": next(); break;
             case "shuffle": toggleShuffle(); break;
             case "repeat": cycleRepeat(); break;
+            case "volume": setMediaVolume(input.getDouble("value")); break;
+            case "clear": clearUpcoming(); break;
+            case "quality": {
+                String value = input.getString("value");
+                if (value.startsWith("netease:")) {
+                    if (!NeteaseClient.knownLevel(value.substring(8))) throw new IOException("音质无效");
+                    setNeteaseLevel(value.substring(8));
+                    break;
+                }
+                int selected = java.util.Arrays.asList(QUALITIES).indexOf(value);
+                if (selected < 0) throw new IOException("音质无效");
+                setQuality(selected);
+                break;
+            }
             case "seek":
                 if (!loading && player.isCurrentMediaItemSeekable() && player.getDuration() > 0) {
                     player.seekTo(Math.max(0, Math.min(player.getDuration(), input.getLong("ms"))));

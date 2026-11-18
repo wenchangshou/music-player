@@ -1,6 +1,9 @@
 """NetEase catalogue and QR authorization gateway for Android."""
 import json
 import re
+
+# 网易云's playback levels: 标准, 较高, 极高, 无损, Hi-Res, 高清环绕声, 沉浸环绕声, 超清母带.
+LEVELS = {"standard", "higher", "exhigh", "lossless", "hires", "jyeffect", "sky", "jymaster"}
 import threading
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urlsplit
@@ -100,7 +103,7 @@ class NeteaseGateway:
                 raise ValueError()
             if "type" in params and params["type"] not in {"1", "10", "100", "1000"}:
                 raise ValueError()
-            if "level" in params and params["level"] not in {"standard", "exhigh", "lossless", "hires"}:
+            if "level" in params and params["level"] not in LEVELS:
                 raise ValueError()
             for key, minimum, maximum in (("limit", 1, 50), ("offset", 0, 10000)):
                 if key in params and (not re.fullmatch(r"[0-9]{1,5}", params[key])

@@ -117,7 +117,8 @@ impl Relay {
                     }
                     _ => Value::Null,
                 };
-                let mut message = json!({"state": state, "desktop_session": session});
+                // `wait` asks the relay to hold the poll until a command arrives (long polling).
+                let mut message = json!({"state": state, "desktop_session": session, "wait": true});
                 if let Some(value) = &receipt {
                     message["result"] = value.clone();
                 }
@@ -129,9 +130,14 @@ impl Relay {
                     .send()
                     .and_then(reqwest::blocking::Response::error_for_status)
                     .and_then(|response| response.json::<Value>());
+                let mut pause = Duration::from_millis(1500);
                 match result {
                     Ok(response) => {
                         receipt = None;
+                        // A relay that held the request can be polled again right away.
+                        if response["wait"] == true {
+                            pause = Duration::ZERO;
+                        }
                         if api.is_authenticated()
                             && api
                                 .token_remaining()
@@ -174,7 +180,7 @@ impl Relay {
                     }
                     Err(_) => thread::sleep(Duration::from_secs(3)),
                 }
-                thread::sleep(Duration::from_millis(1500));
+                thread::sleep(pause);
             }
         });
         Some(Self {
@@ -209,6 +215,11 @@ pub struct PlayerAccount {
 }
 
 impl PlayerAccount {
+    /// Account session for remote control of this account's other devices.
+    pub fn remote(&self) -> Option<crate::remote::Remote> {
+        crate::remote::Remote::new(self.origin()?, self.key.clone())
+    }
+
     pub fn origin(&self) -> Option<String> {
         let configured = account_origin()?;
         if self.origin.as_ref().is_some_and(|saved| saved != &configured) {
@@ -322,6 +333,18 @@ fn url_safe(value: &str, min: usize, max: usize) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
 }
 
+/// Look tracks up a few at a time, so a whole album arrives within the receipt window.
+pub fn fetch_tracks(api: &TidalApi, ids: &[u64]) -> Vec<Result<TrackItem, String>> {
+    let mut tracks = Vec::with_capacity(ids.len());
+    for chunk in ids.chunks(8) {
+        std::thread::scope(|scope| {
+            let jobs: Vec<_> = chunk.iter().map(|id| scope.spawn(move || api.get_track(*id))).collect();
+            tracks.extend(jobs.into_iter().map(|job| job.join().unwrap_or_else(|_| Err("读取曲目失败".into()))));
+        });
+    }
+    tracks
+}
+
 fn prepare(api: &TidalApi, mut command: Value) -> Result<Value, String> {
     if command["op"] == "add" {
         let id = command["id"]
@@ -329,6 +352,16 @@ fn prepare(api: &TidalApi, mut command: Value) -> Result<Value, String> {
             .filter(|id| *id > 0)
             .ok_or("曲目编号无效")?;
         command["track"] = serde_json::to_value(api.get_track(id)?).map_err(|e| e.to_string())?;
+    }
+    if command["op"] == "tracks" {
+        let ids: Vec<u64> = command["ids"].as_array().ok_or("曲目列表无效")?.iter()
+            .map(|id| id.as_u64().filter(|id| *id > 0 && crate::netease::native_id(*id).is_none()))
+            .collect::<Option<_>>().ok_or("曲目编号无效")?;
+        if ids.is_empty() || ids.len() > 50 {
+            return Err("每次可发送 1–50 首歌曲".into());
+        }
+        let tracks = fetch_tracks(api, &ids).into_iter().collect::<Result<Vec<_>, _>>()?;
+        command["tracks"] = serde_json::to_value(tracks).map_err(|e| e.to_string())?;
     }
     Ok(command)
 }
@@ -346,9 +379,27 @@ fn search(api: &TidalApi, command: &Value) -> Value {
     }
 }
 
+/// Other devices load only HTTPS covers; NetEase image hosts also serve their covers over HTTPS.
+fn shareable_cover(url: String) -> String {
+    match url.strip_prefix("http://") {
+        Some(rest) if rest.split('/').next().is_some_and(|host| host.ends_with(".music.126.net")) => format!("https://{rest}"),
+        _ => url,
+    }
+}
+
 fn track(item: &TrackItem) -> Value {
     json!({"id": item.id, "title": item.full_title(), "artist": item.artist_names(),
-        "album": item.album.as_ref().map(|album| &album.title)})
+        "album": item.album.as_ref().map(|album| &album.title),
+        "cover": item.cover().map(|cover| shareable_cover(crate::types::image_url(cover, 640))),
+        "kind": if crate::netease::native_id(item.id).is_some() { "netease" } else { "tidal" },
+        "source": if crate::netease::native_id(item.id).is_some() { "网易云" } else { "TIDAL" }})
+}
+
+fn stream_resolution(stream: &crate::types::StreamInfo) -> String {
+    match (stream.bit_depth, stream.sample_rate) {
+        (Some(bits), Some(rate)) => format!("{bits}bit/{}kHz", rate as f32 / 1000.0),
+        _ => String::new(),
+    }
 }
 
 pub fn revision(playback: &Playback) -> String {
@@ -367,6 +418,8 @@ pub fn snapshot(playback: &Playback, logged_in: bool) -> Value {
         "playing": player.active && !player.paused, "loading": playback.is_loading(),
         "position": (player.position.max(0.0) * 1000.0) as u64,
         "duration": (player.duration.max(0.0) * 1000.0) as u64, "seekable": player.active && player.duration > 0.0,
-        "loggedIn": logged_in, "version": env!("CARGO_PKG_VERSION"), "shuffle": playback.shuffle, "error": player.error,
+        "loggedIn": logged_in, "version": env!("CARGO_PKG_VERSION"), "volume": playback.player.volume.round(), "requestedQuality": playback.quality.api_name(), "requestedNetease": playback.netease_level, "shuffle": playback.shuffle, "error": player.error,
+        "actualQuality": playback.stream.as_ref().map(|stream| stream.quality.as_str()).unwrap_or(""),
+        "resolution": playback.stream.as_ref().map(stream_resolution).unwrap_or_default(),
         "repeat": match playback.repeat { Repeat::Off => 0, Repeat::All => 1, Repeat::One => 2 }})
 }

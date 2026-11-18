@@ -54,6 +54,9 @@ pub fn show(ctx: &egui::Context, app: &App, st: &mut UiState, acts: &mut Vec<Act
                 }
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    // Which device the whole app controls, always in view.
+                    crate::ui::player_bar::device_menu(ui, app, acts, true);
+                    ui.add_space(6.0);
                     if ui.selectable_label(st.show_queue, RichText::new("☰ 队列").size(14.0)).on_hover_text("显示/隐藏播放队列").clicked() {
                         st.show_queue = !st.show_queue;
                     }

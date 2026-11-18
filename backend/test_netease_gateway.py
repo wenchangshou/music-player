@@ -81,6 +81,8 @@ class GatewayTest(unittest.TestCase):
                 self.assertEqual(response.headers["Cache-Control"], "no-store")
             with urlopen(base + "/netease/song/url/v1?id=42&level=hires", timeout=3) as response:
                 self.assertEqual(json.load(response)["data"][0]["freeTrialInfo"], {"end": 30})
+            with urlopen(base + "/netease/song/url/v1?id=42&level=jymaster", timeout=3) as response:
+                self.assertEqual(response.status, 200, "超清母带 is one of 网易云's levels")
             with urlopen(base + "/netease/login/qr/start", timeout=3) as response:
                 self.assertEqual(json.load(response)["proof"], QR_PROOF)
             poll = Request(base + "/netease/login/qr/poll", headers={"X-Netease-QR-Proof": QR_PROOF})
@@ -108,6 +110,7 @@ class GatewayTest(unittest.TestCase):
             for path, status in (
                 ("/netease/cloudsearch?" + query + "&type=1", 400),
                 ("/netease/song/url/v1?id=42&level=hires&cookie=test", 400),
+                ("/netease/song/url/v1?id=42&level=dolby", 400),
                 ("/netease/login", 404),
                 ("/netease/user/account", 401),
                 ("/netease/top/playlist?cat=invalid", 400),

@@ -11,6 +11,13 @@ pub enum LibTab {
     Playlists,
 }
 
+/// Sections of a controlled Android device's own music library.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RemoteTab {
+    Songs,
+    Recent,
+}
+
 #[derive(Clone, PartialEq, Debug)]
 pub enum Route {
     Home,
@@ -22,6 +29,9 @@ pub enum Route {
     Downloads,
     Qa,
     Settings,
+    Devices,
+    /// The local music library of the Android device being controlled.
+    RemoteLibrary(RemoteTab),
 }
 
 /// Browser-like history.

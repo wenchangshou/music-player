@@ -67,9 +67,15 @@ final class MusicDownload {
                          Uri directory, Progress progress) throws IOException {
         String extension = audio.format;
         String[] path = location(job, extension);
-        if (audio.dash != null) return new Transfer(0, saveDash(context, directory, audio.dash, path, progress));
+        // Title, artist, album, numbers, year and cover go into the file as it is written.
+        AudioTags tags = new AudioTags(job, job.cover.isEmpty() ? null : coverFor(job.cover));
+        if (audio.dash != null) return new Transfer(0, saveDash(context, directory, audio.dash, path, progress, tags));
         if (directory != null) {
-            return new Transfer(0, saveToDirectory(context.getContentResolver(), directory, audio.uri, path, extension, progress));
+            return new Transfer(0, saveToDirectory(context.getContentResolver(), directory, audio.uri, path, extension, progress, tags));
+        }
+        if (Build.VERSION.SDK_INT >= 29) {
+            // Saved by the app rather than the system downloader, so the file can be tagged.
+            return new Transfer(0, saveToDownloads(context.getContentResolver(), audio.uri, path, extension, progress, tags));
         }
         DownloadManager.Request request = new DownloadManager.Request(audio.uri)
                 .setTitle(job.title).setDescription(job.source)
@@ -94,9 +100,237 @@ final class MusicDownload {
         return new Transfer(context.getSystemService(DownloadManager.class).enqueue(request), null);
     }
 
+    /** Copy the download into {@code output} (closing it, which writes any held-back tags). */
+    private static long copy(InputStream input, OutputStream output, long total, Progress progress) throws IOException {
+        long bytes = 0;
+        try {
+            byte[] buffer = new byte[64 * 1024];
+            int read;
+            while ((read = input.read(buffer)) != -1) {
+                if (Thread.currentThread().isInterrupted()) throw new IOException("下载已取消");
+                output.write(buffer, 0, read);
+                bytes += read;
+                progress.transferred(bytes, total);
+            }
+        } finally {
+            output.close();
+        }
+        return bytes;
+    }
+
+    /** Download into Download/艺人/专辑/ through MediaStore, tagging it on the way. */
+    @android.annotation.TargetApi(29)
+    private static Uri saveToDownloads(ContentResolver resolver, Uri audio, String[] path, String extension,
+                                       Progress progress, AudioTags tags) throws IOException {
+        HttpURLConnection connection = (HttpURLConnection) new URL(audio.toString()).openConnection();
+        Uri target = null;
+        boolean complete = false;
+        try {
+            connection.setConnectTimeout(12_000);
+            connection.setReadTimeout(20_000);
+            connection.setInstanceFollowRedirects(false);
+            connection.setRequestProperty("Accept-Encoding", "identity");
+            int status = connection.getResponseCode();
+            if (status != 200) throw new IOException("下载服务器返回 HTTP " + status);
+            String mime = android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension);
+            android.content.ContentValues values = new android.content.ContentValues();
+            values.put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, path[2]);
+            values.put(android.provider.MediaStore.MediaColumns.MIME_TYPE, mime == null ? "application/octet-stream" : mime);
+            values.put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH,
+                    Environment.DIRECTORY_DOWNLOADS + "/" + path[0] + "/" + path[1]);
+            values.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1);
+            target = resolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+            if (target == null) throw new IOException("无法在下载目录创建文件");
+            progress.created(target);
+            String length = connection.getHeaderField("Content-Length");
+            long total = length == null ? -1 : Long.parseLong(length);
+            long bytes;
+            try (InputStream input = connection.getInputStream();
+                 OutputStream file = resolver.openOutputStream(target, "w")) {
+                if (file == null) throw new IOException("无法写入下载目录");
+                bytes = copy(input, tags.wrap(file, extension), total, progress);
+            }
+            if (bytes == 0 || (total >= 0 && total != bytes)) throw new IOException("下载文件不完整");
+            android.content.ContentValues done = new android.content.ContentValues();
+            done.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0);
+            if (resolver.update(target, done, null, null) != 1) throw new IOException("无法提交下载文件");
+            complete = true;
+            return target;
+        } finally {
+            connection.disconnect();
+            if (!complete && target != null) try { resolver.delete(target, null, null); } catch (Exception ignored) {}
+        }
+    }
+
+    /** Recently used covers, so an album's songs share one download of its cover. */
+    private static final java.util.Map<String, byte[]> COVERS = new java.util.LinkedHashMap<String, byte[]>(8, 0.75f, true) {
+        @Override protected boolean removeEldestEntry(java.util.Map.Entry<String, byte[]> eldest) { return size() > 6; }
+    };
+
+    /** The cover as a 1000×1000 JPEG, or null when it cannot be fetched. */
+    static byte[] coverFor(String cover) {
+        synchronized (COVERS) {
+            if (COVERS.containsKey(cover)) return COVERS.get(cover);
+        }
+        byte[] jpeg;
+        try {
+            jpeg = coverJpeg(cover);
+        } catch (Exception unavailable) {
+            jpeg = null;
+        }
+        synchronized (COVERS) {
+            if (jpeg != null) COVERS.put(cover, jpeg);
+        }
+        return jpeg;
+    }
+
+    /** Extension of a saved file, from its name. */
+    static String extension(Context context, Uri file) {
+        String name = displayName(context.getContentResolver(), file, "");
+        int dot = name.lastIndexOf('.');
+        return dot < 0 ? "flac" : name.substring(dot + 1).toLowerCase(Locale.ROOT);
+    }
+
+    private static final java.util.regex.Pattern SYNCED = java.util.regex.Pattern.compile("(?m)^\\s*\\[\\d{1,4}:\\d{2}");
+
+    /**
+     * Save the album cover as cover.jpg (1000×1000 JPEG, once per album folder) and, when the
+     * service has synced lyrics, a .lrc named after the song, next to the downloaded song.
+     * Plain lyrics get no .lrc: invented timestamps would mislead players. Never throws.
+     */
+    static void saveExtras(Context context, DownloadTasks.Job job, String extension, Uri directory,
+                           Uri audioDocument, DownloadTasks.Resolve resolve) {
+        String[] path = location(job, extension);
+        String audioName = displayName(context.getContentResolver(), audioDocument, path[2]);
+        String lrcName = audioName.substring(0, Math.max(0, audioName.lastIndexOf('.'))) + ".lrc";
+        // Songs of one album download in parallel: check and write the cover one at a time, so the
+        // folder gets a single cover.jpg. Loose singles share a folder, so they get no cover.jpg.
+        if (!job.cover.isEmpty() && !job.albumTitle.isEmpty()) synchronized (MusicDownload.class) {
+            try {
+                if (!exists(context, directory, path, "cover.jpg")) {
+                    byte[] cover = coverFor(job.cover);
+                    if (cover != null) write(context, directory, path, "cover.jpg", "image/jpeg", cover);
+                }
+            } catch (Exception ignored) {
+                // The song is saved; a missing cover is not worth failing it for.
+            }
+        }
+        try {
+            org.json.JSONObject words = resolve == null ? null : resolve.lyrics(job.track);
+            String synced = words == null || words.isNull("subtitles") ? "" : words.optString("subtitles");
+            if (SYNCED.matcher(synced).find() && !exists(context, directory, path, lrcName)) {
+                write(context, directory, path, lrcName, "application/octet-stream",
+                        synced.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            }
+        } catch (Exception ignored) {
+            // Lyrics are optional.
+        }
+    }
+
+    private static String displayName(ContentResolver resolver, Uri document, String fallback) {
+        if (document == null) return fallback;
+        try (Cursor cursor = resolver.query(document, new String[]{android.provider.OpenableColumns.DISPLAY_NAME},
+                null, null, null)) {
+            if (cursor != null && cursor.moveToFirst() && cursor.getString(0) != null) return cursor.getString(0);
+        } catch (Exception ignored) {}
+        return fallback;
+    }
+
+    /** The cover as a square 1000×1000 JPEG (quality 95), cropped to the centre if needed. */
+    private static byte[] coverJpeg(String cover) throws Exception {
+        Uri source = TidalClient.artwork(cover, 1280);
+        if (source == null) return null;
+        HttpURLConnection connection = (HttpURLConnection) new URL(source.toString()).openConnection();
+        android.graphics.Bitmap image;
+        try {
+            connection.setConnectTimeout(10_000);
+            connection.setReadTimeout(15_000);
+            if (connection.getResponseCode() != 200) return null;
+            try (InputStream input = connection.getInputStream()) {
+                image = android.graphics.BitmapFactory.decodeStream(input);
+            }
+        } finally {
+            connection.disconnect();
+        }
+        if (image == null) return null;
+        int edge = Math.min(image.getWidth(), image.getHeight());
+        android.graphics.Bitmap square = android.graphics.Bitmap.createBitmap(image,
+                (image.getWidth() - edge) / 2, (image.getHeight() - edge) / 2, edge, edge);
+        android.graphics.Bitmap sized = edge == 1000 ? square
+                : android.graphics.Bitmap.createScaledBitmap(square, 1000, 1000, true);
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        sized.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, out);
+        return out.toByteArray();
+    }
+
+    /** Whether the album folder already has {@code name}, wherever this download is stored. */
+    private static boolean exists(Context context, Uri directory, String[] path, String name) throws IOException {
+        ContentResolver resolver = context.getContentResolver();
+        if (directory != null) {
+            Uri root = DocumentsContract.buildDocumentUriUsingTree(directory, DocumentsContract.getTreeDocumentId(directory));
+            Uri parent = folder(resolver, directory, folder(resolver, directory, root, path[0]), path[1]);
+            Uri listing = DocumentsContract.buildChildDocumentsUriUsingTree(directory, DocumentsContract.getDocumentId(parent));
+            try (Cursor cursor = resolver.query(listing, new String[]{DocumentsContract.Document.COLUMN_DISPLAY_NAME},
+                    null, null, null)) {
+                while (cursor != null && cursor.moveToNext()) if (name.equals(cursor.getString(0))) return true;
+            }
+            return false;
+        }
+        if (Build.VERSION.SDK_INT >= 29) {
+            String relative = Environment.DIRECTORY_DOWNLOADS + "/" + path[0] + "/" + path[1] + "/";
+            try (Cursor cursor = resolver.query(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                    new String[]{android.provider.MediaStore.MediaColumns._ID},
+                    android.provider.MediaStore.MediaColumns.RELATIVE_PATH + "=? AND "
+                            + android.provider.MediaStore.MediaColumns.DISPLAY_NAME + "=?",
+                    new String[]{relative, name}, null)) {
+                return cursor != null && cursor.moveToFirst();
+            }
+        }
+        File base = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+        return base != null && new File(base, path[0] + "/" + path[1] + "/" + name).exists();
+    }
+
+    /** Write {@code data} as {@code name} into the album folder of this download. */
+    private static void write(Context context, Uri directory, String[] path, String name, String mime,
+                              byte[] data) throws IOException {
+        ContentResolver resolver = context.getContentResolver();
+        if (directory != null) {
+            Uri root = DocumentsContract.buildDocumentUriUsingTree(directory, DocumentsContract.getTreeDocumentId(directory));
+            Uri parent = folder(resolver, directory, folder(resolver, directory, root, path[0]), path[1]);
+            Uri document = DocumentsContract.createDocument(resolver, parent, mime, name);
+            if (document == null) throw new IOException("无法创建 " + name);
+            try (OutputStream output = resolver.openOutputStream(document, "w")) {
+                if (output == null) throw new IOException("无法写入 " + name);
+                output.write(data);
+            }
+            return;
+        }
+        if (Build.VERSION.SDK_INT >= 29) {
+            android.content.ContentValues values = new android.content.ContentValues();
+            values.put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, name);
+            values.put(android.provider.MediaStore.MediaColumns.MIME_TYPE, mime);
+            values.put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH,
+                    Environment.DIRECTORY_DOWNLOADS + "/" + path[0] + "/" + path[1]);
+            Uri target = resolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+            if (target == null) throw new IOException("无法创建 " + name);
+            try (OutputStream output = resolver.openOutputStream(target, "w")) {
+                if (output == null) throw new IOException("无法写入 " + name);
+                output.write(data);
+            }
+            return;
+        }
+        File base = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+        if (base == null) throw new IOException("无法访问下载目录");
+        File parent = new File(base, path[0] + "/" + path[1]);
+        if (!parent.isDirectory() && !parent.mkdirs() && !parent.isDirectory()) throw new IOException("无法创建下载目录");
+        try (OutputStream output = new java.io.FileOutputStream(new File(parent, name))) {
+            output.write(data);
+        }
+    }
+
     @androidx.annotation.OptIn(markerClass = androidx.media3.common.util.UnstableApi.class)
     private static Uri saveDash(Context context, Uri directory, byte[] manifest, String[] path,
-                                Progress progress) throws IOException {
+                                Progress progress, AudioTags tags) throws IOException {
         ContentResolver resolver = context.getContentResolver();
         Uri target;
         boolean mediaStore = directory == null;
@@ -118,9 +352,12 @@ final class MusicDownload {
         boolean complete = false;
         try {
             progress.created(target);
-            try (OutputStream output = resolver.openOutputStream(target, "w")) {
-                if (output == null) throw new IOException("无法写入 FLAC 文件");
+            try (OutputStream file = resolver.openOutputStream(target, "w")) {
+                if (file == null) throw new IOException("无法写入 FLAC 文件");
+                OutputStream output = tags.wrap(file, "flac");
                 DashFlacDownload.save(context.getCacheDir(), manifest, output, progress);
+                output.flush();
+                if (output != file) output.close();
             }
             if (mediaStore && Build.VERSION.SDK_INT >= 29) {
                 android.content.ContentValues values = new android.content.ContentValues();
@@ -137,7 +374,16 @@ final class MusicDownload {
         }
     }
 
+    /** Parallel downloads of one album must not each create its folder. */
+    private static final Object FOLDERS = new Object();
+
     private static Uri folder(ContentResolver resolver, Uri tree, Uri parent, String name) throws IOException {
+        synchronized (FOLDERS) {
+            return findOrCreateFolder(resolver, tree, parent, name);
+        }
+    }
+
+    private static Uri findOrCreateFolder(ContentResolver resolver, Uri tree, Uri parent, String name) throws IOException {
         Uri listing = DocumentsContract.buildChildDocumentsUriUsingTree(tree, DocumentsContract.getDocumentId(parent));
         String[] columns = {DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME,
                 DocumentsContract.Document.COLUMN_MIME_TYPE};
@@ -155,7 +401,7 @@ final class MusicDownload {
     }
 
     private static Uri saveToDirectory(ContentResolver resolver, Uri directory, Uri audio,
-                                       String[] path, String extension, Progress progress) throws IOException {
+                                       String[] path, String extension, Progress progress, AudioTags tags) throws IOException {
         Uri root = DocumentsContract.buildDocumentUriUsingTree(directory, DocumentsContract.getTreeDocumentId(directory));
         HttpURLConnection connection = (HttpURLConnection) new URL(audio.toString()).openConnection();
         Uri document = null;
@@ -177,16 +423,9 @@ final class MusicDownload {
             long total = length == null ? -1 : Long.parseLong(length);
             long bytes = 0;
             try (InputStream input = connection.getInputStream();
-                 OutputStream output = resolver.openOutputStream(document, "w")) {
-                if (output == null) throw new IOException("无法写入选定目录");
-                byte[] buffer = new byte[64 * 1024];
-                int read;
-                while ((read = input.read(buffer)) != -1) {
-                    if (Thread.currentThread().isInterrupted()) throw new IOException("下载已取消");
-                    output.write(buffer, 0, read);
-                    bytes += read;
-                    progress.transferred(bytes, total);
-                }
+                 OutputStream file = resolver.openOutputStream(document, "w")) {
+                if (file == null) throw new IOException("无法写入选定目录");
+                bytes = copy(input, tags.wrap(file, extension), total, progress);
             }
             if (bytes == 0 || (total >= 0 && total != bytes)) {
                 throw new IOException("下载文件不完整");

@@ -17,6 +17,22 @@ final class NeteaseClient {
     static final String SESSION = "netease_session";
     static final String SETTING = "netease_api_url";
     static final String[] QUALITY_NAMES = {"无损", "极高", "标准", "Hi-Res"};
+    /** 网易云's playback levels, best first, with their official names and what they deliver. */
+    static final String[] PLAY_LEVELS = {"jymaster", "sky", "jyeffect", "hires", "lossless", "exhigh", "higher", "standard"};
+    static final String[] PLAY_NAMES = {"超清母带", "沉浸环绕声", "高清环绕声", "Hi-Res", "无损", "极高", "较高", "标准"};
+    static final String[] PLAY_CHOICES = {"超清母带 · 母带音质，最高 24bit/192kHz", "沉浸环绕声 · 空间音频",
+            "高清环绕声 · 环绕声", "Hi-Res · 最高 24bit/192kHz", "无损 · FLAC 16bit/44.1kHz", "极高 · 最高 320kbps",
+            "较高 · 192kbps", "标准 · 128kbps"};
+
+    /** Official name of a 网易云 level code such as "jymaster". */
+    static String levelName(String level) {
+        int at = java.util.Arrays.asList(PLAY_LEVELS).indexOf(level);
+        return at >= 0 ? PLAY_NAMES[at] : level;
+    }
+
+    static boolean knownLevel(String level) {
+        return java.util.Arrays.asList(PLAY_LEVELS).contains(level);
+    }
     private static final String[] LEVELS = {"lossless", "exhigh", "standard", "hires"};
     private static final long ID_BASE = 1L << 52;
     private final String base;
@@ -56,7 +72,7 @@ final class NeteaseClient {
 
     private static long nativeId(long id) { return id - ID_BASE; }
 
-    private static long catalogueId(long id) throws IOException {
+    static long catalogueId(long id) throws IOException {
         if (id <= 0 || id >= ID_BASE) throw new IOException("网易云曲目或目录编号无效");
         return ID_BASE + id;
     }
@@ -189,8 +205,12 @@ final class NeteaseClient {
     }
 
     Audio audio(long trackId, int quality) throws Exception {
+        return audio(trackId, LEVELS[quality]);
+    }
+
+    /** Audio at one of {@link #PLAY_LEVELS}. */
+    Audio audio(long trackId, String requested) throws Exception {
         long id = nativeId(trackId);
-        String requested = LEVELS[quality];
         JSONArray items = get("song/url/v1?id=" + id + "&level=" + requested).optJSONArray("data");
         for (int i = 0; items != null && i < items.length(); i++) {
             JSONObject item = items.optJSONObject(i);
@@ -199,7 +219,7 @@ final class NeteaseClient {
             Uri uri = httpsMedia(item.optString("url"));
             if (uri == null) break;
             String actual = item.optString("level", requested);
-            return new Audio(new TidalClient.Stream(uri, null, new JSONObject().put("bitRate", item.optInt("br")), "网易云 · " + actual),
+            return new Audio(new TidalClient.Stream(uri, null, new JSONObject().put("bitRate", item.optInt("br")), "网易云 · " + levelName(actual)),
                     item.optString("type").toLowerCase(Locale.ROOT), item.optString("level"), item.optInt("br"));
         }
         throw new DownloadTasks.QualityUnavailable("网易云曲目不可用，可能需要登录、会员或地区授权");
