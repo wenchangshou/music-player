@@ -24,8 +24,8 @@ final class LyricsDialog {
 
     private static final Pattern TIME = Pattern.compile("\\[(\\d{1,4}):(\\d{2})(?:[.:](\\d{1,3}))?]");
     private static final Pattern OFFSET = Pattern.compile("(?im)^\\s*\\[offset:([+-]?\\d{1,8})]");
-    private static final int ACTIVE = 0xffaaf0d8;
-    private static final int INACTIVE = 0xffa6b9bd;
+    private static final int ACTIVE = 0xffffffff;
+    private static final int INACTIVE = 0x55ffffff;
     private final AlertDialog dialog;
     /** Inline only: tap (back to the cover) and the track changing. */
     private final Runnable tap;
