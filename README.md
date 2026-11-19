@@ -1,138 +1,183 @@
-# 听音室 · TIDAL GUI
+# 听音室 · TIDAL GUI & Hi-Fi Ecosystem
 
-听音室是一套专为无损/高解析音乐发烧友打造的多端音频播放与生态系统，包含 **Linux 桌面端**、**Android 原生播放器**（特别针对山灵等发烧 DAP 播放器优化）以及**现代化 Web 局域网/公网遥控端**。系统打通了 TIDAL、网易云、本地无损曲库与 NAS 网络存储，支持无损点播、跨设备控制、智能歌词补全与远程高音质下载。
+<p align="center">
+  <strong>专为无损/高解析音乐发烧友打造的多端音频播放、曲库治理与远程生态系统</strong>
+</p>
 
-## 核心特性全景
+<p align="center">
+  <img src="https://img.shields.io/badge/Platform-Linux%20%7C%20Android%20%7C%20Web-blue.svg" alt="Platform">
+  <img src="https://img.shields.io/badge/Rust-egui%20%2B%20mpv-orange.svg" alt="Rust">
+  <img src="https://img.shields.io/badge/Android-Media3%20%2B%20DAP%20Hi--Fi-green.svg" alt="Android">
+  <img src="https://img.shields.io/badge/Hi--Res-Bit--Perfect%20Lossless-gold.svg" alt="Lossless">
+</p>
 
-### 📱 Android 播放器（Hi-Fi & DAP 专属）
-- **高保真音频引擎**：原生音频解码与后台播放，支持源码输出，无缝播放（Gapless）与系统媒体控件集成。
-- **本地深度曲库索引**：递归扫描 SAF 授权存储，精准解析 FLAC/WAV/DSD 等无损标签（艺人、专辑、碟号、曲号、年份、流派）与内嵌封面。
-- **智能歌词补全系统（`LyricsFill`）**：
-  - 自动扫描本地缺失歌词曲目；
-  - 跨 TIDAL 与网易云双源检索，具备繁简自动转换、歌曲时长（±3s）容差智能比对与同专辑权重算法；
-  - 自动生成同名 `.lrc` 文件持久化保存至歌曲同级目录，支持一键批量补全与单曲手动挑选预览。
-- **多端设备互联与局域网服务（`LanRemote`）**：
-  - 内置高性能轻量 HTTP 遥控服务器，支持 6 位 PIN 码安全快速配对；
-  - 跨设备播放器账号互联，支持在不同设备间无缝切换遥控目标与队列同步。
-- **网络存储流媒体（新增）**：
-  - 内置 SMB (`jcifs-ng`) 与 WebDAV 客户端，支持挂载家庭 NAS / 私有云无损音乐库。
+---
 
-### 🌐 Web 遥控端（现代化 Native 交互体验）
-- **原生应用级界面**：暗色玻璃拟态美学设计，深度适配电脑宽屏与手机触屏窄屏布局。
-- **跨平台聚合搜索**：
-  - 支持“歌曲 / 专辑 / 歌单 / 艺人”四大独立分类；
-  - 支持在 TIDAL 在线、网易云音乐与 DAP 本地曲库之间无缝切换检索。
-- **独立远程下载管理中心**：
-  - 实时显示当前下载速率（MB/s）与剩余时间；
-  - 智能按专辑分组折叠显示，单曲/多选批量重试、取消与清理；
-  - 展开查看完整音频元数据（格式、码率、采样率、位深、时长、存储路径等）；
-  - 支持直接将 TIDAL 专辑一键“整张下载到播放器”。
-- **全功能控制台**：远程点歌、音量调节、循环模式、实时动态歌词同步滚动与全屏播放模式。
+## 📖 项目定位
 
-### 🖥️ Linux 桌面端
-- **高性能 GUI**：基于 Rust + egui 构建，极低资源占用。
-- **多音源浏览与点播**：mpv 原生音频核心驱动，集成 TIDAL 与网易云兼容源，支持收藏与队列管理。
-- **山灵专属下载与质检**：基于 FFmpeg 的音频完整性校验，内置山灵 DAP 规范适配（1000×1000 JPEG 封面、标准分盘目录）。
-- **多端设备中继协同**：可直接查看、借用登录并遥控 Android 播放器。
+**听音室** 是一套打通 **Linux 桌面端**、**Android 原生播放器（针对山灵等发烧 DAP 深度优化）** 与 **现代响应式 Web 遥控端** 的一体化无损音乐系统。
 
-## 功能与运行截图
+它解决的核心发烧痛点：
+1. **DAP 交互痛点**：发烧播放器屏幕小、输入繁琐、操作卡顿；听音室通过手机或电脑浏览器提供极速遥控，实现远程点歌、音量调节、全库检索与整盘推送下载。
+2. **曲库治理与歌词缺失**：发烧友本地 FLAC 曲库庞大但往往缺失歌词与规范标签；系统内置跨源智能歌词引擎，自动匹配 TIDAL 与网易云，精准生成同名 `.lrc` 文件。
+3. **多源无缝整合**：将 **TIDAL Max (Hi-Res)**、**网易云音乐**、**本地存储** 与 **家庭 NAS（SMB / WebDAV）** 融合为统一的听音体验。
 
-以下是 Linux、Android 和 Web 三端的实际运行截图。点击任意截图可查看原图。
+---
 
-### Linux 桌面
+## 🌟 核心特性全景
 
-浏览 TIDAL 的曲目、专辑、歌手和歌单，管理收藏、播放队列和下载。播放由 mpv 驱动，也可接入网易云兼容服务。下载工具支持通过 FFmpeg 检查本地音频文件。
+### 📱 1. Android 原生播放器（Hi-Fi & DAP 专属）
+* **高保真音频引擎**：基于 AndroidX Media3 深度定制，支持源码直通输出、无缝播放（Gapless）、系统锁屏与媒体通知栏控件。
+* **本地深度曲库索引**：递归扫描 Android SAF（存储访问框架）授权目录，毫秒级读取与缓存 FLAC、WAV、DSD、APE 等标签（艺人、专辑、碟号、曲号、年份、流派、内嵌封面）。
+* **智能歌词补全系统（`LyricsFill`）**：
+  * **全库自动体检**：即时统计本地无歌词曲目，支持后台多线程一键批量补全。
+  * **跨源智能匹配**：联动 TIDAL 与网易云，内置 API 29+ 繁简自动互转、歌曲时长（±3s 容差）精密校准与同专辑权重算法。
+  * **物理同级落盘**：精准生成规范同名 `.lrc` 文件写入音乐同级目录，无缝兼容播放器系统自带的音乐扫描器。
+  * **单曲精细挑选**：支持在单曲菜单中查看多候选歌词列表、实时滚动预览并一键保存。
+* **网络存储流媒体（新增）**：内置 SMB (`jcifs-ng`) 与 WebDAV 客户端，支持直连并串流家庭 NAS 与私有云曲库。
+* **局域网配对服务（`LanRemote`）**：内置轻量原生 HTTP 服务，生成 6 位安全随机 PIN 码，浏览器一键配对接入。
+* **局域网文件管理**：支持从已配对浏览器远程上传音频文件至 DAP 存储，支持文件重命名、删除与目录管理。
 
-[![Linux 桌面端首页](docs/screenshots/linux.png)](docs/screenshots/linux.png)
+### 🌐 2. Web 局域网 / 公网遥控端（Native 级交互）
+* **现代化玻璃拟态 UI**：零外部大型框架依赖，极速响应，自适应桌面宽屏与手机触屏窄屏。
+* **多分类全网聚合搜索**：
+  * 支持 **歌曲 / 专辑 / 歌单 / 艺人** 四大独立分类卡片视图；
+  * 支持在 **TIDAL 在线 / 网易云 / DAP 本地音乐** 三大音源间无缝切换；
+  * TIDAL 专辑详情页提供一键 **「下载整张专辑到手机」**。
+* **独立远程下载管理看板**：
+  * **实时状态看板**：动态显示下载总速率（MB/s）、进行中任务角标、剩余下载时间预估；
+  * **专辑智能聚合**：下载任务按专辑折叠/展开，支持一键查看全盘进度；
+  * **多任务精细管控**：单曲/多选批量重试、取消、移除已完成任务，支持动态调节并发线程数；
+  * **音轨参数抽屉**：展开可查看已下载文件的实际物理存储路径、编码格式、采样率、位深、码率与时长。
+* **全功能播放控制台**：
+  * 实时动态歌词同步滚动、双语对照、点击歌词精准跳转进度；
+  * 专辑封面色彩自适应背景光效，沉浸式全屏播放模式；
+  * 完整键盘快捷键（空格键播放/暂停，左右箭头快进退，`/` 唤起搜索）。
 
-| 搜索结果 | 专辑详情 |
-| --- | --- |
-| [![桌面端搜索 Mogwai](docs/screenshots/linux-search.png)](docs/screenshots/linux-search.png) | [![桌面端专辑曲目与音质标记](docs/screenshots/linux-album.png)](docs/screenshots/linux-album.png) |
+### 🖥️ 3. Linux 桌面端（Rust 原生核心）
+* **高性能跨平台 GUI**：基于 Rust + egui 构建，极低内存与 CPU 资源开销。
+* **原生播放核心**：由 mpv 引擎驱动，支持播放本地高规格无损文件及在线流媒体。
+* **多端设备中继协同**：
+  * 侧边栏常驻“设备”管理面板，一键切换并遥控局域网/公网内的 Android 播放器；
+  * 借用登录（`lend_login`）体系：当桌面端未登录 TIDAL 时，可透明借用已连接 DAP 的会话进行浏览与点播。
+* **山灵 DAP 质检报告工具**：
+  * 基于 FFmpeg 深度检测音频完整性；
+  * 严格检验专辑封面是否符合山灵播放器规范（1000×1000 JPEG 格式、分盘目录结构等）。
 
-| 歌单详情 | 下载配置 |
-| --- | --- |
-| [![桌面端歌单与曲目](docs/screenshots/linux-playlist.png)](docs/screenshots/linux-playlist.png) | [![桌面端下载配置与队列](docs/screenshots/linux-downloads.png)](docs/screenshots/linux-downloads.png) |
+---
 
-| 艺人主页与热门歌曲 | 正在播放与队列 |
-| --- | --- |
-| [![艺人主页与热门歌曲](docs/screenshots/linux-artist.png)](docs/screenshots/linux-artist.png) | [![正在播放与队列](docs/screenshots/linux-queue.png)](docs/screenshots/linux-queue.png) |
+## 🖼️ 功能与运行截图
 
-| 山灵质检报告（使用测试音轨） |
-| --- |
-| [![山灵质检报告（使用测试音轨）](docs/screenshots/linux-qa.png)](docs/screenshots/linux-qa.png) |
+点击任意截图可查看原始高清大图。
 
-### Android
-
-导入本地文件，按歌曲、专辑或歌单浏览，用系统媒体控件进行后台播放。支持本地曲库智能歌词补全（联动 TIDAL 与网易云，繁简转换与时长智能比对，自动保存同名 `.lrc` 歌词文件）。配置对应音源后，可搜索 TIDAL 和网易云，查看歌词并选择音质。并已拓展 SMB / WebDAV 网络存储流媒体支持。更多功能和账号设置见 [Android 使用说明](android/README.md)。
-
-| 首页与最近聆听 | 正在播放 | 专辑详情 |
-| --- | --- | --- |
-| <a href="docs/screenshots/android.png"><img src="docs/screenshots/android.png" alt="Android 端最近聆听与收藏" width="250"></a> | <a href="docs/screenshots/android-player.png"><img src="docs/screenshots/android-player.png" alt="Android 全屏播放器" width="250"></a> | <a href="docs/screenshots/android-album.png"><img src="docs/screenshots/android-album.png" alt="Android 专辑曲目与下载选项" width="250"></a> |
-
-| 播放队列 | 收藏专辑 |
-| --- | --- |
-| <a href="docs/screenshots/android-queue.png"><img src="docs/screenshots/android-queue.png" alt="Android 播放队列" width="250"></a> | <a href="docs/screenshots/android-favorites.png"><img src="docs/screenshots/android-favorites.png" alt="Android TIDAL 收藏专辑" width="250"></a> |
-
-| 在线搜索结果 | 本地音乐库 |
-| --- | --- |
-| <a href="docs/screenshots/android-search.png"><img src="docs/screenshots/android-search.png" alt="在线搜索结果" width="250"></a> | <a href="docs/screenshots/android-local.png"><img src="docs/screenshots/android-local.png" alt="本地音乐库" width="250"></a> |
-
-### Web 遥控
-
-通过同一局域网遥控 Android 播放器。部署多端后台后，也可用播放器账号在浏览器中选择已连接设备并控制播放、进度和队列。支持在 Web 端直接触发将 TIDAL 专辑下载至 Android 播放器，并在专属的“下载”页实时监控速率、剩余时间与音轨详情。本地音乐支持一键检测缺歌词并跨源补全。
-
-桌面端和 Android 登录同一播放器账号后，也可在应用内的 **设备** 页查看所有客户端并选择一台遥控。设备切换按钮常驻在桌面端顶栏和 Android 主页面标题栏。选择设备后，播放条、正在播放、播放队列沿用本机界面，改为显示和控制所选设备。遥控 Android 设备时，音乐库也换成该设备的本地音乐。如果本机没有登录 TIDAL，而所选设备已登录，本机会借用它的登录浏览 TIDAL，下载也在该设备进行，下载页显示该设备的下载任务。借用登录可在被借用设备的 **设置 › 播放器账号** 中用“允许我的其他设备借用本机的 TIDAL 登录”关闭（默认开启）；关闭后仍可遥控它下载。
-
-[![Web 局域网遥控与播放队列](docs/screenshots/web.png)](docs/screenshots/web.png)
-
+### Web 局域网 / 公网遥控端
 | 遥控聚合搜索 | 手机下载管理看板 |
 | --- | --- |
 | [![浏览器端聚合搜索与分类筛选](docs/screenshots/web-search.png)](docs/screenshots/web-search.png) | [![手机远程下载管理与实时速率监控](docs/screenshots/web-downloads.png)](docs/screenshots/web-downloads.png) |
 
-| 音乐库与缺歌词筛选 | 已授权音乐目录与文件管理 |
+| 本地音乐库与缺歌词筛选 | 正在播放全屏与动态歌词 |
 | --- | --- |
-| [![本地音乐库管理与缺歌词筛选](docs/screenshots/web-library.png)](docs/screenshots/web-library.png) | [![已授权音乐目录与文件管理](docs/screenshots/web-files.png)](docs/screenshots/web-files.png) |
+| [![本地音乐库管理与缺歌词筛选](docs/screenshots/web-library.png)](docs/screenshots/web-library.png) | [![Web 局域网遥控与播放队列](docs/screenshots/web.png)](docs/screenshots/web.png) |
 
-| 艺人分类 |
-| --- |
-| [![艺人分类](docs/screenshots/web-artists.png)](docs/screenshots/web-artists.png) |
+| 艺人分类视图 | 已授权音乐目录与文件管理 |
+| --- | --- |
+| [![艺人分类](docs/screenshots/web-artists.png)](docs/screenshots/web-artists.png) | [![已授权音乐目录与文件管理](docs/screenshots/web-files.png)](docs/screenshots/web-files.png) |
 
-## 运行
+### Android 播放器（DAP 端实测）
+| 首页与最近聆听 | 全屏播放器 | 专辑详情与曲目 |
+| --- | --- | --- |
+| <a href="docs/screenshots/android.png"><img src="docs/screenshots/android.png" alt="Android 端最近聆听与收藏" width="240"></a> | <a href="docs/screenshots/android-player.png"><img src="docs/screenshots/android-player.png" alt="Android 全屏播放器" width="240"></a> | <a href="docs/screenshots/android-album.png"><img src="docs/screenshots/android-album.png" alt="Android 专辑曲目与下载选项" width="240"></a> |
 
-### Linux
+| 播放队列管理 | 收藏专辑 | 本地音乐库 |
+| --- | --- | --- |
+| <a href="docs/screenshots/android-queue.png"><img src="docs/screenshots/android-queue.png" alt="Android 播放队列" width="240"></a> | <a href="docs/screenshots/android-favorites.png"><img src="docs/screenshots/android-favorites.png" alt="Android TIDAL 收藏专辑" width="240"></a> | <a href="docs/screenshots/android-local.png"><img src="docs/screenshots/android-local.png" alt="本地音乐库" width="240"></a> |
 
-准备 Rust、mpv、FFmpeg 和可运行 `tiddl` 的 Python 环境。使用封面嵌入功能时，在同一个 Python 环境安装 Mutagen。启用 TIDAL 时在本地运行 `tiddl auth login`，再启动桌面端。
+### Linux 桌面端
+| 桌面端首页 | 搜索结果 | 专辑详情 |
+| --- | --- | --- |
+| [![Linux 桌面端首页](docs/screenshots/linux.png)](docs/screenshots/linux.png) | [![桌面端搜索](docs/screenshots/linux-search.png)](docs/screenshots/linux-search.png) | [![桌面端专辑曲目与音质标记](docs/screenshots/linux-album.png)](docs/screenshots/linux-album.png) |
 
+| 歌单详情 | 下载队列与配置 | 山灵播放器质检报告 |
+| --- | --- | --- |
+| [![桌面端歌单](docs/screenshots/linux-playlist.png)](docs/screenshots/linux-playlist.png) | [![桌面端下载配置与队列](docs/screenshots/linux-downloads.png)](docs/screenshots/linux-downloads.png) | [![山灵质检报告](docs/screenshots/linux-qa.png)](docs/screenshots/linux-qa.png) |
+
+---
+
+## 🏗️ 架构与通信机制
+
+```
+  +-------------------------------------------------------------------------+
+  |                               Web 遥控端                                |
+  |           (浏览器访问: http://DAP-IP:37273 或 公网 Relay 域名)            |
+  +------------------------------------+------------------------------------+
+                                       | 6 位 PIN 码配对 / Bearer Token
+                                       v
+  +-------------------------------------------------------------------------+
+  |                          Android 播放器 (DAP)                           |
+  |  - PlaybackService: Media3 音频核心 (源码直通输出)                       |
+  |  - LanRemote: 轻量 HTTP 服务 (端口 37273)                               |
+  |  - LyricsFill: TIDAL / 网易云跨源歌词智能匹配与同名 .lrc 落盘           |
+  |  - LocalLibrary: SAF 递归深度扫描与音频标签索引                         |
+  |  - SmbClient / WebDavClient: NAS 网络存储挂载                          |
+  |  - DownloadTasks: 远程整盘/单曲下载引擎 (实时速率监控)                  |
+  +------------------------------------+------------------------------------+
+                                       ^
+                                       | 长轮询通信 (支持借用登录与远程控制)
+                                       v
+  +-------------------------------------------------------------------------+
+  |                         多端中继后端 (Relay Server)                      |
+  |             (Python 异步服务，仅做指令转发与状态同步，不转发音频流)          |
+  +------------------------------------+------------------------------------+
+                                       ^
+                                       | 借用登录 / 远程曲库查询
+                                       v
+  +-------------------------------------------------------------------------+
+  |                             Linux 桌面端                                |
+  |               (Rust + egui + mpv 原生核心，山灵 DAP 质检)                |
+  +-------------------------------------------------------------------------+
+```
+
+---
+
+## 🚀 编译与运行指引
+
+### 1. Linux 桌面端
+**依赖**：Rust 1.75+、mpv、FFmpeg 以及可运行 `tiddl` 的 Python 虚拟环境。
 ```sh
+cd tidal-gui
 cargo run --release --locked
 ```
+**常用环境变量**：
+| 变量名 | 说明 | 默认值 |
+| --- | --- | --- |
+| `TIDDL_PATH` | tiddl 会话存储目录 | `~/.tiddl` |
+| `TIDAL_TIDDL_BIN` | 指定虚拟环境中的 tiddl 可执行文件 | 自动从 PATH 探测 |
+| `TIDAL_PYTHON` | 指定匹配的 Python 解释器 | 自动从 PATH 探测 |
+| `TIDAL_DOWNLOAD_DIR` | 本地音频下载存储目录 | `outputs` |
+| `NETEASE_API_URL` | 网易云兼容 API 基础地址 | 可选 |
+| `TIDAL_ACCOUNT_ORIGIN` | 多端中继后端 HTTPS 域名（如 `https://relay.example.com`） | 可选 |
 
-| 环境变量 | 用途 |
-| --- | --- |
-| `TIDDL_PATH` | tiddl 会话目录，默认为 `~/.tiddl` |
-| `TIDAL_TIDDL_BIN`、`TIDAL_PYTHON` | 指定同一虚拟环境内的 tiddl 和 Python，默认从 PATH 查找 |
-| `TIDAL_DOWNLOAD_DIR` | 初始下载目录，默认为 `outputs` |
-| `TIDAL_DOWNLOAD_SCRIPT` | 可选的自定义下载脚本，接收 `URL -q 音质 -da Atmos设置 -p 目录` |
-| `NETEASE_API_URL` | 可选的网易云兼容 API 基础地址 |
-| `TIDAL_ACCOUNT_ORIGIN` | 可选的多端后台 HTTPS 地址，例如 `https://relay.example.com` |
-
-以前的 Linux 播放器账号按原服务使用。升级后，先将 `TIDAL_ACCOUNT_ORIGIN` 指向这些账号原来使用的中继，再执行同步或退出。
-
-### Android
-
-准备 JDK 17、Android SDK Platform 36 和 Build Tools 35.0.0，设置 `ANDROID_HOME` 后运行：
-
+### 2. Android 播放器端
+**依赖**：JDK 17、Android SDK Platform 36、Build Tools 35.0.0。
 ```sh
-cd android
-./gradlew :app:assembleDebug
+cd tidal-gui/android
+# 运行单元测试
+JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 ANDROID_HOME=$HOME/Android/Sdk ./gradlew testDebugUnitTest -q
+
+# 构建 Debug APK 并安装至已连接的 DAP (如山灵 M7)
+ANDROID_HOME=$HOME/Android/Sdk JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 \
+  ./gradlew assembleDebug -PtidalRelayOrigin=https://relay.example.com
+adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
+详细使用指南请查阅 [Android 播放器完整手册](android/README.md)。
 
-APK 位于 `android/app/build/outputs/apk/debug/`。构建默认提供本地播放，可在音源设置中配置可用的在线服务。为自托管版本配置播放器账号、默认网易云入口、TIDAL 授权代理及应用内更新时，可将 `tidalRelayOrigin=https://relay.example.com` 写入本机 `~/.gradle/gradle.properties`。该地址会编入 APK，公开发行时用未配置该属性的构建环境。
+### 3. 多端中继后端 (Relay)
+基于 Python 标准库构建，配置 Caddy 提供安全反向代理与 HTTPS。
+详情请查阅 [多端中继服务部署手册](backend/README.md)。
 
-### 多端后台
+---
 
-后台使用 Python 标准库，通过反向代理提供 HTTPS。参考 [多端后台部署](backend/README.md) 配置域名、设备和凭据。第三方音源的可用功能和音质取决于账号权限、服务配置和曲目。
+## 🔒 脱敏与安全约定
 
-## 发布前检查
-
-用示例域名和独立演示配置编写文档及截图。提交前检查 Git 暂存区，确认个人域名、用户名、设备标识、账号数据库、下载文件、会话和签名材料均留在本地。对拟发的 APK 和桌面二进制也执行同样的检查。发布桌面二进制时，使用无个人路径的构建环境，或剥离调试信息并使用 Rust 的 `--remap-path-prefix`。
+1. **绝对脱敏**：本仓库中严禁硬编码任何个人服务器域名、动态公网 IP、密钥或用户凭据；中继地址一律通过编译期参数 `-PtidalRelayOrigin` 或环境变量动态注入。
+2. **局域网安全**：DAP 局域网遥控提供 6 位动态随机配对码，默认仅允许同一子网设备连接；会话令牌经由安全握手生成。
