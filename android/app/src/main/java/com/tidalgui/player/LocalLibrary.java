@@ -287,7 +287,9 @@ final class LocalLibrary {
                 boolean reusable = old != null && entry.modified > 0 && entry.size >= 0
                         && entry.size == old.payload.optLong("scan_size", -1)
                         && entry.modified == old.payload.optLong("scan_modified", -1)
-                        && uri.equals(old.localUri) && java.util.Objects.equals(entry.name, old.payload.optString("file_name"));
+                        && uri.equals(old.localUri) && java.util.Objects.equals(entry.name, old.payload.optString("file_name"))
+                        // Scans from before lengths and formats were recorded are read once more.
+                        && old.payload.has("lossless");
                 if (reusable && lrc.equals(old.payload.optString("lrc_uri"))) {
                     result.reused++;
                     result.total++;
@@ -774,11 +776,43 @@ final class LocalLibrary {
                     .put("track_number", field(metadata, MediaMetadataRetriever.METADATA_KEY_CD_TRACK_NUMBER))
                     .put("disc_number", field(metadata, MediaMetadataRetriever.METADATA_KEY_DISC_NUMBER))
                     .put("title", title.isEmpty() ? filename : title)
+                    .put("duration", length(metadata))
+                    .put("lossless", lossless(metadata, filename))
                     .put("artist", new JSONObject().put("name", field(metadata, MediaMetadataRetriever.METADATA_KEY_ARTIST)))
                     .put("album", new JSONObject().put("title", field(metadata, MediaMetadataRetriever.METADATA_KEY_ALBUM))));
         } finally {
             metadata.release();
         }
+    }
+
+    /** Length in whole seconds, as TIDAL and NetEase songs give it; 0 when unknown. */
+    private static long length(MediaMetadataRetriever metadata) {
+        try {
+            return Math.round(Long.parseLong(field(metadata, MediaMetadataRetriever.METADATA_KEY_DURATION)) / 1000.0);
+        } catch (NumberFormatException unknown) {
+            return 0;
+        }
+    }
+
+    private static final java.util.regex.Pattern LOSSLESS_NAME =
+            java.util.regex.Pattern.compile("(?i).*\\.(flac|wav|ape|wv|aiff?|alac|dsf|dff)$");
+
+    /**
+     * Whether the file is lossless: FLAC, WAV and the like, or an M4A at a lossless bit rate
+     * (ALAC; AAC stays far below 500 kbps).
+     */
+    static boolean lossless(MediaMetadataRetriever metadata, String filename) {
+        String mime = field(metadata, MediaMetadataRetriever.METADATA_KEY_MIMETYPE).toLowerCase(Locale.ROOT);
+        if (mime.contains("flac") || mime.contains("wav") || mime.contains("aiff") || mime.contains("ape")) return true;
+        if (mime.contains("mpeg") || mime.contains("ogg") || mime.contains("opus") || mime.contains("aac")) return false;
+        if (mime.contains("mp4") || filename.toLowerCase(Locale.ROOT).endsWith(".m4a")) {
+            try {
+                return Long.parseLong(field(metadata, MediaMetadataRetriever.METADATA_KEY_BITRATE)) >= 500_000;
+            } catch (NumberFormatException unknown) {
+                return false;
+            }
+        }
+        return LOSSLESS_NAME.matcher(filename).matches();
     }
 
     private static String trackYear(MediaMetadataRetriever metadata) {

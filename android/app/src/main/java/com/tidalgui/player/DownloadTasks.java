@@ -158,6 +158,8 @@ final class DownloadTasks {
          * points at that file, which is never replaced, repaired or given cover and lyrics files.
          */
         boolean adopted;
+        /** A lossy file at this song's place, set aside once the lossless download is saved. */
+        volatile Uri replaces;
         int number;
         int disc;
         int volumes;
@@ -276,7 +278,10 @@ final class DownloadTasks {
     static final class Downloaded {
         private final Map<String, String> tracks = new java.util.HashMap<>();
         private final Map<String, Integer> albums = new java.util.HashMap<>();
-        /** Songs in the local music library by title and artist, for files with no download record. */
+        /**
+         * Songs in the local music library by title and artist, for files with no download record,
+         * with the lengths in seconds of the copies, e.g. "215,0" (0 when a length is unknown).
+         */
         private final Map<String, String> named = new java.util.HashMap<>();
         /** Songs of each local album by album title and album artist. */
         private final Map<String, Integer> namedAlbums = new java.util.HashMap<>();
@@ -290,8 +295,24 @@ final class DownloadTasks {
             if (track.isLocal()) return null;
             String quality = tracks.get(source(track) + ":" + track.id);
             if (quality != null) return quality.isEmpty() ? "已下载" : "已下载 · " + quality;
-            for (String key : nameKeys(track)) if (named.containsKey(key)) return "本地已有";
+            for (String key : nameKeys(track)) {
+                String lengths = named.get(key);
+                if (lengths != null && anySameLength(lengths, length(track))) return "本地已有";
+            }
             return null;
+        }
+
+        /** Whether one of the comma-separated lengths matches {@code length} (see {@link #sameLength}). */
+        private static boolean anySameLength(String lengths, long length) {
+            if (lengths.isEmpty()) return true;
+            for (String value : lengths.split(",")) {
+                try {
+                    if (sameLength(Long.parseLong(value), length)) return true;
+                } catch (NumberFormatException unknown) {
+                    return true;
+                }
+            }
+            return false;
         }
 
         /** Songs of this album already downloaded, or found in the local music library. */
@@ -311,7 +332,10 @@ final class DownloadTasks {
             for (TidalClient.Track track : library) {
                 String title = fileTitle(track.title);
                 String key = nameKey(title, track.artist);
-                if (key == null || named.put(key, "") != null) continue;
+                if (key == null) continue;
+                String lengths = named.get(key);
+                named.put(key, (lengths == null ? "" : lengths + ",") + length(track));
+                if (lengths != null) continue;
                 String albumArtist = track.payload.optString("album_artist");
                 String album = albumKey(track.album, albumArtist.isEmpty() ? track.artist : albumArtist);
                 if (album == null) continue;
@@ -322,9 +346,13 @@ final class DownloadTasks {
 
         /** Sent to devices that control this one, so their lists mark what is saved here. */
         JSONObject toJson() throws org.json.JSONException {
+            JSONObject songs = new JSONObject();
+            for (Map.Entry<String, String> song : named.entrySet()) {
+                if (songs.length() >= 20000) break;
+                songs.put(song.getKey(), song.getValue());
+            }
             return new JSONObject().put("tracks", new JSONObject(tracks)).put("albums", new JSONObject(albums))
-                    .put("named", new JSONArray(new ArrayList<>(named.keySet()).subList(0, Math.min(named.size(), 20000))))
-                    .put("namedAlbums", new JSONObject(namedAlbums));
+                    .put("named", songs).put("namedAlbums", new JSONObject(namedAlbums));
         }
 
         static Downloaded fromJson(JSONObject data) {
@@ -340,8 +368,14 @@ final class DownloadTasks {
                 String key = keys.next();
                 result.albums.put(key, albums.optInt(key));
             }
-            JSONArray named = data.optJSONArray("named");
-            for (int i = 0; named != null && i < named.length(); i++) result.named.put(named.optString(i), "");
+            JSONObject named = data.optJSONObject("named");
+            for (java.util.Iterator<String> keys = named == null ? null : named.keys(); keys != null && keys.hasNext(); ) {
+                String key = keys.next();
+                result.named.put(key, named.optString(key));
+            }
+            // Devices from before lengths were sent list the keys only.
+            JSONArray listed = named == null ? data.optJSONArray("named") : null;
+            for (int i = 0; listed != null && i < listed.length(); i++) result.named.put(listed.optString(i), "");
             JSONObject namedAlbums = data.optJSONObject("namedAlbums");
             for (java.util.Iterator<String> keys = namedAlbums == null ? null : namedAlbums.keys(); keys != null && keys.hasNext(); ) {
                 String key = keys.next();
@@ -349,6 +383,26 @@ final class DownloadTasks {
             }
             return result;
         }
+    }
+
+    /** A song's length in seconds; 0 when unknown. */
+    static long length(TidalClient.Track track) {
+        return Math.max(0, track.payload.optLong("duration"));
+    }
+
+    /**
+     * Whether two lengths in seconds may be the same recording: within 3 seconds, or either
+     * unknown. Live and other versions of the same title usually differ by more.
+     */
+    static boolean sameLength(long a, long b) {
+        return a <= 0 || b <= 0 || Math.abs(a - b) <= 3;
+    }
+
+    /** Whether a local music library file is lossless, from its scan or else its file name. */
+    static boolean lossless(TidalClient.Track local) {
+        if (local.payload.has("lossless")) return local.payload.optBoolean("lossless");
+        String name = local.payload.optString("file_name", local.title).toLowerCase(java.util.Locale.ROOT);
+        return name.matches(".*\\.(flac|wav|ape|wv|aiff?|alac|dsf|dff)$");
     }
 
     /** Title and artist as one comparable key, e.g. "yellow|coldplay"; null when either is unknown. */
@@ -495,7 +549,7 @@ final class DownloadTasks {
                 return resolve.lyrics(track);
             }
         };
-        Map<String, TidalClient.Track> libraryIndex = libraryIndex();
+        Map<String, List<TidalClient.Track>> libraryIndex = libraryIndex();
         for (int index = 0; index < tracks.size(); index++) {
             TidalClient.Track track = tracks.get(index);
             Job reusable = null;
@@ -521,7 +575,7 @@ final class DownloadTasks {
                 skipped++;
                 continue;
             }
-            TidalClient.Track owned = libraryCopy(track, libraryIndex);
+            TidalClient.Track owned = libraryCopy(track, libraryIndex, quality);
             if (owned != null) {
                 // Already on the phone, e.g. copied over or downloaded before records were kept.
                 if (failed != null) jobs.remove(failed.id);
@@ -553,21 +607,34 @@ final class DownloadTasks {
     }
 
     /** Local music library songs by title and artist (see {@link #nameKey}). */
-    private Map<String, TidalClient.Track> libraryIndex() {
-        Map<String, TidalClient.Track> index = new java.util.HashMap<>();
+    private Map<String, List<TidalClient.Track>> libraryIndex() {
+        Map<String, List<TidalClient.Track>> index = new java.util.HashMap<>();
         if (library == null) return index;
         for (TidalClient.Track track : library.search("", null)) {
             if (track.localUri == null) continue;
             String key = nameKey(fileTitle(track.title), track.artist);
-            if (key != null && !index.containsKey(key)) index.put(key, track);
+            if (key == null) continue;
+            List<TidalClient.Track> copies = index.get(key);
+            if (copies == null) index.put(key, copies = new ArrayList<>());
+            copies.add(track);
         }
         return index;
     }
 
-    private TidalClient.Track libraryCopy(TidalClient.Track track, Map<String, TidalClient.Track> index) {
+    /**
+     * A copy of the song in the local music library: same title, first artist and length, and
+     * lossless when a lossless quality is asked for, so a local MP3 does not stop a FLAC download.
+     */
+    private TidalClient.Track libraryCopy(TidalClient.Track track, Map<String, List<TidalClient.Track>> index,
+                                          int quality) {
         for (String key : nameKeys(track)) {
-            TidalClient.Track owned = index.get(key);
-            if (owned != null && openable(owned.localUri)) return owned;
+            List<TidalClient.Track> copies = index.get(key);
+            if (copies == null) continue;
+            for (TidalClient.Track owned : copies) {
+                if (!sameLength(length(owned), length(track))) continue;
+                if (requiresLossless(quality) && !lossless(owned)) continue;
+                if (openable(owned.localUri)) return owned;
+            }
         }
         return null;
     }
@@ -719,6 +786,11 @@ final class DownloadTasks {
                 if (job.state == State.COMPLETE) revision++;
                 save();
             }
+            Uri replaced = job.replaces;
+            job.replaces = null;
+            if (replaced != null && result.document != null && !replaced.equals(result.document)) {
+                MusicDownload.setAside(context, replaced);
+            }
             // Cover and synced lyrics next to the song, as Shanling and most players expect.
             // Best effort: the song counts as downloaded either way.
             MusicDownload.saveExtras(context, job, audio.format, directory, result.document, resolve);
@@ -737,7 +809,8 @@ final class DownloadTasks {
     /**
      * When the song's file is already where this download would save it (with no record of it,
      * e.g. after the records were cleared), keep that file instead of downloading it again. Files
-     * without tags or cover, from before tagging, are replaced.
+     * without tags or cover, from before tagging, are renamed to "….bak" and downloaded again; an
+     * MP3 or M4A where a lossless quality is asked for is set aside once the new file is saved.
      */
     private boolean adoptSaved(Job job, int attempt, Uri directory, Resolve resolve) {
         Uri found;
@@ -753,10 +826,16 @@ final class DownloadTasks {
         } catch (Exception unreadable) {
             return false;
         }
+        boolean lossy = !"flac".equals(MusicDownload.extension(context, found));
         synchronized (this) {
             if (!current(job, attempt)) return true;
             if (!tagged) {
-                deleteDocument(found);
+                // Kept rather than deleted: it may be a file the owner put there.
+                MusicDownload.setAside(context, found);
+                return false;
+            }
+            if (lossy && requiresLossless(job.quality)) {
+                job.replaces = found;
                 return false;
             }
             job.document = found;

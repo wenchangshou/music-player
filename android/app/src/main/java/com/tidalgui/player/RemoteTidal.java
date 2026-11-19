@@ -29,7 +29,24 @@ final class RemoteTidal {
 
     static JSONObject execute(PlaybackService playback, RemoteLibrary.Dispatcher main, JSONObject command) throws Exception {
         String operation = command.getString("op");
-        if ("downloads".equals(operation)) return downloads(playback, main, command);
+        if (!main.run(() -> playback.lendTidal)) {
+            throw new IOException("对方未允许其他设备使用它的 TIDAL 登录和下载（在对方的设置 › 播放器账号中开启）");
+        }
+        if ("downloads".equals(operation)) {
+            String action = command.optString("action", "list");
+            if ("download".equals(action)) {
+                TidalClient api = main.run(() -> playback.client);
+                if (api == null) throw new IOException("此设备尚未登录 TIDAL");
+                String type = command.optString("type");
+                if ("album".equals(type) && command.has("id")) {
+                    command.put("album", String.valueOf(command.get("id")));
+                } else if ("track".equals(type) && command.has("id")) {
+                    command.put("ids", new JSONArray().put(command.getLong("id")));
+                }
+                return download(playback, api, command);
+            }
+            return downloads(playback, main, command);
+        }
         TidalClient api = main.run(() -> playback.client);
         if (api == null) throw new IOException("此设备尚未登录 TIDAL");
         if ("download".equals(operation)) return download(playback, api, command);

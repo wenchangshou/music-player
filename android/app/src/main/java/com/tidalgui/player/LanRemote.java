@@ -375,6 +375,7 @@ final class LanRemote implements AutoCloseable {
     private JSONObject command(JSONObject input) throws Exception {
         String operation = input.getString("op");
         if ("library".equals(operation)) return RemoteLibrary.execute(playback, this::onMain, input);
+        if (RemoteTidal.handles(operation)) return RemoteTidal.execute(playback, this::onMain, input);
         if ("library-export".equals(operation)) {
             requireFiles();
             String name = input.getString("playlist");

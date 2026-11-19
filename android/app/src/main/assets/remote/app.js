@@ -723,6 +723,7 @@
     $("libraryTrackList").hidden = false;
     $("libraryCardsView").hidden = true;
     $("btnLibBack").hidden = !currentCollection;
+    $("btnDownloadAlbum").hidden = true;
     $("localControls").hidden = libraryTab !== "local";
     $("tidalControls").hidden = libraryTab !== "tidal-collections";
 
@@ -823,6 +824,7 @@
     const li = document.createElement("li");
     li.className = "track-row";
     const cover = getArtworkUrl(track, 160);
+    const canDownload = !track.isLocal && track.id > 0;
     li.innerHTML = `
       <div class="track-thumb">
         <img alt="">
@@ -832,6 +834,7 @@
         <div class="track-subtitle">${track.artist || "未知艺人"}${track.album ? " · " + track.album : ""}</div>
       </div>
       <div class="track-actions">
+        ${canDownload ? `<button type="button" class="icon-btn btn-dl-track hover-only" title="下载到手机"><svg class="icon"><use href="#i-download"/></svg></button>` : ""}
         <button type="button" class="icon-btn btn-add-next hover-only" title="下一首播放"><svg class="icon"><use href="#i-next"/></svg></button>
         <button type="button" class="icon-btn btn-add-fav hover-only" title="喜欢"><svg class="icon"><use href="#i-heart"/></svg></button>
         <button type="button" class="icon-btn btn-add-playlist hover-only" title="加入歌单"><svg class="icon"><use href="#i-plus"/></svg></button>
@@ -842,6 +845,15 @@
       if (e.target.closest(".track-actions")) return;
       onPlay();
     });
+    const btnDl = li.querySelector(".btn-dl-track");
+    if (btnDl) {
+      btnDl.addEventListener("click", () => {
+        toast("正在发送下载请求…");
+        call("download", { ids: [track.id], quality: "BEST" })
+          .then(() => toast(`已将「${track.title}」加入手机下载队列`, "i-music"))
+          .catch(err => toast(`下载失败：${err.message}`, "i-trash"));
+      });
+    }
     li.querySelector(".btn-add-next").addEventListener("click", () => {
       call("library", { action: "song", id: track.id, track, mode: "next" });
       toast(`已设为下一首播放：${track.title}`);
@@ -902,11 +914,24 @@
     $("libraryTrackList").hidden = false;
     $("libraryCardsView").hidden = true;
     $("btnLibBack").hidden = false;
+    $("btnDownloadAlbum").hidden = kind !== "ALBUM";
 
     const action = libraryTab === "netease" ? "netease-collection" : "tidal-collection";
     const res = await call("library", { action, kind, collection: collection.id || collection.uuid });
     renderTrackRows(res.tracks || [], $("libraryTrackList"), false);
   }
+
+  $("btnDownloadAlbum").addEventListener("click", async () => {
+    if (!currentCollection) return;
+    const albumId = currentCollection.id || currentCollection.uuid;
+    toast("正在向手机发送下载整张专辑请求…");
+    try {
+      const res = await call("download", { album: String(albumId), quality: "BEST" });
+      toast(`已成功添加下载任务！共 ${res.queued || "整张"} 首曲目`, "i-music");
+    } catch (err) {
+      toast(`下载失败：${err.message}`, "i-trash");
+    }
+  });
 
   $("btnLibBack").addEventListener("click", () => {
     currentCollection = null;

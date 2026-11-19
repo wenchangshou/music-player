@@ -308,6 +308,32 @@ final class MusicDownload {
         return null;
     }
 
+    /**
+     * Keep an old file but stop it counting as a song: rename it to "….bak" (or, where the system
+     * keeps the file type in the name, to "… (旧文件).ext"). Returns whether it was renamed.
+     */
+    static boolean setAside(Context context, Uri file) {
+        ContentResolver resolver = context.getContentResolver();
+        String name = displayName(resolver, file, "");
+        if (name.isEmpty()) return false;
+        try {
+            if ("file".equals(file.getScheme())) {
+                File source = new File(file.getPath());
+                return source.renameTo(new File(source.getParentFile(), name + ".bak"));
+            }
+            if (DocumentsContract.isDocumentUri(context, file)) {
+                return DocumentsContract.renameDocument(resolver, file, name + ".bak") != null;
+            }
+            int dot = name.lastIndexOf('.');
+            String renamed = dot < 0 ? name + " (旧文件)" : name.substring(0, dot) + " (旧文件)" + name.substring(dot);
+            android.content.ContentValues values = new android.content.ContentValues();
+            values.put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, renamed);
+            return resolver.update(file, values, null, null) == 1;
+        } catch (Exception failed) {
+            return false;
+        }
+    }
+
     /** A child of {@code parent} named {@code name} (a folder when {@code folder}), or null. */
     private static Uri child(ContentResolver resolver, Uri tree, Uri parent, String name, boolean folder) {
         Uri listing = DocumentsContract.buildChildDocumentsUriUsingTree(tree, DocumentsContract.getDocumentId(parent));

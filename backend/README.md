@@ -18,7 +18,7 @@
 - `download`：`{album}` 或 `{ids}`（最多 100 首 TIDAL 曲目），`quality` 为 `BEST`（Max，不可用时 High）、`HI_RES_LOSSLESS`、`LOSSLESS`、`HIGH` 或 `LOW`。回复为下载列表，另带 `queued` 和 `skipped`。
 - `downloads`：`action` 为 `list`、`cancel`、`retry`、`remove`、`clear` 或 `parallel`（带 `count`，仅 Android），`id` 为任务编号。回复 `{jobs, parallel, maxParallel, perTrack}`。`marks` 返回 `{marks: {tracks, albums, named, namedAlbums}}`：已下载的曲目和专辑，Android 另含本地音乐库中按歌名和歌手比对的歌曲，用于遥控端在列表中标注该设备已有的歌曲。Android 每首歌一个任务，桌面端每个专辑或链接一个任务，逐个下载。
 
-借用登录只在遥控期间生效。切回本机或本机登录 TIDAL 后，改用本机的登录。
+设备只有在其设置中允许借用（默认关闭）时才在 `features` 中声明这两项，并拒绝 `tidal`、`download`、`downloads` 命令。借用登录只在遥控期间生效。切回本机或本机登录 TIDAL 后，改用本机的登录。
 
 设备轮询和命令回执使用长轮询：设备在 `/device/poll` 请求中带 `"wait": true` 时，后台最多保持 2.5 秒，有命令立即返回，回复中的 `wait` 表示可立即再次轮询；`/api/receipt?wait=1` 最多保持 5 秒，设备返回结果即答复，`held` 表示无需等待即可再次查询。旧版后台不返回这两个标记，新客户端会自动退回原来的间隔轮询。每台在线设备占用一个连接，后台同时处理的请求上限为 64。
 

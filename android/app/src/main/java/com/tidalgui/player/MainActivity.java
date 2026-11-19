@@ -4000,6 +4000,16 @@ public final class MainActivity extends ComponentActivity {
                 content.addView(menuRow("网页遥控", "在浏览器打开多端遥控",
                         () -> openTidalBrowser(Uri.parse(PlayerAccount.ORIGIN))));
             }
+            android.widget.Switch lend = new android.widget.Switch(this);
+            lend.setText("允许我的其他设备使用本机的 TIDAL 登录和下载");
+            lend.setTextColor(INK);
+            lend.setChecked(playback != null && playback.lendTidal);
+            lend.setOnCheckedChangeListener((view, enabled) -> {
+                if (playback != null) playback.setLendTidal(enabled);
+            });
+            content.addView(lend);
+            content.addView(text("开启后，同一播放器账号的设备遥控本机时，可以通过本机的 TIDAL 登录浏览、收藏，"
+                    + "并在本机下载和管理下载。它们拿不到本机的登录凭据。", 13, MUTED, false));
             content.addView(menuRow("退出播放器账号", "退出播放器账号", this::playerAccountLogout));
         }
         section("局域网遥控");

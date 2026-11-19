@@ -237,8 +237,9 @@ final class CentralRelay implements AutoCloseable {
 
     private JSONObject snapshot() throws Exception {
         JSONObject result = playback.remoteSnapshot();
-        // Other devices of the account may browse TIDAL and download through this device's login.
-        result.put("features", new JSONArray().put("tidal").put("downloads"));
+        // Other devices of the account may browse TIDAL and download through this device's login,
+        // once its owner allows it in the settings.
+        if (playback.lendTidal) result.put("features", new JSONArray().put("tidal").put("downloads"));
         result.remove("login");
         result.remove("loginError");
         result.remove("loginPending");

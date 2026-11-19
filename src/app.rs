@@ -223,6 +223,7 @@ struct Persist {
     recent_searches: Vec<String>,
     stream_quality: StreamQuality,
     netease_level: String,
+    lend_tidal: bool,
 }
 
 impl Default for Persist {
@@ -237,6 +238,7 @@ impl Default for Persist {
             recent_searches: Vec::new(),
             stream_quality: StreamQuality::HiRes,
             netease_level: "lossless".into(),
+            lend_tidal: false,
         }
     }
 }
@@ -280,6 +282,7 @@ impl App {
         pb.player.volume = p.volume;
         pb.quality = p.stream_quality;
         pb.netease_level = crate::netease::play_level(&p.netease_level);
+        crate::relay::LEND_TIDAL.store(p.lend_tidal, std::sync::atomic::Ordering::Relaxed);
 
         let mut app = Self {
             api: TidalApi::new(),
@@ -1272,6 +1275,9 @@ impl App {
 
     /// Downloads another device of the account starts here or manages here ("download" / "downloads").
     fn relay_downloads(&mut self, body: &serde_json::Value) -> Result<serde_json::Value, String> {
+        if !crate::relay::lends_tidal() {
+            return Err(crate::relay::NOT_LENT.into());
+        }
         if body["op"] == "download" {
             if !self.api.is_authenticated() {
                 return Err("此设备尚未登录 TIDAL".into());
@@ -1414,6 +1420,7 @@ impl eframe::App for App {
             recent_searches: self.recent_searches.clone(),
             stream_quality: self.pb.quality,
             netease_level: self.pb.netease_level.to_string(),
+            lend_tidal: crate::relay::lends_tidal(),
         };
         eframe::set_value(storage, eframe::APP_KEY, &p);
     }

@@ -93,6 +93,8 @@ public final class PlaybackService extends MediaSessionService {
     TidalClient client;
     LocalLibrary localLibrary;
     volatile boolean remoteFiles;
+    /** Whether devices of the player account may use this device's TIDAL login and downloads. */
+    volatile boolean lendTidal;
     volatile boolean remoteRoutedLan;
     long localRevision;
     int index = -1;
@@ -120,6 +122,7 @@ public final class PlaybackService extends MediaSessionService {
         remoteSettings = getSharedPreferences("lan_remote", MODE_PRIVATE);
         remoteRequested = remoteSettings.getBoolean("enabled", false);
         remoteFiles = remoteSettings.getBoolean("files", false) && localLibrary.hasFolders();
+        lendTidal = remoteSettings.getBoolean("lend_tidal", false);
         remoteRoutedLan = remoteSettings.getBoolean("routed", false);
         quality = Math.max(0, Math.min(QUALITIES.length - 1, settings.getInt("quality", 0)));
         String level = settings.getString("netease_level", "lossless");
@@ -808,6 +811,11 @@ public final class PlaybackService extends MediaSessionService {
     void setRemoteFiles(boolean enabled) {
         remoteFiles = enabled && localLibrary.hasFolders();
         remoteSettings.edit().putBoolean("files", remoteFiles).commit();
+    }
+
+    void setLendTidal(boolean enabled) {
+        lendTidal = enabled;
+        remoteSettings.edit().putBoolean("lend_tidal", enabled).commit();
     }
 
     void setRemoteRoutedLan(boolean enabled) {
