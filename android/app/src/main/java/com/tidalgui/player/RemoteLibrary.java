@@ -88,29 +88,41 @@ final class RemoteLibrary {
                 if (track == null || track.id != id) throw new IOException("当前歌曲已切换");
                 JSONObject words = track.isLocal()
                         ? LocalMusicFiles.lyrics(player.getContentResolver(), library.latest(track))
+                        : track.isNetease()
+                        ? player.netease().lyrics(id)
                         : account(player, main).lyrics(id);
                 String lyrics = words.optString("subtitles");
                 if (lyrics.isEmpty()) lyrics = words.optString("lyrics");
                 return new JSONObject().put("lyrics", lyrics.substring(0, Math.min(lyrics.length(), 32000)));
             }
             case "song": {
-                TidalClient api = id < 0 ? null : account(player, main);
-                TidalClient.Track track = id < 0 ? library.track(id) : api.track(id);
                 String mode = input.getString("mode");
                 if (!"play".equals(mode) && !"next".equals(mode) && !"add".equals(mode)) throw new IOException("无效播放操作");
+                TidalClient.Track track;
+                if (input.has("track")) {
+                    track = new TidalClient.Track(input.getJSONObject("track"));
+                } else if (id < 0) {
+                    track = library.track(id);
+                } else {
+                    TidalClient api = account(player, main);
+                    track = api.track(id);
+                }
                 return main.run(() -> {
-                    if (api != null && player.client != api) throw new IOException("TIDAL 账号已切换");
-                    if (api == null) library.track(id);
                     if ("play".equals(mode)) player.replaceQueue(Collections.singletonList(track), 0, false);
                     else player.enqueue(track, "next".equals(mode));
                     return new JSONObject().put("ok", true);
                 });
             }
             case "play-list": {
-                JSONArray ids = input.getJSONArray("ids");
-                if (ids.length() < 1 || ids.length() > 50) throw new IOException("每次可播放 1–50 首歌曲");
                 List<TidalClient.Track> tracks = new ArrayList<>();
-                for (int i = 0; i < ids.length(); i++) tracks.add(library.track(ids.getLong(i)));
+                if (input.has("tracks")) {
+                    JSONArray arr = input.getJSONArray("tracks");
+                    for (int i = 0; i < arr.length(); i++) tracks.add(new TidalClient.Track(arr.getJSONObject(i)));
+                } else {
+                    JSONArray ids = input.getJSONArray("ids");
+                    if (ids.length() < 1 || ids.length() > 50) throw new IOException("每次可播放 1–50 首歌曲");
+                    for (int i = 0; i < ids.length(); i++) tracks.add(library.track(ids.getLong(i)));
+                }
                 return main.run(() -> {
                     player.replaceQueue(tracks, 0, input.optBoolean("shuffle"));
                     return new JSONObject().put("ok", true);
@@ -123,6 +135,30 @@ final class RemoteLibrary {
 
     private static JSONObject tidal(PlaybackService player, Dispatcher main, JSONObject input,
             String action, String query, int offset, long id) throws Exception {
+        if (action.startsWith("netease-")) {
+            NeteaseClient netease = player.netease();
+            switch (action) {
+                case "netease-search":
+                    if (query.isEmpty()) throw new IOException("请输入搜索内容");
+                    return tidalPage(netease.search(query, offset), offset);
+                case "netease-collections": {
+                    TidalClient.Collection.Kind kind = TidalClient.Collection.Kind.valueOf(input.getString("kind"));
+                    List<TidalClient.Collection> collections = netease.collections(query, kind, offset);
+                    return collections(collections, collections.size() >= 30 ? offset + collections.size() : -1);
+                }
+                case "netease-collection": {
+                    TidalClient.Collection.Kind kind = TidalClient.Collection.Kind.valueOf(input.getString("kind"));
+                    String collectionId = bounded(input, "collection", 100);
+                    JSONObject data = new JSONObject().put("id", collectionId).put("uuid", collectionId)
+                            .put("name", "").put("title", "");
+                    return tidalPage(netease.collectionTracks(new TidalClient.Collection(data, kind), offset), offset);
+                }
+                case "netease-recommended": {
+                    List<TidalClient.Collection> collections = netease.recommendedPlaylists(netease.signedIn());
+                    return collections(collections, -1);
+                }
+            }
+        }
         TidalClient api = account(player, main);
         switch (action) {
             case "tidal-favorites":

@@ -108,7 +108,11 @@ pub fn show(ctx: &egui::Context, app: &App, st: &crate::app::UiState, acts: &mut
             // Footer: connection state.
             ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
                 let auth = app.api.auth();
-                if app.api.is_authenticated() {
+                if app.api.borrowed() {
+                    let name = app.remote_target().map(crate::remote::Remote::target_name).unwrap_or_default();
+                    ui.label(RichText::new(format!("● 使用 {name} 的 TIDAL 登录")).size(12.0).color(theme::OK_GREEN))
+                        .on_hover_text("本机未登录 TIDAL：浏览、收藏和下载都经由这台设备");
+                } else if app.api.is_authenticated() {
                     ui.label(
                         RichText::new(format!("● 已连接 TIDAL · {}", auth.country_code.unwrap_or_default()))
                             .size(12.0)

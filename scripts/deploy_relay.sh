@@ -39,17 +39,15 @@ echo "== 重启服务 =="
 ssh "$HOST" "systemctl restart tidal-relay && sleep 2 && systemctl is-active tidal-relay" || rollback
 
 echo "== 验证 =="
-# /artwork only exists in the new relay (an old one answers 接口不存在), and the new app.js
-# asks for held receipts. logout-others only confirms the account service is enabled.
+# Check the relay routes and compare the served script to the release source.
 health=$(curl -s -m 15 "$ORIGIN/health")
 others=$(curl -s -m 15 -X POST -H 'Content-Type: application/json' -d '{}' "$ORIGIN/account/logout-others")
 artwork=$(curl -s -m 15 "$ORIGIN/artwork/AAAAAAAAAAAAAAAAAAAAAAAA.jpg")
-script=$(curl -s -m 15 "$ORIGIN/app.js")
 echo "health:         $health"
 echo "logout-others:  $others"
 echo "artwork:        $artwork"
 [[ "$health" == '{"ok":true}' ]] || rollback
 [[ "$others" == *请登录播放器账号* ]] || rollback
 [[ "$artwork" == *封面不存在* ]] || rollback
-[[ "$script" == *"wait=1&command="* ]] || { echo "!! 网页遥控仍是旧版 app.js"; rollback; }
+curl -fsS -m 15 "$ORIGIN/app.js" | cmp -s "$ROOT/android/app/src/main/assets/remote/app.js" - || { echo "!! 线上 app.js 与发布文件不一致"; rollback; }
 echo "部署完成。备份后缀：bak-$STAMP"

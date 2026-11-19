@@ -89,6 +89,8 @@ pub enum Ev {
     RemoteLoggedOutOthers(Result<(), String>),
     /// A page of the controlled device's library: (generation, request, append, reply).
     RemoteLibrary(u64, u64, bool, Result<serde_json::Value, String>),
+    /// The controlled device's download list (generation, reply).
+    RemoteDownloads(u64, Result<serde_json::Value, String>),
     /// Tracks fetched to continue a remote device's playback here: (tracks, index, seconds).
     TransferHere(Result<(Vec<TrackItem>, usize, f64), String>),
 }
@@ -127,6 +129,8 @@ pub enum Action {
 
     Download { url: String, quality: &'static str, title: Option<String> },
     EnqueueInput,
+    /// Manage a download on the controlled device: ("cancel" | "retry" | "remove" | "clear", job id).
+    RemoteDownload(&'static str, String),
     CancelJob(u64),
     RemoveJob(u64),
     RetryJob(u64),
@@ -262,6 +266,8 @@ pub struct App {
     pub player_account: Option<crate::relay::PlayerAccount>,
     pub player_account_busy: bool,
     pub remote: Option<crate::remote::Remote>,
+    /// The controlled device whose TIDAL login this computer browses with, if any.
+    borrowed_tidal: Option<String>,
     pub ui: UiState,
 }
 
@@ -299,6 +305,7 @@ impl App {
             player_account: crate::relay::PlayerAccount::load(),
             player_account_busy: false,
             remote: None,
+            borrowed_tidal: None,
             ui: UiState {
                 volume: p.volume,
                 show_queue: p.show_queue,
@@ -359,7 +366,7 @@ impl App {
     }
 
     fn load_library(&mut self) {
-        if !self.api.is_authenticated() || self.lib.state == LibState::Loading {
+        if !self.api.can_browse() || self.lib.state == LibState::Loading {
             return;
         }
         self.lib.state = LibState::Loading;
@@ -704,6 +711,28 @@ impl App {
                     }
                     Err(error) => self.notify(error),
                 },
+                Ev::RemoteDownloads(generation, result) => {
+                    if let Some(remote) = &mut self.remote {
+                        if remote.generation == generation {
+                            remote.downloads_busy = false;
+                            match result {
+                                Ok(list) => {
+                                    if let (Some(queued), Some(skipped)) = (list["queued"].as_u64(), list["skipped"].as_u64()) {
+                                        let name = remote.target_name();
+                                        self.toast = Some((if skipped > 0 {
+                                            format!("⬇ 已在 {name} 加入 {queued} 项，{skipped} 项已下载或正在下载")
+                                        } else {
+                                            format!("⬇ 已在 {name} 加入 {queued} 项下载")
+                                        }, Instant::now()));
+                                    }
+                                    remote.downloads = Some(list);
+                                    remote.downloads_error = None;
+                                }
+                                Err(error) => remote.downloads_error = Some(error),
+                            }
+                        }
+                    }
+                }
                 Ev::RemoteLibrary(generation, request, append, result) => {
                     if let Some(remote) = &mut self.remote {
                         let library = &mut remote.library;
@@ -921,6 +950,8 @@ impl App {
                     self.notify("该任务已在下载队列中");
                 }
             }
+            // Only meaningful while controlling a device; see `remote_action`.
+            Action::RemoteDownload(..) => {}
             Action::EnqueueInput => {
                 let input = std::mem::take(&mut self.ui.dl_input);
                 let q = self.ui.dl_quality.clone();
@@ -1239,11 +1270,123 @@ impl App {
         Ok(())
     }
 
+    /// Downloads another device of the account starts here or manages here ("download" / "downloads").
+    fn relay_downloads(&mut self, body: &serde_json::Value) -> Result<serde_json::Value, String> {
+        if body["op"] == "download" {
+            if !self.api.is_authenticated() {
+                return Err("此设备尚未登录 TIDAL".into());
+            }
+            let quality = match body["quality"].as_str().unwrap_or("BEST") {
+                "BEST" | "HI_RES_LOSSLESS" => "max",
+                "LOSSLESS" => "high",
+                "HIGH" => "normal",
+                "LOW" => "low",
+                _ => return Err("无效的下载音质".into()),
+            };
+            let urls: Vec<String> = if let Some(album) = body["album"].as_str() {
+                if album.is_empty() || album.len() > 20 || !album.chars().all(|c| c.is_ascii_digit()) {
+                    return Err("无效的专辑".into());
+                }
+                vec![format!("https://tidal.com/album/{album}")]
+            } else {
+                let ids = body["ids"].as_array().ok_or("曲目列表无效")?;
+                if ids.is_empty() || ids.len() > 100 {
+                    return Err("每次可下载 1–100 首歌曲".into());
+                }
+                ids.iter()
+                    .map(|id| id.as_u64().filter(|id| *id > 0 && crate::netease::native_id(*id).is_none()))
+                    .map(|id| id.map(|id| format!("https://tidal.com/track/{id}")))
+                    .collect::<Option<_>>()
+                    .ok_or("曲目编号无效")?
+            };
+            let total = urls.len();
+            let queued = urls.into_iter().filter(|url| self.enqueue_download(url.clone(), quality, None)).count();
+            self.notify(format!("⬇ 其他设备加入了 {queued} 个下载任务"));
+            let mut list = self.download_list();
+            list["queued"] = queued.into();
+            list["skipped"] = (total - queued).into();
+            return Ok(list);
+        }
+        let id = body["id"].as_str().and_then(|id| id.parse::<u64>().ok());
+        let action = match body["action"].as_str().unwrap_or("list") {
+            "list" => None,
+            "marks" => return Ok(serde_json::json!({"marks": self.download_marks()})),
+            "cancel" => Some(Action::CancelJob(id.ok_or("下载记录已不存在")?)),
+            "retry" => Some(Action::RetryJob(id.ok_or("下载记录已不存在")?)),
+            "remove" => Some(Action::RemoveJob(id.ok_or("下载记录已不存在")?)),
+            "clear" => Some(Action::ClearFinishedJobs),
+            "parallel" => return Err("桌面端逐个下载任务".into()),
+            _ => return Err("无效的下载操作".into()),
+        };
+        if let (Some(id), Some(Action::RetryJob(_) | Action::RemoveJob(_))) = (id, &action) {
+            let job = self.jobs.iter().find(|job| job.id == id).ok_or("下载记录已不存在")?;
+            if !job.status.is_finished() {
+                return Err("任务仍在下载".into());
+            }
+        }
+        if let Some(action) = action {
+            self.apply_local(action);
+        }
+        Ok(self.download_list())
+    }
+
+    /// Finished TIDAL downloads, so controlling devices mark them in their lists
+    /// ({"tracks": {"TIDAL:id": quality}, "albums": {"TIDAL:id": songs}}).
+    fn download_marks(&self) -> serde_json::Value {
+        use crate::download::TrackStatus;
+        let (mut tracks, mut albums) = (serde_json::Map::new(), serde_json::Map::new());
+        for job in self.jobs.iter().filter(|job| job.status == JobStatus::Done) {
+            let quality = crate::ui::widgets::quality_label(&job.quality);
+            match crate::download::url_kind(&job.url) {
+                Some(("track", id)) => { tracks.insert(format!("TIDAL:{id}"), quality.into()); }
+                Some(("album", id)) => {
+                    let saved = job.count(TrackStatus::Downloaded) + job.count(TrackStatus::Exists);
+                    albums.insert(format!("TIDAL:{id}"), saved.max(1).into());
+                }
+                _ => {}
+            }
+        }
+        serde_json::json!({"tracks": tracks, "albums": albums})
+    }
+
+    /// The download list as other devices show it, newest first. One row per download task.
+    fn download_list(&self) -> serde_json::Value {
+        use crate::download::TrackStatus;
+        let jobs: Vec<_> = self.jobs.iter().rev().take(300).map(|job| {
+            let state = match job.status {
+                JobStatus::Queued => "queued",
+                JobStatus::Resolving => "preparing",
+                JobStatus::Downloading | JobStatus::PostProcessing => "transferring",
+                JobStatus::Done => "complete",
+                JobStatus::Failed => "failed",
+                JobStatus::Cancelled => "cancelled",
+            };
+            let saved = job.count(TrackStatus::Downloaded) + job.count(TrackStatus::Exists);
+            let detail = match (job.meta.kind.is_empty(), job.total()) {
+                (_, 0) => job.meta.kind.clone(),
+                (true, total) => format!("{saved}/{total} 首"),
+                (false, total) => format!("{} · {saved}/{total} 首", job.meta.kind),
+            };
+            serde_json::json!({"id": job.id.to_string(), "track": 0, "title": job.meta.title,
+                "artist": job.meta.subtitle, "album": "",
+                "source": if crate::netease::is_link(&job.url) { "网易云" } else { "TIDAL" },
+                "state": state, "bytes": job.bytes, "total": -1, "resolution": detail,
+                "error": if job.status == JobStatus::Failed { job.logs.last().cloned().unwrap_or_default() } else { String::new() },
+                "batch": "", "order": 0, "quality": job.quality})
+        }).collect();
+        serde_json::json!({"jobs": jobs, "parallel": 1, "maxParallel": 1, "revision": 0, "perTrack": false})
+    }
+
     fn relay_tick(&mut self) {
         if let Some(command) = self.relay.as_ref().and_then(crate::relay::Relay::recv) {
-            let response = match self.relay_command(command.body) {
-                Ok(()) => crate::relay::snapshot(&self.pb, self.api.is_authenticated()),
-                Err(error) => serde_json::json!({"error": error}),
+            let operation = command.body["op"].as_str().unwrap_or_default();
+            let response = if operation == "download" || operation == "downloads" {
+                self.relay_downloads(&command.body).unwrap_or_else(|error| serde_json::json!({"error": error}))
+            } else {
+                match self.relay_command(command.body) {
+                    Ok(()) => crate::relay::snapshot(&self.pb, self.api.is_authenticated()),
+                    Err(error) => serde_json::json!({"error": error}),
+                }
             };
             if let Some(relay) = &self.relay {
                 if response.get("queue").is_some() {
@@ -1348,7 +1491,31 @@ impl App {
         let queue_len = state.map_or(0, |state| state.queue.len());
         let current = state.and_then(|state| state.index);
         let name = remote.target_name();
+        let downloads = remote.remote_downloads();
         match action {
+            Action::Download { url, quality, .. } if downloads => {
+                let quality = match quality {
+                    "max" => "BEST",
+                    "high" => "LOSSLESS",
+                    "normal" => "HIGH",
+                    _ => "LOW",
+                };
+                let command = match crate::download::url_kind(&normalize_url(&url)) {
+                    Some(("album", id)) => json!({"op": "download", "album": id, "quality": quality}),
+                    Some(("track", id)) if id.parse::<u64>().is_ok() => {
+                        json!({"op": "download", "ids": [id.parse::<u64>().unwrap_or(0)], "quality": quality})
+                    }
+                    _ => {
+                        self.notify(format!("{name} 只能下载 TIDAL 专辑和歌曲"));
+                        return None;
+                    }
+                };
+                self.notify(format!("正在发送到 {name}…"));
+                self.remote_downloads_query(command);
+            }
+            Action::RemoteDownload(action, id) => {
+                self.remote_downloads_query(json!({"op": "downloads", "action": action, "id": id}));
+            }
             Action::TogglePause => { self.remote_send(json!({"op": "toggle"})); }
             Action::Next => { self.remote_send(json!({"op": "next"})); }
             Action::Prev => { self.remote_send(json!({"op": "previous"})); }
@@ -1410,7 +1577,58 @@ impl App {
         self.spawn(move |_| Ev::RemoteLibrary(generation, request, append, connection.query(&target, &command)));
     }
 
+    /// Ask the controlled device about its downloads; the reply refreshes the downloads page.
+    fn remote_downloads_query(&mut self, command: serde_json::Value) {
+        let Some(remote) = &mut self.remote else { return };
+        let Some(target) = remote.target.clone() else { return };
+        let (generation, connection) = (remote.generation, remote.connection.clone());
+        remote.downloads_busy = true;
+        remote.last_downloads = Some(Instant::now());
+        self.spawn(move |_| Ev::RemoteDownloads(generation, connection.query(&target, &command)));
+    }
+
+    /// Lend this computer the controlled device's TIDAL login while it has none of its own.
+    fn sync_borrowed_tidal(&mut self) {
+        let lender = self.remote.as_ref().filter(|_| !self.api.is_authenticated()).and_then(|remote| {
+            let target = remote.target.clone()?;
+            remote.state.as_ref().filter(|state| state.lends_tidal)?;
+            Some((target, remote.connection.clone()))
+        });
+        if lender.as_ref().map(|(target, _)| target) == self.borrowed_tidal.as_ref() {
+            return;
+        }
+        self.borrowed_tidal = lender.as_ref().map(|(target, _)| target.clone());
+        self.api.set_proxy(lender.map(|(target, connection)| -> crate::api::Proxy {
+            std::sync::Arc::new(move |method: &str, path: &str, form: Option<String>| {
+                let mut command = serde_json::json!({"op": "tidal", "method": method, "path": path});
+                if let Some(form) = form {
+                    command["form"] = form.into();
+                }
+                connection.query(&target, &command)
+                    .map(|reply| reply["body"].as_str().unwrap_or_default().to_owned())
+            })
+        }));
+        // TIDAL pages and the library now come from the other login (or none).
+        self.lib = Default::default();
+        self.load_library();
+        let route = self.route.clone();
+        if self.cache.failed(&route) {
+            self.cache.forget(&route);
+        }
+        self.ensure_loaded(&route);
+    }
+
     fn remote_tick(&mut self) {
+        self.sync_borrowed_tidal();
+        if self.route == Route::Downloads {
+            if let Some(remote) = &self.remote {
+                if remote.remote_downloads() && !remote.downloads_busy
+                    && remote.last_downloads.is_none_or(|last| last.elapsed() >= Duration::from_secs(2))
+                {
+                    self.remote_downloads_query(serde_json::json!({"op": "downloads", "action": "list"}));
+                }
+            }
+        }
         let Some(remote) = &mut self.remote else { return };
         let period = if remote.target.is_some() || self.route == Route::Devices {
             Duration::from_secs(3)

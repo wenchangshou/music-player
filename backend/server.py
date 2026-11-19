@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parent
 ASSETS = Path(os.environ.get("TIDAL_REMOTE_ASSETS", ROOT.parent / "android/app/src/main/assets/remote"))
 ID = re.compile(r"[a-zA-Z0-9_-]{1,64}\Z")
 COMMANDS = {"library", "search", "add", "toggle", "next", "previous", "seek", "shuffle", "repeat", "play", "remove", "move",
-            "tracks", "volume", "clear", "quality"}
+            "tracks", "volume", "clear", "quality", "tidal", "download", "downloads"}
 MAX_JSON = 1024 * 1024
 # Long polling: a device poll waits this long for a command, a receipt request for its result.
 # Short enough that device state stays fresh and request slots are freed quickly.

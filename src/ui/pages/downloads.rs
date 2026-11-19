@@ -10,6 +10,9 @@ pub fn show(app: &App, st: &mut UiState, ui: &mut egui::Ui, acts: &mut Vec<Actio
     ui.add_space(8.0);
     ui.label(RichText::new("下载").size(30.0).strong());
     ui.add_space(8.0);
+    if let Some(remote) = app.remote_target().filter(|remote| remote.remote_downloads()) {
+        return remote_downloads(ui, remote, acts);
+    }
 
     // ── New download form ──
     egui::Frame::new().fill(theme::CARD).corner_radius(10).inner_margin(14).show(ui, |ui| {
@@ -236,4 +239,104 @@ fn toggle(set: &mut std::collections::HashSet<u64>, id: u64) {
     if !set.remove(&id) {
         set.insert(id);
     }
+}
+
+/// The controlled device's downloads: it downloads with its own TIDAL login into its own folder.
+fn remote_downloads(ui: &mut egui::Ui, remote: &crate::remote::Remote, acts: &mut Vec<Action>) {
+    let name = remote.target_name();
+    ui.label(RichText::new(format!("正在查看 {name} 上的下载，文件保存在该设备。在专辑或歌曲上点 ⬇ 即在该设备下载。"))
+        .color(ACCENT));
+    ui.add_space(8.0);
+    let empty = Vec::new();
+    let jobs = remote.downloads.as_ref().and_then(|list| list["jobs"].as_array()).unwrap_or(&empty);
+    let text = |job: &serde_json::Value, key: &str| job[key].as_str().unwrap_or_default().to_owned();
+    let finished = |job: &serde_json::Value| matches!(job["state"].as_str(), Some("complete" | "failed" | "cancelled"));
+    ui.horizontal(|ui| {
+        let active = jobs.iter().filter(|job| !finished(job)).count();
+        let done = jobs.iter().filter(|job| job["state"] == "complete").count();
+        ui.label(RichText::new("下载队列").size(20.0).strong());
+        ui.label(RichText::new(format!("进行中 {active} · 完成 {done} · 共 {}", jobs.len())).color(TEXT_WEAK));
+        if let Some(parallel) = remote.downloads.as_ref().and_then(|list| list["parallel"].as_u64()).filter(|n| *n > 1) {
+            ui.label(RichText::new(format!("同时下载 {parallel} 首")).color(TEXT_WEAK));
+        }
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if ui.add_enabled(jobs.iter().any(finished), egui::Button::new("✖ 清除已结束")).clicked() {
+                acts.push(Action::RemoteDownload("clear", String::new()));
+            }
+        });
+    });
+    ui.add_space(6.0);
+    if let Some(error) = &remote.downloads_error {
+        ui.label(RichText::new(format!("读取下载列表失败：{error}")).color(theme::DANGER));
+    }
+    if remote.downloads.is_none() {
+        return loading(ui, "正在读取该设备的下载…");
+    }
+    if jobs.is_empty() {
+        return empty_state(ui, "⬇", "该设备暂无下载任务");
+    }
+    egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+        for job in jobs {
+            let id = text(job, "id");
+            let state = job["state"].as_str().unwrap_or_default();
+            let (status, color) = match state {
+                "queued" => ("排队中", Color32::GRAY),
+                "preparing" => ("获取下载地址…", ACCENT),
+                "waiting" => ("等待系统下载", ACCENT),
+                "transferring" => ("下载中", ACCENT),
+                "complete" => ("已完成", OK_GREEN),
+                "failed" => ("失败", theme::DANGER),
+                _ => ("已取消", Color32::GRAY),
+            };
+            egui::Frame::new().fill(theme::CARD).corner_radius(10).inner_margin(10).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if finished(job) {
+                            if ui.button("🗑").on_hover_text("从列表移除").clicked() {
+                                acts.push(Action::RemoteDownload("remove", id.clone()));
+                            }
+                            if state != "complete" && ui.button("↻ 重试").clicked() {
+                                acts.push(Action::RemoteDownload("retry", id.clone()));
+                            }
+                        } else if ui.button("⏹ 取消").clicked() {
+                            acts.push(Action::RemoteDownload("cancel", id.clone()));
+                        }
+                        ui.with_layout(Layout::top_down(Align::Min), |ui| {
+                            ui.spacing_mut().item_spacing.y = 3.0;
+                            ui.horizontal(|ui| {
+                                badge(ui, &text(job, "source"), Color32::GRAY);
+                                ui.add(egui::Label::new(RichText::new(text(job, "title")).strong()).truncate());
+                            });
+                            let artist = text(job, "artist");
+                            let album = text(job, "album");
+                            let line = [artist, album].into_iter().filter(|part| !part.is_empty()).collect::<Vec<_>>().join(" · ");
+                            if !line.is_empty() {
+                                ui.add(egui::Label::new(RichText::new(line).color(TEXT_WEAK)).truncate());
+                            }
+                            ui.horizontal_wrapped(|ui| {
+                                ui.spacing_mut().item_spacing.x = 12.0;
+                                ui.label(RichText::new(status).strong().color(color));
+                                let (bytes, total) = (job["bytes"].as_f64().unwrap_or(0.0), job["total"].as_f64().unwrap_or(-1.0));
+                                if state == "transferring" && total > 0.0 {
+                                    ui.label(format!("{} / {} · {:.0}%", fmt_bytes(bytes), fmt_bytes(total), bytes * 100.0 / total));
+                                } else if bytes > 0.0 {
+                                    ui.label(RichText::new(format!("已写入 {}", fmt_bytes(bytes))).color(TEXT_WEAK));
+                                }
+                                let detail = text(job, "resolution");
+                                if !detail.is_empty() {
+                                    ui.label(RichText::new(detail).color(TEXT_WEAK));
+                                }
+                            });
+                            let error = text(job, "error");
+                            if state == "failed" && !error.is_empty() {
+                                ui.label(RichText::new(error).color(theme::DANGER).size(12.0));
+                            }
+                        });
+                    });
+                });
+            });
+            ui.add_space(6.0);
+        }
+    });
 }

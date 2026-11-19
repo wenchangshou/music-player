@@ -85,7 +85,10 @@ class RelayTest(unittest.TestCase):
         self.poll(self.phone)
         phone = self.phone["id"]
         for command in ({"op": "toggle"}, {"op": "tracks", "ids": [5, 6], "index": 1, "mode": "play", "position": 9000},
-                        {"op": "volume", "value": 30}, {"op": "clear"}, {"op": "quality", "value": "LOSSLESS"}):
+                        {"op": "volume", "value": 30}, {"op": "clear"}, {"op": "quality", "value": "LOSSLESS"},
+                        {"op": "tidal", "method": "GET", "path": "albums/1/tracks?limit=100"},
+                        {"op": "download", "album": "1", "quality": "BEST"},
+                        {"op": "downloads", "action": "cancel", "id": "job"}):
             status, sent = self.call("/api/control?device=" + phone, command, self.desktop)
             self.assertEqual(status, 200, command)
             _, pending = self.call(f"/api/receipt?device={phone}&command={sent['command']}", session=self.desktop)

@@ -29,7 +29,7 @@ pub fn show(app: &App, _st: &mut UiState, ui: &mut egui::Ui, acts: &mut Vec<Acti
         }
 
         match &app.lib.state {
-            LibState::Loading | LibState::Idle if app.api.is_authenticated() => {
+            LibState::Loading | LibState::Idle if app.api.can_browse() => {
                 loading(ui, "正在同步你的 TIDAL 收藏…");
                 return;
             }
@@ -40,8 +40,8 @@ pub fn show(app: &App, _st: &mut UiState, ui: &mut egui::Ui, acts: &mut Vec<Acti
             }
             _ => {}
         }
-        if !app.api.is_authenticated() {
-            empty_state(ui, "🔒", "尚未授权 TIDAL，请到“设置”完成登录");
+        if !app.api.can_browse() {
+            empty_state(ui, "🔒", "尚未授权 TIDAL，请到“设置”完成登录，或遥控一台已登录 TIDAL 的设备");
             return;
         }
 

@@ -77,6 +77,12 @@ final class RemoteDevices {
         String sourcePath = "";
         /** 网易云 level the device asks for, e.g. "jymaster"; empty when unknown. */
         String requestedNetease = "";
+        /** The device is signed in to TIDAL and lets this one browse and download through it. */
+        boolean lendsTidal;
+        /** The device runs downloads for this one and lists them. */
+        boolean downloads;
+        /** Changes when the device's downloads or music files change (Android devices only). */
+        String filesRevision = "";
 
         Track current() { return index >= 0 && index < queue.size() ? queue.get(index) : null; }
 
@@ -144,6 +150,12 @@ final class RemoteDevices {
             state.requested = value.optString("requestedQuality");
             state.sourcePath = value.optString("sourcePath");
             state.requestedNetease = value.optString("requestedNetease");
+            state.filesRevision = value.optString("filesRevision");
+            JSONArray features = value.optJSONArray("features");
+            for (int i = 0; features != null && i < features.length(); i++) {
+                if ("tidal".equals(features.optString(i))) state.lendsTidal = value.optBoolean("loggedIn");
+                if ("downloads".equals(features.optString(i))) state.downloads = true;
+            }
             state.volume = value.has("volume") ? Math.max(0, Math.min(100, (int) Math.round(value.optDouble("volume")))) : -1;
             String actual = value.optString("actualQuality");
             // NetEase devices report "网易云 · 超清母带" etc. already.
@@ -403,6 +415,18 @@ final class RemoteDevices {
                 if (!closed && expected == generation) reply.done(answer, message);
             });
         });
+    }
+
+    /**
+     * Ask the controlled device and wait for its reply on the calling thread, which must not be the
+     * main thread. Used for TIDAL requests the device answers with its login.
+     */
+    JSONObject call(String device, JSONObject command) throws Exception {
+        if (device == null) throw new IOException("尚未选择远程设备");
+        if (closed) throw new IOException("远程连接已关闭");
+        JSONObject result = controlRaw(device, command);
+        if (result == null) throw new IOException("设备没有返回内容");
+        return result;
     }
 
     private JSONObject controlRaw(String device, JSONObject command) throws Exception {

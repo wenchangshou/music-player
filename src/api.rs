@@ -71,7 +71,13 @@ pub struct TidalApi {
     /// Cached Hi-Res token and its expiry (unix seconds). The mutex also serialises helper runs.
     hires: Arc<Mutex<Option<(String, String, i64)>>>,
     pub config_path: PathBuf,
+    /// Another device of the player account that answers TIDAL requests while this computer has
+    /// no TIDAL login of its own (see `forward` on that device).
+    proxy: Arc<RwLock<Option<Proxy>>>,
 }
+
+/// Sends (method, path, urlencoded form) to the lending device and returns its response body.
+pub type Proxy = Arc<dyn Fn(&str, &str, Option<String>) -> Result<String, String> + Send + Sync>;
 
 impl TidalApi {
     pub fn new() -> Self {
@@ -89,6 +95,7 @@ impl TidalApi {
             refresh_lock: Arc::new(Mutex::new(())),
             hires: Arc::new(Mutex::new(None)),
             config_path,
+            proxy: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -106,6 +113,26 @@ impl TidalApi {
     pub fn is_authenticated(&self) -> bool {
         let a = self.auth();
         a.token.is_some() && a.user_id.is_some()
+    }
+
+    pub fn set_proxy(&self, proxy: Option<Proxy>) {
+        if let Ok(mut current) = self.proxy.write() {
+            *current = proxy;
+        }
+    }
+
+    fn proxy(&self) -> Option<Proxy> {
+        self.proxy.read().ok().and_then(|proxy| proxy.clone())
+    }
+
+    /// Browsing TIDAL through a controlled device's login, since this computer has none.
+    pub fn borrowed(&self) -> bool {
+        !self.is_authenticated() && self.proxy().is_some()
+    }
+
+    /// TIDAL pages can load: with this computer's login or a borrowed one.
+    pub fn can_browse(&self) -> bool {
+        self.is_authenticated() || self.proxy().is_some()
     }
 
     pub fn reload_auth(&self) {
@@ -181,6 +208,10 @@ impl TidalApi {
     }
 
     fn user_id(&self) -> Result<String, String> {
+        if self.borrowed() {
+            // The lending device fills in its own user.
+            return Ok("{user}".into());
+        }
         self.auth().user_id.ok_or_else(|| "未登录 TIDAL".to_string())
     }
 
@@ -191,6 +222,15 @@ impl TidalApi {
     }
 
     fn request_as(&self, kind: TokenKind, method: Method, path: &str, form: Option<&[(&str, String)]>) -> Result<String, String> {
+        if !self.is_authenticated() {
+            if let Some(proxy) = self.proxy() {
+                let form = form.map(|pairs| {
+                    pairs.iter().map(|(key, value)| format!("{}={}", urlencoding::encode(key), urlencoding::encode(value)))
+                        .collect::<Vec<_>>().join("&")
+                });
+                return proxy(method.as_str(), path, form);
+            }
+        }
         for attempt in 0..2 {
             let auth = self.auth();
             let token = match kind {
@@ -227,6 +267,30 @@ impl TidalApi {
             return res.text().map_err(|e| format!("读取响应失败: {}", e));
         }
         Err("TIDAL 请求失败".into())
+    }
+
+    /// Answer a TIDAL request made by another device of the player account that has no TIDAL
+    /// login: catalogue and library reads, and favourite changes. `{user}` in the path stands for
+    /// this login's user. Stream and download URLs are never handed out.
+    pub fn forward(&self, method: &str, path: &str, form: Option<&str>) -> Result<String, String> {
+        forwardable(method, path, form)?;
+        let path = path.replace("{user}", &self.user_id()?);
+        let pairs: Vec<(String, String)> = match (method, form) {
+            ("POST", Some(form)) => reqwest::Url::parse(&format!("http://form/?{form}"))
+                .map_err(|_| "请求内容无效")?
+                .query_pairs()
+                .map(|(key, value)| (key.into_owned(), value.into_owned()))
+                .collect(),
+            _ => Vec::new(),
+        };
+        let form: Vec<(&str, String)> = pairs.iter().map(|(key, value)| (key.as_str(), value.clone())).collect();
+        let method = match method {
+            "POST" => Method::POST,
+            "DELETE" => Method::DELETE,
+            _ => Method::GET,
+        };
+        let post = method == Method::POST;
+        self.request(method, &path, post.then_some(form.as_slice()))
     }
 
     fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, String> {
@@ -441,5 +505,53 @@ impl TidalApi {
             requested: q,
             note,
         })
+    }
+}
+
+/// Whether another device may send this TIDAL request through this login (see `TidalApi::forward`).
+pub fn forwardable(method: &str, path: &str, form: Option<&str>) -> Result<(), String> {
+    const ROOTS: [&str; 8] = ["search", "tracks", "albums", "artists", "playlists", "mixes", "pages", "users/{user}"];
+    let refused = || Err("不支持的 TIDAL 请求".to_string());
+    let lower = path.to_ascii_lowercase();
+    let (base, query) = path.split_once('?').unwrap_or((path, ""));
+    let rest = ROOTS.iter().find_map(|root| {
+        if base == *root { Some("") } else { base.strip_prefix(root).and_then(|rest| rest.strip_prefix('/')) }
+    });
+    let Some(rest) = rest else { return refused() };
+    if path.len() > 800
+        || path.contains("..")
+        || !rest.chars().all(|c| c.is_ascii_alphanumeric() || "_./-".contains(c))
+        || query.chars().any(|c| c.is_whitespace() || c == '#')
+        || ["playbackinfo", "streamurl", "urlpostpaywall", "countrycode="].iter().any(|word| lower.contains(word))
+    {
+        return refused();
+    }
+    let favourite = path.starts_with("users/{user}/favorites/");
+    if method != "GET" && !(favourite && (method == "POST" || method == "DELETE")) {
+        return refused();
+    }
+    if form.is_some_and(|form| form.len() > 400) {
+        return Err("请求内容过长".into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod forward_tests {
+    use super::forwardable;
+
+    #[test]
+    fn only_catalogue_reads_and_favourites_are_forwarded() {
+        assert!(forwardable("GET", "search?types=TRACKS&limit=50&offset=0&query=a%20b", None).is_ok());
+        assert!(forwardable("GET", "albums/123/tracks?limit=100&offset=0", None).is_ok());
+        assert!(forwardable("GET", "users/{user}/favorites/albums?order=DATE", None).is_ok());
+        assert!(forwardable("POST", "users/{user}/favorites/tracks", Some("trackIds=1&onArtifactNotFound=FAIL")).is_ok());
+        assert!(forwardable("DELETE", "users/{user}/favorites/tracks/1", None).is_ok());
+        assert!(forwardable("GET", "tracks/1/playbackinfopostpaywall?audioquality=LOSSLESS", None).is_err());
+        assert!(forwardable("GET", "users/42/favorites/tracks", None).is_err());
+        assert!(forwardable("GET", "sessions", None).is_err());
+        assert!(forwardable("POST", "playlists/abc/items", None).is_err());
+        assert!(forwardable("GET", "albums/../sessions", None).is_err());
+        assert!(forwardable("GET", "albums/1?countryCode=JP", None).is_err());
     }
 }

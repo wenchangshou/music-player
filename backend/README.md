@@ -12,6 +12,14 @@
 
 已登录播放器账号的 Linux 桌面端和 Android 也能在应用内查看并遥控同一账号的其他设备，入口在桌面端侧边栏的 **设备**（或播放条的设备按钮）和 Android 的 **设置 → 设备与连接 → 我的设备**（或正在播放页的 **设备**）。桌面端顶栏右侧和 Android 首页、音乐库、搜索页的标题栏都有设备切换按钮，迷你播放器上也有设备按钮。选择设备后，每个页面顶部显示「正在遥控」提示，播放条、迷你播放器、正在播放和播放队列都会显示并控制该设备。遥控 Android 设备时，音乐库换成该设备的本地音乐、歌单和最近播放（通过 `library` 命令读取），选歌直接在该设备播放。电脑没有本地音乐库，遥控电脑时从 TIDAL 或网易云选歌。再选 **本机** 即可切回。设备列表接口 `/api/devices` 对播放器账号会话额外返回 `self` 和当前播放摘要 `nowPlaying`。设备状态中的 `repeat` 统一为 0 关闭、1 队列循环、2 单曲循环。遥控命令 `tracks` 一次发送最多 50 首 TIDAL 曲目（`ids`、`index`、`mode` 为 `play`/`next`/`end`），`volume` 设置 0–100 的音量；`clear` 清空接下来的歌曲，`quality` 按 TIDAL 音质名（如 `LOSSLESS`）切换播放音质，`tracks` 可带 `position`（毫秒）从指定进度开始，用于在设备之间转移播放；设备状态中的 `requestedQuality` 为所选音质，队列项的 `kind` 为 `tidal`、`local` 或 `netease`；设备状态中的 `volume` 为当前音量，Android 对应媒体音量。更新服务端后，旧版客户端收到这两个命令会提示「未知遥控操作」。
 
+**借用设备的 TIDAL 登录。** 本机没有登录 TIDAL 时，遥控一台已登录 TIDAL 的设备（Android 或桌面端），本机的 TIDAL 浏览、搜索、专辑、歌手、收藏都会经由该设备的登录读取，不需要在本机登录。下载也发到该设备，用它的登录下载并保存在它的下载目录，本机的下载页改为显示该设备的下载任务（取消、重试、移除、同时下载数）。支持的设备在状态中带 `features: ["tidal", "downloads"]`，`loggedIn` 表示它已登录 TIDAL。相关命令：
+
+- `tidal`：`{method, path, form?}`，由设备用自己的登录请求 TIDAL API 并返回 `{body}`。路径中的 `{user}` 由设备替换为自己的用户 ID。设备只接受 `search`、`tracks`、`albums`、`artists`、`playlists`、`mixes`、`pages`、`users/{user}` 下的读取请求，以及 `users/{user}/favorites/` 下的收藏增删；音频流和下载地址（`playbackinfo` 等）一律拒绝，回复超过约 900 KB 也会拒绝。
+- `download`：`{album}` 或 `{ids}`（最多 100 首 TIDAL 曲目），`quality` 为 `BEST`（Max，不可用时 High）、`HI_RES_LOSSLESS`、`LOSSLESS`、`HIGH` 或 `LOW`。回复为下载列表，另带 `queued` 和 `skipped`。
+- `downloads`：`action` 为 `list`、`cancel`、`retry`、`remove`、`clear` 或 `parallel`（带 `count`，仅 Android），`id` 为任务编号。回复 `{jobs, parallel, maxParallel, perTrack}`。`marks` 返回 `{marks: {tracks, albums, named, namedAlbums}}`：已下载的曲目和专辑，Android 另含本地音乐库中按歌名和歌手比对的歌曲，用于遥控端在列表中标注该设备已有的歌曲。Android 每首歌一个任务，桌面端每个专辑或链接一个任务，逐个下载。
+
+借用登录只在遥控期间生效。切回本机或本机登录 TIDAL 后，改用本机的登录。
+
 设备轮询和命令回执使用长轮询：设备在 `/device/poll` 请求中带 `"wait": true` 时，后台最多保持 2.5 秒，有命令立即返回，回复中的 `wait` 表示可立即再次轮询；`/api/receipt?wait=1` 最多保持 5 秒，设备返回结果即答复，`held` 表示无需等待即可再次查询。旧版后台不返回这两个标记，新客户端会自动退回原来的间隔轮询。每台在线设备占用一个连接，后台同时处理的请求上限为 64。
 
 设备列表中的 `lastSeenAgo` 为设备上次连接距今的秒数（后台重启后未连接过的设备为 `null`）。`POST /account/logout-others` 退出当前账号除本设备外的所有会话，包括网页遥控。

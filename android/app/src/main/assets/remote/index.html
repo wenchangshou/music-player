@@ -1,381 +1,1522 @@
 <!doctype html>
 <html lang="zh-CN">
+<head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#0d1316">
-<title>听音室 · 遥控</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#090d10">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>听音室 · TIDAL Native Web</title>
 <style>
-:root{color-scheme:dark;--bg:#0d1316;--panel:#151f23;--panel-2:#1b282d;--raised:#22343a;--edge:#2a3b40;--accent:#aaf0d8;--accent-ink:#0f241e;--gold:#e8c77a;--danger:#ff9aa6;--ink:#eef6f3;--muted:#98abaf;--radius:18px;
-  background:var(--bg);color:var(--ink);font:15px/1.45 system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
-*{box-sizing:border-box}[hidden]{display:none!important}
-body{margin:0;min-height:100vh;background:radial-gradient(1200px 600px at 10% -10%,#1d3a3a55,transparent),var(--bg)}
-h1,h2,h3,p{margin:0}small{display:block;color:var(--muted)}p{color:var(--muted)}
-button,a.button,input,select{font:inherit;color:inherit}
-button,a.button{cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:7px;background:var(--raised);border:1px solid transparent;border-radius:12px;padding:8px 14px;text-decoration:none;transition:background .15s,border-color .15s,transform .1s;white-space:nowrap}
-button:hover,a.button:hover{background:#2a4147}button:active{transform:scale(.97)}
-button:focus-visible,a.button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-button:disabled{opacity:.4;cursor:default;transform:none}
-button.primary,a.button.primary{background:var(--accent);color:var(--accent-ink);font-weight:650}button.primary:hover{background:#c2f6e4}
-button.ghost{background:transparent}button.ghost:hover{background:#ffffff10}
-button.danger{color:var(--danger)}
-input:not([type=range]):not([type=checkbox]),select{padding:9px 13px;border-radius:12px;border:1px solid var(--edge);background:#0f181b;min-width:0}
-input[type=search]{flex:1}
-.icon{width:20px;height:20px;flex:none;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
-.icon.fill{fill:currentColor;stroke:none}
-.icon-btn{padding:0;width:36px;height:36px;border-radius:11px;background:transparent;color:var(--muted)}
-.icon-btn:hover{background:#ffffff12;color:var(--ink)}
-.icon-btn.on{color:var(--accent)}
-.toolbar,form{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.card{background:var(--panel);border:1px solid var(--edge);border-radius:var(--radius);padding:18px;min-width:0}
+:root {
+  color-scheme: dark;
+  --bg: #090d10;
+  --surface: #11171c;
+  --surface-raised: #182229;
+  --surface-hover: #1f2b34;
+  --surface-glass: rgba(17, 23, 28, 0.72);
+  --border: rgba(255, 255, 255, 0.08);
+  --border-focus: rgba(45, 226, 171, 0.4);
+  --accent: #2de2ab;
+  --accent-glow: rgba(45, 226, 171, 0.28);
+  --accent-ink: #062319;
+  --gold: #f5c542;
+  --gold-bg: rgba(245, 197, 66, 0.15);
+  --danger: #ff5c6c;
+  --danger-bg: rgba(255, 92, 108, 0.15);
+  --ink: #f0f6f4;
+  --muted: #8b9ea3;
+  --dim: #55686d;
+  --radius-sm: 8px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+  --radius-full: 9999px;
+  --ambient-color: rgba(45, 226, 171, 0.18);
+  font: 14.5px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  letter-spacing: -0.01em;
+  -webkit-font-smoothing: antialiased;
+}
 
-/* top bar */
-.topbar{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:16px;padding:12px clamp(14px,3vw,36px);background:#0d1316d9;backdrop-filter:blur(14px);border-bottom:1px solid var(--edge);flex-wrap:wrap}
-.brand{display:flex;align-items:center;gap:11px;margin-right:auto}
-.mark{display:grid;place-items:center;width:38px;height:38px;border-radius:12px;background:linear-gradient(135deg,var(--accent),#6fcfb3);color:var(--accent-ink)}
-.brand h1{font-size:18px;letter-spacing:.5px}
-#status{font-size:12.5px;display:flex;align-items:center;gap:6px}#status:before{content:"";width:7px;height:7px;border-radius:50%;background:var(--muted)}
-#status.ok:before{background:#6fe0a5;box-shadow:0 0 0 3px #6fe0a522}
-.tabs{display:flex;gap:3px;padding:3px;background:#0f181b;border:1px solid var(--edge);border-radius:13px}
-.tabs button{background:transparent;padding:7px 13px;border-radius:10px;color:var(--muted)}
-.tabs button[aria-current=true]{background:var(--raised);color:var(--ink)}
-.mode-switch button[aria-current=true]{background:var(--accent);color:var(--accent-ink);font-weight:650}
-main{max-width:1480px;margin:0 auto;padding:22px clamp(14px,3vw,36px) 60px}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+[hidden] { display: none !important; }
 
-/* connection panels */
-.utility{max-width:620px;margin:0 auto 18px}
-.utility h2{font-size:20px;margin-bottom:6px}.utility .lead{margin-bottom:14px}
-.utility form{gap:10px}.utility label{color:var(--muted);font-size:13px}
-#pairPanel{text-align:center;padding:34px 24px}
-#pairPanel form{justify-content:center;margin-top:16px}
-#pairCode{font-size:28px;letter-spacing:10px;text-align:center;width:230px;font-variant-numeric:tabular-nums}
-#devicesPanel{max-width:none;display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 16px}
-#devicesPanel select{min-width:220px}#issuedCode{flex-basis:100%}#issuedCode:empty,#adminMessage:empty{display:none}
+body {
+  margin: 0;
+  min-height: 100vh;
+  background-color: var(--bg);
+  color: var(--ink);
+  overflow-x: hidden;
+  padding-bottom: 96px; /* Space for persistent Mini Player */
+}
 
-/* player */
-#playerView{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(320px,1fr);gap:20px;align-items:start}
-.stage{position:relative;overflow:hidden;padding:clamp(18px,3vw,34px);border-radius:24px;border:1px solid var(--edge);background:var(--panel)}
-#backdrop{position:absolute;inset:-40px;background-size:cover;background-position:center;filter:blur(56px) saturate(1.4) brightness(.7);opacity:.55;transform:scale(1.1);transition:background-image .4s}
-.stage:after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,#0d131655,#0d1316d0 55%,#0d1316f2)}
-.stage>*{position:relative;z-index:1}
-.artwork{position:relative;aspect-ratio:1;width:min(420px,100%,52vh);margin:0 auto 26px;border-radius:18px;overflow:hidden;box-shadow:0 24px 60px #000a;--hue:165;background:linear-gradient(135deg,hsl(var(--hue) 34% 36%),hsl(calc(var(--hue) + 40) 45% 15%))}
-.artwork:before{content:attr(data-letter);position:absolute;inset:0;display:grid;place-items:center;font-size:min(140px,22vw);font-weight:600;color:#ffffffd0}
-.artwork img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
-.meta{text-align:center}
-#source{display:inline-flex;gap:8px;align-items:center;font-size:12.5px;color:var(--accent);margin-bottom:8px}
-#sourceName{overflow-wrap:anywhere;text-align:center}
-#qualityChip{padding:3px 9px;border-radius:999px;background:#ffffff14;color:var(--accent);font-size:12px}
-#qualityChip.hires{color:var(--gold);background:#e8c77a1f}
-#title{font-size:clamp(24px,3.4vw,36px);line-height:1.18;overflow-wrap:anywhere}
-#artist{margin-top:6px;font-size:16px;overflow-wrap:anywhere}
-.progress{margin-top:22px}
-input[type=range]{width:100%;height:22px;margin:0;background:transparent;-webkit-appearance:none;appearance:none;cursor:pointer;--pct:0%}
-input[type=range]::-webkit-slider-runnable-track{height:5px;border-radius:5px;background:linear-gradient(90deg,var(--accent) var(--pct),#ffffff26 var(--pct))}
-input[type=range]::-moz-range-track{height:5px;border-radius:5px;background:#ffffff26}
-input[type=range]::-moz-range-progress{height:5px;border-radius:5px;background:var(--accent)}
-input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;margin-top:-4.5px;border-radius:50%;background:#fff;box-shadow:0 1px 4px #0008}
-input[type=range]::-moz-range-thumb{width:14px;height:14px;border:0;border-radius:50%;background:#fff}
-input[type=range]:disabled{cursor:default;opacity:.6}
-.times{display:flex;justify-content:space-between;font-size:12.5px;color:var(--muted);font-variant-numeric:tabular-nums;margin-top:2px}
-#timing{display:none}
-.transport{display:flex;align-items:center;justify-content:center;gap:clamp(8px,2.4vw,26px);margin-top:14px}
-.transport button{background:transparent;color:var(--ink);width:48px;height:48px;padding:0;border-radius:50%}
-.transport button:hover{background:#ffffff14}
-.transport .mode{color:var(--muted);width:42px;height:42px}.transport .mode.on{color:var(--accent)}
-.transport .mode .badge{position:absolute;font-size:9px;font-weight:700;margin:-14px 0 0 14px}
-.transport .mode{position:relative}
-.transport .icon{width:26px;height:26px}.transport .mode .icon{width:22px;height:22px}
-.transport .primary{width:68px;height:68px;background:var(--accent);color:var(--accent-ink)}
-.transport .primary:hover{background:#c2f6e4}.transport .primary .icon{width:30px;height:30px}
-body.sending .transport{opacity:.75}
-#error{color:var(--danger);text-align:center;margin-top:12px}#error:empty{display:none}
-#fullPlayer{justify-content:center;margin-top:16px}
-#fullPlayer label{color:var(--muted);font-size:13px}
-#fullLyrics{max-height:300px;overflow:auto;white-space:pre-wrap;margin:16px 0 0;padding:16px;border-radius:14px;background:#0008;color:#d6e4e1;line-height:1.9;text-align:center;font:inherit}
+/* Ambient glow backdrop */
+#ambientGlow {
+  position: fixed;
+  inset: -100px;
+  z-index: 0;
+  background: radial-gradient(circle 800px at 50% 10%, var(--ambient-color), transparent 70%);
+  filter: blur(80px);
+  opacity: 0.85;
+  pointer-events: none;
+  transition: background 1.2s ease, opacity 0.8s ease;
+}
 
-/* side panel */
-.side{display:grid;gap:18px;min-width:0;position:sticky;top:84px}
-.side-card{padding:0;overflow:hidden}
-.side-tabs{display:flex;gap:4px;padding:10px 10px 0}
-.side-tabs button{flex:1;background:transparent;color:var(--muted);border-radius:10px 10px 0 0;padding:10px;border-bottom:2px solid transparent}
-.side-tabs button[aria-current=true]{color:var(--ink);border-bottom-color:var(--accent)}
-.side-body{padding:12px 14px 14px;border-top:1px solid var(--edge)}
-.count{font-size:12.5px;color:var(--muted);padding:2px 4px 6px}
-#search{margin-bottom:8px}
+/* Typography & Base */
+h1, h2, h3, h4, p { margin: 0; }
+small { display: block; color: var(--muted); font-size: 12px; }
+button, input, select { font: inherit; color: inherit; border: none; outline: none; }
+button {
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 8px 14px;
+  font-weight: 500;
+  transition: all 0.18s cubic-bezier(0.2, 0, 0, 1);
+  white-space: nowrap;
+  user-select: none;
+}
+button:hover { background: var(--surface-hover); border-color: rgba(255,255,255,0.14); }
+button:active { transform: scale(0.96); }
+button:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+button.primary {
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 650;
+  border-color: transparent;
+  box-shadow: 0 4px 16px var(--accent-glow);
+}
+button.primary:hover { background: #3ef0bb; box-shadow: 0 6px 20px var(--accent-glow); }
+button.ghost { background: transparent; border-color: transparent; }
+button.ghost:hover { background: rgba(255,255,255,0.08); }
+button.danger { color: var(--danger); }
+button.danger:hover { background: var(--danger-bg); }
 
-/* track rows */
-ul{list-style:none;margin:0;padding:0}
-.track-list{max-height:min(62vh,640px);overflow:auto;scrollbar-width:thin}
-.row,.track-list li,.library-list li{display:flex;align-items:center;gap:12px;padding:7px 8px;border-radius:12px;min-width:0}
-.track-list li:hover,.library-list li:hover{background:#ffffff0b}
-li.current{background:#aaf0d814}li.current strong{color:var(--accent)}
-li .info{flex:1;min-width:0}
-li strong{display:block;font-weight:550;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-li small{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12.5px}
-.actions{display:flex;gap:2px;flex:none}
-@media(hover:hover){li .actions .icon-btn.reveal{opacity:0}li:hover .actions .icon-btn.reveal,li:focus-within .actions .icon-btn.reveal{opacity:1}}
-.thumb{position:relative;flex:none;width:44px;height:44px;border-radius:9px;overflow:hidden;--hue:165;background:linear-gradient(135deg,hsl(var(--hue) 34% 38%),hsl(calc(var(--hue) + 40) 45% 17%))}
-.thumb:before{content:attr(data-letter);position:absolute;inset:0;display:grid;place-items:center;font-weight:600;color:#ffffffd0}
-.thumb img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
-.eq{position:absolute;inset:0;display:none;align-items:flex-end;justify-content:center;gap:3px;padding:12px;background:#0009}
-li.current .eq{display:flex}.eq i{width:4px;background:var(--accent);border-radius:2px;height:30%}
-li.current.playing .eq i{animation:eq .9s ease-in-out infinite alternate}.eq i:nth-child(2){animation-delay:-.3s}.eq i:nth-child(3){animation-delay:-.6s}
-@keyframes eq{from{height:20%}to{height:95%}}
-li.empty{display:block;padding:28px 8px;color:var(--muted);text-align:center}
-li.empty:hover{background:none}
-#results:empty{display:none}
+/* SVG Icons */
+.icon {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.icon.fill { fill: currentColor; stroke: none; }
+.icon-btn {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border-radius: var(--radius-full);
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+}
+.icon-btn:hover { background: rgba(255,255,255,0.08); color: var(--ink); }
+.icon-btn.active { color: var(--accent); }
 
-/* authorization */
-#authorization h2{font-size:17px;margin-bottom:10px}
-#loginDetails{margin-top:14px;display:grid;gap:10px}
-#code{font-size:24px;letter-spacing:4px;font-weight:700;color:var(--accent)}
+/* Inputs */
+input:not([type=range]):not([type=checkbox]), select {
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--ink);
+  transition: border-color 0.15s;
+}
+input:not([type=range]):not([type=checkbox]):focus, select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
 
-/* library */
-.library-heading{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:16px}
-.library-heading h2{font-size:26px}
-.library-shell{display:grid;grid-template-columns:220px minmax(0,1fr);gap:18px;align-items:start}
-.library-nav{display:grid;gap:4px;padding:10px;position:sticky;top:84px}
-.library-nav button{justify-content:flex-start;background:transparent;color:var(--muted);padding:10px 12px}
-.library-nav button[aria-current=true]{background:var(--raised);color:var(--ink)}
-#libraryCategory{font-size:21px;margin-bottom:12px}
-.library-subnav{margin-bottom:10px}.library-subnav label{color:var(--muted);font-size:13px}
-#fullFilter input{max-width:460px}
-.library-page-actions{margin:6px 0 12px}.library-page-actions:not(:has(button:not([hidden]))){display:none}
-#libraryMessage{margin-top:10px}#libraryMessage:empty{display:none}
-.library-list.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:14px}
-.library-list.cards li{display:block;padding:0}
-.card-tile{display:flex;flex-direction:column;align-items:stretch;gap:8px;width:100%;padding:10px;border-radius:14px;background:transparent;text-align:left;white-space:normal}
-.card-tile:hover{background:#ffffff0d}
-.card-tile .thumb{width:100%;height:auto;aspect-ratio:1;border-radius:12px;font-size:42px}
-.card-tile strong{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;white-space:normal;overflow:hidden}
-.card-tile.round .thumb{border-radius:50%}
-#loadMore{margin-top:14px}
+/* Range Sliders */
+input[type=range] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 24px;
+  background: transparent;
+  cursor: pointer;
+  margin: 0;
+  --pct: 0%;
+}
+input[type=range]::-webkit-slider-runnable-track {
+  height: 5px;
+  border-radius: 5px;
+  background: linear-gradient(90deg, var(--accent) var(--pct), rgba(255,255,255,0.12) var(--pct));
+}
+input[type=range]::-moz-range-track {
+  height: 5px;
+  border-radius: 5px;
+  background: rgba(255,255,255,0.12);
+}
+input[type=range]::-moz-range-progress {
+  height: 5px;
+  border-radius: 5px;
+  background: var(--accent);
+}
+input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -4.5px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+  transition: transform 0.12s;
+}
+input[type=range]:hover::-webkit-slider-thumb { transform: scale(1.25); }
+input[type=range]::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border: none;
+  border-radius: 50%;
+  background: #ffffff;
+}
 
-/* files (dark explorer) */
-.file-heading{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:14px;margin-bottom:16px}.file-heading h2{font-size:26px}
-.explorer{display:grid;grid-template-columns:minmax(170px,240px) minmax(0,1fr);min-height:460px;padding:0;overflow:hidden}
-.roots{padding:14px;border-right:1px solid var(--edge);background:#111a1e}.roots h3{margin-bottom:10px;color:var(--muted);font-size:13px;font-weight:500}
-#roots button{display:flex;width:100%;justify-content:flex-start;margin-bottom:4px;background:transparent;color:var(--muted);white-space:normal;overflow-wrap:anywhere;text-align:left}
-#roots button[aria-current=true]{background:var(--raised);color:var(--ink)}
-.folder-view{display:flex;flex-direction:column;gap:12px;padding:14px;min-width:0}
-.folder-address{display:flex;gap:6px;align-items:center;min-height:42px;padding:3px 6px;border:1px solid var(--edge);border-radius:12px;background:#0f181b;color:var(--muted);overflow-x:auto}
-#breadcrumbs{display:flex;align-items:center;gap:2px}
-#breadcrumbs button{background:transparent;padding:5px 8px}#breadcrumbs button:hover{background:#ffffff10}
-#breadcrumbs button[aria-current=location]{color:var(--ink);font-weight:600}
-#fileActions{min-height:36px;gap:6px}
-#fileMulti[aria-pressed=true]{background:var(--accent);color:var(--accent-ink);font-weight:650}
-#fileSelection{margin-left:auto;font-size:13px;overflow-wrap:anywhere}
-#files{display:grid;grid-template-columns:repeat(auto-fill,minmax(112px,1fr));align-content:start;gap:8px}
-#files .empty{grid-column:1/-1}#files li{padding:0}
-#files .file-tile{width:100%;height:112px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;background:transparent;border:1px solid transparent;white-space:normal}
-#files .file-tile:hover{background:#ffffff0b}
-#files .file-tile[aria-pressed=true]{background:#aaf0d81a;border-color:#aaf0d866}
-.tile-name{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;text-align:center;overflow-wrap:anywhere;width:100%;font-size:12.5px;line-height:1.25}
-.tile-icon{display:block;position:relative;width:46px;height:38px;flex:none}
-.tile-folder{height:30px;margin-top:8px;border-radius:5px;background:linear-gradient(#e9c983,#c99a4b)}
-.tile-folder:before{content:"";position:absolute;left:3px;top:-6px;width:18px;height:8px;border-radius:4px 4px 0 0;background:#d9b067}
-.tile-audio{width:34px;height:40px;border-radius:6px;background:linear-gradient(#2f4a50,#22363b);border:1px solid #3c5a60;color:var(--accent);font-size:20px;text-align:center;line-height:38px}
-#fileMessage{margin:14px 0;white-space:pre-wrap;overflow-wrap:anywhere}#fileMessage:empty{display:none}
-dialog{color:var(--ink);background:var(--panel-2);border:1px solid var(--edge);border-radius:16px;max-width:min(520px,calc(100% - 30px));padding:22px;box-shadow:0 24px 70px #000c}
-dialog::backdrop{background:#050a0cb0;backdrop-filter:blur(3px)}
-dialog h3{font-size:18px;margin-bottom:6px}
-#conflictDialog p{margin:8px 0;overflow-wrap:anywhere}#conflictDialog label{display:flex;gap:8px;align-items:center;margin:16px 0}#conflictDialog form{justify-content:flex-end}
-#folderBatchDialog{width:min(560px,calc(100% - 30px));max-width:none}
-#folderDrop{padding:18px;margin:14px 0;border:1.5px dashed #3e5a60;border-radius:14px;background:#0f181b}
-#folderDrop.dragging{border-color:var(--accent);background:#aaf0d80f}#folderDrop p{margin-bottom:12px}
-#folderBatchList{max-height:220px;overflow:auto}#folderBatchList li{display:flex;gap:8px;align-items:center;padding:6px 0}
-#folderBatchList li span{flex:1;overflow-wrap:anywhere}.batch-actions{justify-content:flex-end;margin-top:14px}
-#uploadSubfolders{padding:12px;border:1px solid var(--edge);border-radius:12px}
-#uploadSubfolders .toolbar{justify-content:space-between}#uploadSubfolderList{display:grid;gap:6px;max-height:180px;overflow:auto;margin-top:10px}
-#uploadSubfolders label{cursor:pointer;overflow-wrap:anywhere}
-.kbd-hint{margin-top:18px;text-align:center;font-size:12px;color:#6f8488}
-kbd{font:inherit;padding:1px 6px;border:1px solid var(--edge);border-bottom-width:2px;border-radius:6px;background:#0f181b}
+/* Header & Topbar */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px clamp(16px, 3.5vw, 40px);
+  background: var(--surface-glass);
+  backdrop-filter: blur(28px) saturate(180%);
+  border-bottom: 1px solid var(--border);
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.brand-mark {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, var(--accent), #00b4d8);
+  color: var(--accent-ink);
+  box-shadow: 0 4px 16px var(--accent-glow);
+}
+.brand-info h1 {
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+#status {
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+}
+#status:before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+#status.ok:before {
+  background: #2de2ab;
+  box-shadow: 0 0 0 3px rgba(45, 226, 171, 0.25);
+}
 
-@media(max-width:980px){#playerView{grid-template-columns:1fr}.side{position:static}}
-@media(max-width:760px){
-  .topbar{position:static;gap:8px;padding-top:10px;padding-bottom:10px}.brand{flex-basis:100%}.tabs{flex:1}.tabs button{flex:1;padding:6px 8px}
-  main{padding-top:14px}.stage{border-radius:20px}
-  .library-shell,.explorer{grid-template-columns:1fr}.library-nav{position:static;display:flex;overflow-x:auto}
-  .roots{border-right:0;border-bottom:1px solid var(--edge)}#roots{display:flex;flex-wrap:wrap;gap:5px}#roots button{width:auto}
-  #fileSelection{width:100%;margin-left:0}.kbd-hint{display:none}
+/* Nav Pills */
+.nav-pills {
+  display: flex;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  padding: 4px;
+  gap: 2px;
+}
+.nav-pills button {
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-full);
+  padding: 7px 15px;
+  color: var(--muted);
+  font-size: 13.5px;
+}
+.nav-pills button:hover { color: var(--ink); }
+.nav-pills button[aria-current=true] {
+  background: var(--surface-raised);
+  color: var(--ink);
+  font-weight: 600;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+}
+
+.top-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Main Container */
+main {
+  position: relative;
+  z-index: 10;
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 24px clamp(16px, 3.5vw, 40px) 40px;
+}
+
+/* Hero Cards */
+.card {
+  background: var(--surface-glass);
+  backdrop-filter: blur(24px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 22px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+}
+
+/* View: Player Stage */
+.player-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(340px, 1fr);
+  gap: 28px;
+  align-items: start;
+}
+.player-stage {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  background: linear-gradient(180deg, rgba(24, 34, 41, 0.65) 0%, rgba(9, 13, 16, 0.95) 100%);
+  padding: clamp(20px, 4vw, 40px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  box-shadow: 0 16px 48px rgba(0,0,0,0.4);
+}
+.stage-artwork-wrap {
+  position: relative;
+  width: min(380px, 100%, 48vh);
+  aspect-ratio: 1;
+  margin: 0 auto 28px;
+  border-radius: 20px;
+  overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.7), 0 0 40px var(--ambient-color);
+  background: linear-gradient(135deg, hsl(var(--art-hue, 165) 34% 36%), hsl(calc(var(--art-hue, 165) + 40) 45% 15%));
+}
+.stage-artwork-wrap:before {
+  content: attr(data-letter);
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: min(130px, 20vw);
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.4);
+  z-index: 1;
+  transition: opacity 0.2s ease;
+}
+.stage-artwork-wrap.art-loaded:before,
+.mini-thumb.art-loaded:before,
+.fs-artwork-box.art-loaded:before,
+.track-thumb.art-loaded:before,
+.card-artwork.art-loaded:before {
+  opacity: 0;
+}
+.stage-artwork-wrap img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform 0.5s ease, opacity 0.3s ease;
+  z-index: 2;
+}
+.stage-artwork-wrap:hover img { transform: scale(1.03); }
+.stage-artwork-placeholder { display: none; }
+
+.stage-meta {
+  width: 100%;
+  max-width: 520px;
+  margin-bottom: 24px;
+}
+.pill-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.badge {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  padding: 3px 10px;
+  border-radius: var(--radius-full);
+  background: rgba(255,255,255,0.08);
+  color: var(--accent);
+  text-transform: uppercase;
+}
+.badge.gold { background: var(--gold-bg); color: var(--gold); }
+.stage-meta h2 {
+  font-size: clamp(22px, 3.2vw, 34px);
+  font-weight: 750;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  margin-bottom: 6px;
+  overflow-wrap: anywhere;
+}
+.stage-meta p {
+  font-size: 16px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+/* Stage Progress */
+.stage-progress {
+  width: 100%;
+  max-width: 520px;
+  margin-bottom: 24px;
+}
+.time-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12.5px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  margin-top: 4px;
+}
+
+/* Stage Transport Controls */
+.stage-transport {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(12px, 3vw, 30px);
+  margin-bottom: 24px;
+}
+.stage-transport button {
+  background: transparent;
+  border: none;
+  color: var(--ink);
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  padding: 0;
+}
+.stage-transport button:hover { background: rgba(255,255,255,0.08); }
+.stage-transport button.play-hero {
+  width: 72px;
+  height: 72px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  box-shadow: 0 8px 24px var(--accent-glow);
+}
+.stage-transport button.play-hero:hover { background: #3ef0bb; transform: scale(1.05); }
+.stage-transport button.play-hero:active { transform: scale(0.95); }
+.stage-transport button.play-hero .icon { width: 32px; height: 32px; }
+.stage-transport .mode-btn { color: var(--muted); position: relative; }
+.stage-transport .mode-btn.on { color: var(--accent); }
+.stage-transport .mode-btn .badge-dot {
+  position: absolute;
+  bottom: 6px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+/* Volume Slider in Stage */
+.volume-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  max-width: 320px;
+  margin-bottom: 20px;
+}
+.volume-row .icon-btn { width: 32px; height: 32px; }
+.volume-row input[type=range] { flex: 1; }
+
+/* Stage Quick Actions */
+.stage-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+/* Stage Side Panel (Tabs: Queue & Mini Search) */
+.side-card {
+  padding: 0;
+  overflow: hidden;
+  border-radius: var(--radius-lg);
+}
+.side-header-tabs {
+  display: flex;
+  background: rgba(0,0,0,0.25);
+  border-bottom: 1px solid var(--border);
+  padding: 8px 12px 0;
+  gap: 4px;
+}
+.side-header-tabs button {
+  flex: 1;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  padding: 10px;
+  color: var(--muted);
+  border-bottom: 2px solid transparent;
+}
+.side-header-tabs button[aria-current=true] {
+  color: var(--ink);
+  font-weight: 600;
+  border-bottom-color: var(--accent);
+}
+.side-content {
+  padding: 16px;
+  max-height: calc(100vh - 280px);
+  min-height: 420px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+/* Track Lists */
+.track-list { list-style: none; margin: 0; padding: 0; }
+.track-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  transition: background 0.15s;
+  user-select: none;
+  cursor: pointer;
+}
+.track-row:hover { background: rgba(255,255,255,0.06); }
+.track-row.active {
+  background: rgba(45, 226, 171, 0.1);
+  border-left: 3px solid var(--accent);
+}
+.track-row.active .track-title { color: var(--accent); }
+.track-thumb {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  border-radius: 8px;
+  overflow: hidden;
+  flex: none;
+  background: linear-gradient(135deg, hsl(var(--art-hue, 165) 34% 36%), hsl(calc(var(--art-hue, 165) + 40) 45% 15%));
+}
+.track-thumb:before {
+  content: attr(data-letter);
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  font-size: 16px;
+  color: rgba(255, 255, 255, 0.6);
+  z-index: 1;
+  transition: opacity 0.2s ease;
+}
+.track-thumb img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  z-index: 2;
+}
+.track-info { flex: 1; min-width: 0; }
+.track-title {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 2px;
+}
+.track-subtitle {
+  font-size: 12.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.track-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+.track-row:not(:hover):not(:focus-within) .track-actions .icon-btn.hover-only {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Animated Equalizer Wave */
+.eq-wave {
+  display: flex;
+  align-items: flex-end;
+  gap: 2.5px;
+  height: 16px;
+  padding: 2px;
+}
+.eq-wave span {
+  width: 3px;
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  animation: eq-bounce 1s ease-in-out infinite alternate;
+}
+.eq-wave span:nth-child(2) { animation-delay: -0.35s; }
+.eq-wave span:nth-child(3) { animation-delay: -0.7s; }
+@keyframes eq-bounce {
+  0% { height: 20%; }
+  100% { height: 100%; }
+}
+
+/* Library View */
+.library-layout {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+.library-nav-card {
+  padding: 12px;
+  display: grid;
+  gap: 6px;
+  position: sticky;
+  top: 84px;
+}
+.library-nav-card button {
+  justify-content: flex-start;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  font-size: 14px;
+}
+.library-nav-card button:hover { background: rgba(255,255,255,0.06); color: var(--ink); }
+.library-nav-card button[aria-current=true] {
+  background: var(--surface-raised);
+  color: var(--accent);
+  font-weight: 650;
+}
+
+.library-main {
+  min-width: 0;
+}
+.library-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+.library-header h2 { font-size: 26px; font-weight: 750; }
+.library-subnav-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+
+/* Cards Grid (Albums / Artists / Playlists) */
+.cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 20px;
+}
+.card-item {
+  display: flex;
+  flex-direction: column;
+  padding: 12px;
+  border-radius: var(--radius-md);
+  background: var(--surface-glass);
+  border: 1px solid var(--border);
+  transition: transform 0.2s, background 0.2s, box-shadow 0.2s;
+  cursor: pointer;
+}
+.card-item:hover {
+  transform: translateY(-4px);
+  background: var(--surface-hover);
+  box-shadow: 0 12px 28px rgba(0,0,0,0.35);
+}
+.card-artwork {
+  position: relative;
+  aspect-ratio: 1;
+  width: 100%;
+  border-radius: 10px;
+  overflow: hidden;
+  background: linear-gradient(135deg, hsl(var(--art-hue, 165) 34% 36%), hsl(calc(var(--art-hue, 165) + 40) 45% 15%));
+  margin-bottom: 10px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+}
+.card-artwork.artist { border-radius: 50%; }
+.card-artwork:before {
+  content: attr(data-letter);
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  font-size: 40px;
+  color: rgba(255, 255, 255, 0.4);
+  z-index: 1;
+  transition: opacity 0.2s ease;
+}
+.card-artwork img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  z-index: 2;
+}
+.card-play-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,0.45);
+  display: grid;
+  place-items: center;
+  opacity: 0;
+  transition: opacity 0.2s;
+  z-index: 3;
+}
+.card-item:hover .card-play-overlay { opacity: 1; }
+.card-play-overlay button {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-ink);
+  box-shadow: 0 4px 16px var(--accent-glow);
+}
+.card-title {
+  font-weight: 650;
+  font-size: 14.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.card-subtitle {
+  font-size: 12.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 2px;
+}
+
+/* Global Search View */
+.search-view {
+  max-width: 900px;
+  margin: 0 auto;
+}
+.search-hero {
+  position: relative;
+  margin-bottom: 24px;
+}
+.search-input-wrap {
+  display: flex;
+  align-items: center;
+  background: var(--surface-glass);
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-full);
+  padding: 6px 18px;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.25);
+  transition: border-color 0.2s;
+}
+.search-input-wrap:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+.search-input-wrap input {
+  flex: 1;
+  padding: 10px 12px;
+  background: transparent;
+  border: none;
+  font-size: 16px;
+}
+.search-tabs {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+.search-tabs button {
+  border-radius: var(--radius-full);
+  padding: 6px 16px;
+  font-size: 13px;
+  background: rgba(255,255,255,0.06);
+}
+.search-tabs button[aria-current=true] {
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 650;
+}
+
+/* Persistent Mini Player (常驻底部迷你播放栏) */
+.mini-player {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 50;
+  height: 76px;
+  background: rgba(14, 20, 24, 0.94);
+  backdrop-filter: blur(28px) saturate(180%);
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 clamp(16px, 3.5vw, 40px);
+  gap: 16px;
+  box-shadow: 0 -8px 32px rgba(0,0,0,0.5);
+  transition: transform 0.3s cubic-bezier(0.2, 0, 0, 1);
+}
+.mini-progress-line {
+  position: absolute;
+  top: -1.5px;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: rgba(255,255,255,0.1);
+  cursor: pointer;
+}
+.mini-progress-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, var(--accent), #00b4d8);
+  box-shadow: 0 0 8px var(--accent-glow);
+  transition: width 0.2s linear;
+}
+
+.mini-left {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  flex: 1;
+  max-width: 380px;
+  cursor: pointer;
+}
+.mini-thumb {
+  position: relative;
+  width: 48px;
+  height: 48px;
+  border-radius: 10px;
+  overflow: hidden;
+  background: linear-gradient(135deg, hsl(var(--art-hue, 165) 34% 36%), hsl(calc(var(--art-hue, 165) + 40) 45% 15%));
+  flex: none;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+}
+.mini-thumb:before {
+  content: attr(data-letter);
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  font-size: 18px;
+  color: rgba(255, 255, 255, 0.6);
+  z-index: 1;
+  transition: opacity 0.2s ease;
+}
+.mini-thumb img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  z-index: 2;
+}
+.mini-info { min-width: 0; }
+.mini-title {
+  font-weight: 650;
+  font-size: 14.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mini-artist {
+  font-size: 12.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mini-center {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.mini-center button {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: transparent;
+  border: none;
+  padding: 0;
+}
+.mini-center button.play-btn {
+  width: 50px;
+  height: 50px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  box-shadow: 0 4px 16px var(--accent-glow);
+}
+.mini-center button.play-btn:hover { background: #3ef0bb; transform: scale(1.05); }
+
+.mini-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  justify-content: flex-end;
+}
+.mini-vol-slider {
+  width: 100px;
+}
+
+/* Fullscreen Immersive Player Overlay (全屏沉浸播放界面) */
+.fullscreen-player {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  padding: env(safe-area-inset-top, 20px) clamp(20px, 4vw, 60px) env(safe-area-inset-bottom, 30px);
+  overflow-y: auto;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(100%);
+  transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.3s ease;
+}
+.fullscreen-player.active {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+.fs-backdrop {
+  position: absolute;
+  inset: -60px;
+  background-size: cover;
+  background-position: center;
+  filter: blur(80px) saturate(1.8) brightness(0.45);
+  opacity: 0.8;
+  transform: scale(1.15);
+  pointer-events: none;
+}
+.fs-topbar {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+}
+.fs-topbar .pill-switch {
+  display: flex;
+  background: rgba(0,0,0,0.4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  padding: 3px;
+}
+.fs-topbar .pill-switch button {
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-full);
+  padding: 6px 18px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.fs-topbar .pill-switch button.active {
+  background: rgba(255,255,255,0.15);
+  color: var(--ink);
+  font-weight: 650;
+}
+
+.fs-body {
+  position: relative;
+  z-index: 2;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  max-width: 680px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+/* FS Artwork View */
+.fs-artwork-container {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.fs-artwork-box {
+  position: relative;
+  width: min(420px, 85vw, 45vh);
+  aspect-ratio: 1;
+  border-radius: 24px;
+  overflow: hidden;
+  box-shadow: 0 24px 80px rgba(0,0,0,0.8), 0 0 50px var(--ambient-color);
+  margin-bottom: 32px;
+  background: linear-gradient(135deg, hsl(var(--art-hue, 165) 34% 36%), hsl(calc(var(--art-hue, 165) + 40) 45% 15%));
+}
+.fs-artwork-box:before {
+  content: attr(data-letter);
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  font-size: min(140px, 22vw);
+  color: rgba(255, 255, 255, 0.4);
+  z-index: 1;
+  transition: opacity 0.2s ease;
+}
+.fs-artwork-box img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  z-index: 2;
+}
+
+/* FS Synced Dynamic Lyrics View */
+.fs-lyrics-container {
+  width: 100%;
+  height: 52vh;
+  overflow-y: auto;
+  scrollbar-width: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 80px 20px;
+  mask-image: linear-gradient(180deg, transparent 0%, black 15%, black 85%, transparent 100%);
+  -webkit-mask-image: linear-gradient(180deg, transparent 0%, black 15%, black 85%, transparent 100%);
+}
+.fs-lyrics-container::-webkit-scrollbar { display: none; }
+.lyric-line {
+  font-size: clamp(19px, 3.2vw, 28px);
+  font-weight: 600;
+  line-height: 1.8;
+  color: var(--muted);
+  opacity: 0.35;
+  transition: all 0.35s cubic-bezier(0.2, 0, 0, 1);
+  text-align: center;
+  padding: 8px 16px;
+  cursor: pointer;
+  border-radius: 12px;
+}
+.lyric-line:hover { opacity: 0.7; }
+.lyric-line.active {
+  opacity: 1;
+  color: #ffffff;
+  font-weight: 750;
+  transform: scale(1.12);
+  text-shadow: 0 0 24px var(--accent-glow);
+}
+.lyrics-empty {
+  font-size: 18px;
+  color: var(--muted);
+  text-align: center;
+  margin-top: 100px;
+}
+
+/* FS Bottom Controls */
+.fs-controls-container {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  max-width: 580px;
+  margin: 0 auto;
+}
+
+/* Modals & Dialogs */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: rgba(0,0,0,0.65);
+  backdrop-filter: blur(14px);
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.25s ease;
+}
+.modal-overlay.active {
+  opacity: 1;
+  pointer-events: auto;
+}
+.modal-box {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  width: 100%;
+  max-width: 480px;
+  box-shadow: 0 24px 60px rgba(0,0,0,0.6);
+  transform: scale(0.95);
+  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.modal-overlay.active .modal-box { transform: scale(1); }
+.modal-title { font-size: 20px; font-weight: 700; margin-bottom: 8px; }
+.modal-lead { color: var(--muted); font-size: 14px; margin-bottom: 20px; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px; }
+
+/* Floating Toasts */
+#toastContainer {
+  position: fixed;
+  top: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 300;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+.toast {
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  color: var(--ink);
+  padding: 10px 20px;
+  border-radius: var(--radius-full);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  font-size: 13.5px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  animation: toast-in 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(-16px) scale(0.9); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* File explorer */
+.file-explorer-grid {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  gap: 20px;
+}
+.breadcrumbs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  color: var(--muted);
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+.breadcrumbs a { color: var(--accent); text-decoration: none; cursor: pointer; }
+
+/* Responsive adjustments */
+@media (max-width: 860px) {
+  .player-grid { grid-template-columns: 1fr; }
+  .library-layout { grid-template-columns: 1fr; }
+  .library-nav-card { position: static; display: flex; overflow-x: auto; padding: 6px; }
+  .file-explorer-grid { grid-template-columns: 1fr; }
+  .mini-vol-slider { display: none; }
+  .topbar { padding: 10px 16px; }
+  .nav-pills button { padding: 6px 10px; font-size: 12.5px; }
 }
 </style>
-<svg width="0" height="0" style="position:absolute" aria-hidden="true">
-<symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4.5v15l12.5-7.5z" fill="currentColor" stroke="currentColor"/></symbol>
-<symbol id="i-pause" viewBox="0 0 24 24"><rect x="6" y="4.5" width="4" height="15" rx="1.2" fill="currentColor" stroke="none"/><rect x="14" y="4.5" width="4" height="15" rx="1.2" fill="currentColor" stroke="none"/></symbol>
-<symbol id="i-prev" viewBox="0 0 24 24"><path d="M19 5 9 12l10 7z" fill="currentColor" stroke="currentColor"/><rect x="5" y="5" width="2.5" height="14" rx="1" fill="currentColor" stroke="none"/></symbol>
-<symbol id="i-next" viewBox="0 0 24 24"><path d="m5 5 10 7-10 7z" fill="currentColor" stroke="currentColor"/><rect x="16.5" y="5" width="2.5" height="14" rx="1" fill="currentColor" stroke="none"/></symbol>
-<symbol id="i-shuffle" viewBox="0 0 24 24"><path d="M3 7h4l8 10h6M3 17h4l2.5-3.2M12.5 10.2 15 7h6M18 4l3 3-3 3M18 14l3 3-3 3"/></symbol>
-<symbol id="i-repeat" viewBox="0 0 24 24"><path d="M4 11V8l2-2h13M16 3l3 3-3 3M20 13v3l-2 2H5M8 15l-3 3 3 3"/></symbol>
-<symbol id="i-queue" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></symbol>
-<symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6"/><path d="m15 15 5.5 5.5"/></symbol>
-<symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
-<symbol id="i-next-up" viewBox="0 0 24 24"><path d="M4 6h11M4 12h8M4 18h8M17 12v8M13 16h8"/></symbol>
-<symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></symbol>
-<symbol id="i-up" viewBox="0 0 24 24"><path d="m6 14 6-6 6 6"/></symbol>
-<symbol id="i-down" viewBox="0 0 24 24"><path d="m6 10 6 6 6-6"/></symbol>
-<symbol id="i-heart" viewBox="0 0 24 24"><path d="M12 20C5 15.5 2.5 12 2.5 8.6 2.5 5.8 4.7 3.8 7.3 3.8c2 0 3.7 1.2 4.7 3 1-1.8 2.7-3 4.7-3 2.6 0 4.8 2 4.8 4.8 0 3.4-2.5 6.9-9.5 11.4z"/></symbol>
-<symbol id="i-heart-off" viewBox="0 0 24 24"><path d="M12 20C5 15.5 2.5 12 2.5 8.6 2.5 5.8 4.7 3.8 7.3 3.8c2 0 3.7 1.2 4.7 3 1-1.8 2.7-3 4.7-3 2.6 0 4.8 2 4.8 4.8 0 3.4-2.5 6.9-9.5 11.4z" fill="currentColor"/></symbol>
-<symbol id="i-lyrics" viewBox="0 0 24 24"><path d="M4 6h11M4 11h9M4 16h5"/><circle cx="15.5" cy="17.5" r="2.5"/><path d="M18 17.5V8l3 1"/></symbol>
-<symbol id="i-radio" viewBox="0 0 24 24"><circle cx="12" cy="12" r="2"/><path d="M7.8 7.8a6 6 0 0 0 0 8.4M16.2 7.8a6 6 0 0 1 0 8.4M5 5a10 10 0 0 0 0 14M19 5a10 10 0 0 1 0 14"/></symbol>
-<symbol id="i-list-add" viewBox="0 0 24 24"><path d="M4 6h12M4 12h8M4 18h6M17 13v8M13 17h8"/></symbol>
-<symbol id="i-list-remove" viewBox="0 0 24 24"><path d="M4 6h12M4 12h8M4 18h6M13 17h8"/></symbol>
-<symbol id="i-back" viewBox="0 0 24 24"><path d="m14 5-7 7 7 7"/></symbol>
-<symbol id="i-player" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.5"/></symbol>
-<symbol id="i-library" viewBox="0 0 24 24"><path d="M4 4v16M9 4v16M14 4v16M18 5l4 14"/></symbol>
-<symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 6.5V19h18V8.5h-9.5l-2-3H4z"/></symbol>
-<symbol id="i-refresh" viewBox="0 0 24 24"><path d="M19 12a7 7 0 1 1-2.1-5M19 4v4h-4"/></symbol>
-<symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V5M7 9.5 12 4.5l5 5M5 20h14"/></symbol>
-<symbol id="i-music" viewBox="0 0 24 24"><circle cx="8" cy="17" r="3"/><path d="M11 17V4.5L19 3v11"/><circle cx="16" cy="14" r="3"/></symbol>
-</svg>
+</head>
+<body>
+
+<!-- Ambient Backdrop -->
+<div id="ambientGlow"></div>
+
+<!-- Topbar -->
 <header class="topbar">
-<div class="brand"><span class="mark" aria-hidden="true"><svg class="icon"><use href="#i-music"/></svg></span><div><h1>听音室</h1><p id="status" role="status">正在连接…</p></div></div>
-<nav class="tabs" aria-label="遥控页面"><button id="openPlayer" type="button" aria-current="true"><svg class="icon"><use href="#i-player"/></svg>播放器</button><button type="button" id="openLibrary" hidden><svg class="icon"><use href="#i-library"/></svg>音乐库</button><button id="openFiles" type="button" hidden><svg class="icon"><use href="#i-folder"/></svg>文件</button></nav>
-<div class="tabs mode-switch" role="group" aria-label="网页模式" id="modeSwitch" hidden>
-<button id="modeRemote" type="button" aria-current="true" title="只控制播放和队列">控制模式</button>
-<button id="modeFull" type="button" title="浏览手机音乐库、歌单与 TIDAL">完整模式</button></div>
+  <div class="brand">
+    <div class="brand-mark" aria-hidden="true">
+      <svg class="icon"><use href="#i-music"/></svg>
+    </div>
+    <div class="brand-info">
+      <h1>听音室</h1>
+      <span id="status">正在连接…</span>
+    </div>
+  </div>
+
+  <nav class="nav-pills" aria-label="主要页面">
+    <button type="button" id="tabNavPlayer" aria-current="true"><svg class="icon"><use href="#i-player"/></svg> 播放</button>
+    <button type="button" id="tabNavLibrary"><svg class="icon"><use href="#i-library"/></svg> 音乐库</button>
+    <button type="button" id="tabNavSearch"><svg class="icon"><use href="#i-search"/></svg> 搜索</button>
+    <button type="button" id="tabNavFiles"><svg class="icon"><use href="#i-folder"/></svg> 文件</button>
+  </nav>
+
+  <div class="top-actions">
+    <button type="button" id="btnDevices" class="icon-btn" title="设备与连接"><svg class="icon"><use href="#i-devices"/></svg></button>
+  </div>
 </header>
+
 <main>
-<section class="card utility" id="adminPanel" hidden>
-<h2>登录播放器账号</h2>
-<p class="lead">使用电脑和手机上登录的同一个播放器账号，即可选择设备远程控制。</p>
-<form id="accountForm">
-<input id="accountName" autocomplete="username" required maxlength="48" placeholder="用户名" aria-label="用户名">
-<input id="accountPassword" type="password" autocomplete="current-password" required maxlength="256" placeholder="密码" aria-label="密码">
-<button type="submit" class="primary">登录</button></form>
-<form id="adminForm" hidden><label for="adminKey">后台管理密钥</label>
-<input id="adminKey" type="password" autocomplete="off" required>
-<button type="submit">连接后台</button></form>
-<p id="adminMessage" role="status" style="margin-top:12px"></p>
-</section>
-<section class="card utility" id="devicesPanel" hidden><label for="devices">播放设备</label> <select id="devices"></select>
-<button type="button" id="issuePair" disabled>生成 Android 配对码</button><button type="button" id="removeDevice" class="ghost" hidden>移除设备</button>
-<button type="button" id="accountLogout" class="ghost danger" hidden>退出账号</button><p id="issuedCode" role="status"></p></section>
-<section class="card utility" id="pairPanel" hidden>
-<h2>连接手机</h2>
-<p>在手机「设置 → 设备与连接 → 局域网遥控」查看六位配对码。</p>
-<form id="pairForm">
-<input id="pairCode" inputmode="numeric" maxlength="6" pattern="[0-9]{6}" required autocomplete="one-time-code" placeholder="••••••" aria-label="手机上的六位配对码">
-<button type="submit" class="primary">配对</button></form></section>
+  <!-- Connection/Account Helper (if needed) -->
+  <section class="card" id="adminPanel" hidden style="margin-bottom: 24px;">
+    <h2>登录播放器账号</h2>
+    <p class="modal-lead">登录后可跨设备协同遥控。</p>
+    <form id="accountForm" style="display:flex; gap:10px; flex-wrap:wrap;">
+      <input id="accountName" placeholder="用户名" required maxlength="48">
+      <input id="accountPassword" type="password" placeholder="密码" required maxlength="256">
+      <button type="submit" class="primary">登录</button>
+    </form>
+    <form id="adminForm" hidden style="margin-top:10px;"><input id="adminKey" type="password"><button type="submit">连接</button></form>
+    <p id="adminMessage" style="color:var(--danger); margin-top:10px;"></p>
+  </section>
 
-<div id="playerView">
-<section class="stage" id="player" aria-label="正在播放">
-<div id="backdrop" aria-hidden="true"></div>
-<div class="artwork" id="artwork" data-letter="♪"><img id="cover" alt="" hidden></div>
-<div class="meta">
-<p id="source"><span id="sourceName">正在播放</span><span id="qualityChip" hidden></span></p>
-<h2 id="title">尚未播放</h2><p id="artist"></p>
-</div>
-<div class="progress">
-<input id="position" type="range" min="0" max="1" value="0" aria-label="播放进度" disabled>
-<div class="times"><span id="elapsed">0:00</span><span id="total">0:00</span></div>
-<p id="timing">0:00 / 0:00</p>
-</div>
-<div class="transport">
-<button data-op="shuffle" class="mode" aria-label="随机播放" title="随机播放"><svg class="icon"><use href="#i-shuffle"/></svg></button>
-<button data-op="previous" aria-label="上一首" title="上一首（Shift + ←）"><svg class="icon"><use href="#i-prev"/></svg></button>
-<button data-op="toggle" class="primary" aria-label="播放" title="播放 / 暂停（空格）"><svg class="icon"><use id="toggleIcon" href="#i-play"/></svg></button>
-<button data-op="next" aria-label="下一首" title="下一首（Shift + →）"><svg class="icon"><use href="#i-next"/></svg></button>
-<button data-op="repeat" class="mode" aria-label="循环" title="循环"><svg class="icon"><use href="#i-repeat"/></svg><span class="badge" id="repeatBadge"></span></button>
-</div>
-<p id="error" role="status"></p>
-<div class="toolbar" id="fullPlayer" hidden><button id="lyricsButton" type="button" class="ghost"><svg class="icon"><use href="#i-lyrics"/></svg>歌词</button>
-<button id="radioButton" type="button" class="ghost"><svg class="icon"><use href="#i-radio"/></svg>歌曲电台</button><label for="qualitySelect">音质</label>
-<select id="qualitySelect"><option value="3">Max</option><option value="0">High</option><option value="1">Low</option><option value="2">Low 96k</option></select></div>
-<pre id="fullLyrics" hidden></pre>
-<p class="kbd-hint"><kbd>空格</kbd> 播放/暂停　<kbd>←</kbd><kbd>→</kbd> 快退/快进 10 秒　<kbd>Shift</kbd>+<kbd>←</kbd><kbd>→</kbd> 切歌</p>
-</section>
-<aside class="side">
-<section class="card side-card">
-<div class="side-tabs" role="tablist"><button type="button" id="tabQueue" role="tab" aria-current="true"><svg class="icon"><use href="#i-queue"/></svg>播放队列</button><button type="button" id="tabSearch" role="tab" aria-current="false"><svg class="icon"><use href="#i-search"/></svg>搜索</button></div>
-<div class="side-body" id="queuePane"><p class="count" id="queueCount"></p><ul id="queue" class="track-list"><li class="empty">队列为空</li></ul></div>
-<div class="side-body" id="searchPane" hidden><form id="search"><input type="search" id="query" placeholder="搜索歌曲或艺人" maxlength="160" required aria-label="搜索歌曲"><button type="submit" class="primary" aria-label="搜索"><svg class="icon"><use href="#i-search"/></svg></button></form><ul id="results" class="track-list"></ul></div>
-</section>
-<section class="card" id="authorization" hidden>
-<h2>TIDAL 账号</h2>
-<div class="toolbar"><button id="login" type="button" class="primary">登录 TIDAL</button><button id="cancel" type="button" class="ghost" hidden>取消授权</button></div>
-<div id="loginDetails" hidden><a id="loginLink" class="button primary" target="_blank" rel="noreferrer noopener">打开 TIDAL 授权页</a><p>授权码 <code id="code"></code></p><p id="loginPage"></p></div>
-</section>
-</aside>
-</div>
+  <section class="card" id="pairPanel" hidden style="max-width:500px; margin:0 auto 24px; text-align:center;">
+    <h2>连接手机播放器</h2>
+    <p class="modal-lead">输入手机上「局域网遥控」显示的 6 位配对码</p>
+    <form id="pairForm" style="display:flex; justify-content:center; gap:10px; margin-top:16px;">
+      <input id="pairCode" inputmode="numeric" maxlength="6" pattern="[0-9]{6}" style="font-size:24px; letter-spacing:8px; text-align:center; width:180px;" placeholder="••••••">
+      <button type="submit" class="primary">配对连接</button>
+    </form>
+  </section>
 
-<section id="libraryPanel" hidden aria-labelledby="libraryHeading">
-<div class="library-heading"><h2 id="libraryHeading">音乐库</h2>
-<div class="toolbar"><button type="button" id="scanLibrary" hidden><svg class="icon"><use href="#i-refresh"/></svg>扫描已授权目录</button></div></div>
-<div class="library-shell">
-<aside class="card library-nav" id="libraryNavigation" aria-label="音乐来源">
-<button type="button" data-library="local">本地音乐</button>
-<button type="button" data-library="recent">最近播放</button>
-<button type="button" data-library="tidal-search">TIDAL 搜索</button>
-<button type="button" data-library="tidal-favorites">TIDAL 收藏</button>
-<button type="button" data-library="tidal-collections">TIDAL 专辑、艺人与歌单</button>
-</aside>
-<div class="card">
-<h3 id="libraryCategory">本地音乐</h3>
-<div class="toolbar library-subnav" id="localPlaylists">
-<label for="playlistSelect">歌单</label><select id="playlistSelect"><option value="">全部歌曲</option></select>
-<label for="localCategory">分类</label><select id="localCategory"><option value="0">歌曲</option><option value="1">专辑</option><option value="3">艺人</option><option value="4">专辑艺人</option><option value="5">流派</option><option value="6">年份</option></select>
-<button id="localGroupBack" type="button" class="ghost" hidden><svg class="icon"><use href="#i-back"/></svg>返回分类</button>
-<label for="localSort">排序</label><select id="localSort"><option value="added">原顺序</option><option value="title">曲名</option><option value="artist">艺人</option><option value="album">专辑</option></select>
-<button id="createPlaylist" type="button"><svg class="icon"><use href="#i-plus"/></svg>新建歌单</button><button id="deletePlaylist" type="button" class="ghost danger" hidden>删除歌单</button>
-<button id="importPlaylist" type="button" hidden>导入 M3U</button><button id="exportPlaylist" type="button" hidden>导出 M3U</button>
-<input id="m3uFile" type="file" accept=".m3u,.m3u8" hidden></div>
-<form id="fullFilter" class="library-subnav">
-<select id="collectionKind" aria-label="TIDAL 分类" hidden><option value="ALBUM">专辑</option><option value="ARTIST">艺人</option><option value="PLAYLIST">歌单</option></select>
-<input id="libraryQuery" type="search" maxlength="160" aria-label="搜索音乐库" placeholder="歌曲、艺人或专辑">
-<button type="submit" class="primary">查看</button></form>
-<div class="toolbar library-page-actions"><button id="libraryBack" type="button" class="ghost" hidden><svg class="icon"><use href="#i-back"/></svg>返回</button><button id="playAll" type="button" class="primary" hidden><svg class="icon"><use href="#i-play"/></svg>播放本页</button>
-<button id="shuffleAll" type="button" hidden><svg class="icon"><use href="#i-shuffle"/></svg>随机播放</button><button id="artistAlbums" type="button" hidden>查看艺人的专辑</button></div>
-<ul id="libraryTracks" class="library-list"></ul>
-<button id="loadMore" type="button" hidden>加载更多</button>
-<p id="libraryMessage" role="status"></p>
-</div></div>
-</section>
+  <!-- VIEW 1: HERO PLAYER -->
+  <section id="viewPlayer">
+    <div class="player-grid">
+      <!-- Left: Player Stage -->
+      <div class="player-stage">
+        <div class="stage-artwork-wrap" id="artworkBox" data-letter="♪">
+          <img id="artworkImg" alt="Album Artwork" hidden>
+        </div>
 
-<section id="filePanel" aria-labelledby="fileHeading" hidden>
-<div class="file-heading"><h2 id="fileHeading">音乐文件</h2>
-<div class="toolbar">
-<button type="button" id="refreshFiles" class="ghost"><svg class="icon"><use href="#i-refresh"/></svg>刷新</button>
-<button type="button" id="chooseFiles" disabled><svg class="icon"><use href="#i-upload"/></svg>上传文件</button>
-<button type="button" id="chooseFolder" class="primary" disabled><svg class="icon"><use href="#i-folder"/></svg>上传文件夹</button>
-<input id="audioFile" type="file" accept="audio/*,.lrc,.jpg,.jpeg,.png,.webp,.gif,.flac,.m4a,.mp3,.opus,.wav,.ogg,.aac,.aiff,.aif,.alac,.ape,.oga,.wv,.wma" multiple hidden>
-<input id="audioFolder" type="file" webkitdirectory multiple hidden>
-<input id="parentUploadInput" type="file" webkitdirectory multiple hidden>
-</div></div>
-<div class="card explorer">
-<aside class="roots"><h3>已授权目录</h3><div id="roots"></div></aside>
-<div class="folder-view">
-<div class="folder-address"><button type="button" id="parentFolder" class="icon-btn" aria-label="上一级"><svg class="icon"><use href="#i-up"/></svg></button><nav id="breadcrumbs" aria-label="当前目录"></nav></div>
-<div class="toolbar" id="fileActions">
-<button type="button" id="fileMulti" aria-pressed="false" title="开启后轻点即可选择多项；也可按住 Ctrl/⌘ 或 Shift 点击">多选</button>
-<button type="button" id="fileAll" disabled>全选</button>
-<button type="button" id="fileOpen" disabled>打开</button><button type="button" id="fileDownload" disabled>下载</button>
-<button type="button" id="fileRename" disabled>重命名</button><button type="button" id="fileDelete" class="danger" disabled>删除</button>
-<p id="fileSelection"></p>
-</div>
-<ul id="files" aria-label="文件和文件夹"></ul></div>
-</div>
-<p id="fileMessage" role="status"></p>
-<dialog id="folderBatchDialog" aria-labelledby="batchTitle">
-<h3 id="batchTitle">批量上传文件夹</h3>
-<div id="folderDrop"><p>选择一个上级目录，再勾选要上传的子目录。也可以同时拖入多个文件夹。</p>
-<div class="toolbar"><button id="pickUploadParent" type="button" class="primary">从上级目录多选</button>
-<button id="addUploadFolder" type="button">添加单个文件夹</button></div></div>
-<section id="uploadSubfolders" hidden>
-<div class="toolbar"><h3 id="uploadParentName"></h3><label><input id="uploadSelectAll" type="checkbox"> 全选</label></div>
-<div id="uploadSubfolderList"></div>
-</section>
-<ul id="folderBatchList" aria-label="待上传文件夹"></ul>
-<p id="folderBatchStatus" role="status"></p>
-<div class="toolbar batch-actions"><button id="cancelFolderBatch" type="button" class="ghost">取消</button>
-<button id="startFolderBatch" type="button" class="primary" disabled>开始上传</button></div>
-</dialog>
-<dialog id="conflictDialog" aria-labelledby="conflictTitle">
-<h3 id="conflictTitle">目标文件夹中已有同名文件</h3>
-<p id="conflictPath"></p>
-<label><input type="checkbox" id="conflictAll">应用到本次所有同名冲突</label>
-<form method="dialog"><button value="cancel" class="ghost">取消上传</button><button value="skip">跳过</button><button class="primary" value="replace">替换</button></form>
-</dialog>
-</section>
+        <div class="stage-meta">
+          <div class="pill-badges">
+            <span class="badge" id="sourceBadge">正在播放</span>
+            <span class="badge gold" id="qualityBadge" hidden>Hi-Res</span>
+          </div>
+          <h2 id="trackTitle">尚未播放</h2>
+          <p id="trackArtist">请在曲库选择歌曲或加入队列</p>
+        </div>
+
+        <div class="stage-progress">
+          <input id="seekSlider" type="range" min="0" max="1" step="0.001" value="0" aria-label="进度">
+          <div class="time-labels">
+            <span id="currentTime">0:00</span>
+            <span id="totalDuration">0:00</span>
+          </div>
+        </div>
+
+        <div class="stage-transport">
+          <button type="button" id="btnShuffle" class="mode-btn" title="随机播放"><svg class="icon"><use href="#i-shuffle"/></svg></button>
+          <button type="button" id="btnPrev" title="上一首"><svg class="icon"><use href="#i-prev"/></svg></button>
+          <button type="button" id="btnPlayHero" class="play-hero" title="播放 / 暂停"><svg class="icon"><use id="heroPlayIcon" href="#i-play"/></svg></button>
+          <button type="button" id="btnNext" title="下一首"><svg class="icon"><use href="#i-next"/></svg></button>
+          <button type="button" id="btnRepeat" class="mode-btn" title="循环模式"><svg class="icon"><use href="#i-repeat"/></svg><span class="badge-dot" id="repeatDot" hidden></span></button>
+        </div>
+
+        <div class="volume-row">
+          <button type="button" id="btnMute" class="icon-btn" title="静音切换"><svg class="icon"><use id="volIcon" href="#i-volume"/></svg></button>
+          <input id="volumeSlider" type="range" min="0" max="1" step="0.01" value="0.8" aria-label="音量">
+        </div>
+
+        <div class="stage-actions">
+          <button type="button" id="btnOpenLyrics" class="ghost"><svg class="icon"><use href="#i-lyrics"/></svg> 动态歌词</button>
+          <button type="button" id="btnOpenRadio" class="ghost" disabled><svg class="icon"><use href="#i-radio"/></svg> 歌曲电台</button>
+          <select id="qualitySelect">
+            <option value="3">MAX (24-bit Hi-Res)</option>
+            <option value="0">HIGH (无损 CD)</option>
+            <option value="1">LOW (320k AAC)</option>
+            <option value="2">LOW 96k</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Right: Queue & Side Search -->
+      <div class="card side-card">
+        <div class="side-header-tabs">
+          <button type="button" id="tabSideQueue" aria-current="true"><svg class="icon"><use href="#i-queue"/></svg> 播放队列 (<span id="queueCountNum">0</span>)</button>
+          <button type="button" id="tabSideSearch"><svg class="icon"><use href="#i-search"/></svg> 快速添加</button>
+        </div>
+
+        <div class="side-content" id="sideQueueContent">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+            <small id="queueSummaryText">队列空闲</small>
+            <button type="button" id="btnClearQueue" class="ghost danger" style="padding:4px 8px; font-size:12px;">清空后续</button>
+          </div>
+          <ul class="track-list" id="queueList"></ul>
+        </div>
+
+        <div class="side-content" id="sideSearchContent" hidden>
+          <form id="sideSearchForm" style="display:flex; gap:8px; margin-bottom:14px;">
+            <input id="sideSearchInput" type="search" placeholder="搜索歌曲或艺人直接入队…" style="flex:1;">
+            <button type="submit" class="primary"><svg class="icon"><use href="#i-search"/></svg></button>
+          </form>
+          <ul class="track-list" id="sideSearchResults"></ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- VIEW 2: MUSIC LIBRARY -->
+  <section id="viewLibrary" hidden>
+    <div class="library-layout">
+      <!-- Left Category Nav -->
+      <div class="card library-nav-card">
+        <button type="button" data-lib="local" aria-current="true"><svg class="icon"><use href="#i-music"/></svg> 本地音乐</button>
+        <button type="button" data-lib="recent"><svg class="icon"><use href="#i-refresh"/></svg> 最近播放</button>
+        <button type="button" data-lib="tidal-favorites"><svg class="icon"><use href="#i-heart"/></svg> TIDAL 收藏</button>
+        <button type="button" data-lib="tidal-collections"><svg class="icon"><use href="#i-library"/></svg> TIDAL 专辑与艺人</button>
+        <button type="button" data-lib="netease"><svg class="icon"><use href="#i-cloud"/></svg> 网易云音乐</button>
+      </div>
+
+      <!-- Right Main Content -->
+      <div class="library-main">
+        <div class="library-header">
+          <div>
+            <h2 id="libraryTitle">本地音乐</h2>
+            <small id="libraryCountText"></small>
+          </div>
+          <div style="display:flex; gap:8px;">
+            <button type="button" id="btnScanLibrary" class="ghost" hidden><svg class="icon"><use href="#i-refresh"/></svg> 扫描已授权目录</button>
+            <button type="button" id="btnPlayAllLib" class="primary"><svg class="icon"><use href="#i-play"/></svg> 播放全部</button>
+            <button type="button" id="btnShuffleAllLib"><svg class="icon"><use href="#i-shuffle"/></svg> 随机播放</button>
+          </div>
+        </div>
+
+        <!-- Subnav & Filters -->
+        <div class="library-subnav-bar">
+          <button type="button" id="btnLibBack" class="ghost" hidden><svg class="icon"><use href="#i-back"/></svg> 返回上级</button>
+          <div id="localControls" style="display:flex; gap:8px; align-items:center;">
+            <select id="localSort">
+              <option value="added">按入库时间</option>
+              <option value="artist">按艺人名称</option>
+              <option value="album">按专辑名称</option>
+              <option value="title">按歌曲名称</option>
+            </select>
+            <select id="playlistSelect"><option value="">全部歌曲</option></select>
+            <button type="button" id="btnNewPlaylist"><svg class="icon"><use href="#i-plus"/></svg> 新建歌单</button>
+            <button type="button" id="btnDeletePlaylist" class="danger ghost" hidden><svg class="icon"><use href="#i-trash"/></svg> 删除歌单</button>
+          </div>
+          <div id="tidalControls" hidden style="display:flex; gap:8px;">
+            <select id="tidalCollectionKind">
+              <option value="ALBUM">专辑</option>
+              <option value="ARTIST">艺人</option>
+              <option value="PLAYLIST">精选歌单</option>
+            </select>
+          </div>
+          <input id="librarySearchInput" type="search" placeholder="筛选曲目、专辑或歌手…" style="max-width:280px; margin-left:auto;">
+        </div>
+
+        <!-- Content Lists -->
+        <div id="libraryCardsView" class="cards-grid" hidden></div>
+        <ul class="track-list" id="libraryTrackList"></ul>
+        <div style="text-align:center; margin-top:20px;">
+          <button type="button" id="btnLoadMoreLib" hidden>加载更多…</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- VIEW 3: GLOBAL SEARCH -->
+  <section id="viewSearch" hidden class="search-view">
+    <div class="search-hero">
+      <form id="globalSearchForm">
+        <div class="search-input-wrap">
+          <svg class="icon" style="color:var(--muted);"><use href="#i-search"/></svg>
+          <input id="globalSearchInput" type="search" placeholder="搜索歌曲、专辑、艺人、歌单…" autocomplete="off" required>
+          <button type="submit" class="primary" style="padding:6px 14px;">搜索</button>
+        </div>
+      </form>
+      <div class="search-tabs">
+        <button type="button" data-search-src="all" aria-current="true">全部源</button>
+        <button type="button" data-search-src="local">本地音乐</button>
+        <button type="button" data-search-src="tidal">TIDAL</button>
+        <button type="button" data-search-src="netease">网易云音乐</button>
+      </div>
+    </div>
+    <div id="searchCardsGrid" class="cards-grid" style="margin-bottom:24px;" hidden></div>
+    <ul class="track-list" id="searchTrackList"></ul>
+  </section>
+
+  <!-- VIEW 4: FILES EXPLORER -->
+  <section id="viewFiles" hidden>
+    <div class="library-header">
+      <h2>已授权音乐文件</h2>
+      <div style="display:flex; gap:8px;">
+        <button type="button" id="btnUploadFiles" class="primary"><svg class="icon"><use href="#i-upload"/></svg> 上传文件</button>
+        <button type="button" id="btnRefreshFiles" class="ghost"><svg class="icon"><use href="#i-refresh"/></svg> 刷新</button>
+        <input id="uploadFileInput" type="file" multiple hidden>
+      </div>
+    </div>
+    <div class="breadcrumbs" id="fileBreadcrumbs"></div>
+    <div class="card file-explorer-grid">
+      <div style="border-right:1px solid var(--border); padding-right:16px;">
+        <h4 style="margin-bottom:12px; color:var(--muted);">授权根目录</h4>
+        <div id="storageRootsList" style="display:grid; gap:6px;"></div>
+      </div>
+      <div>
+        <ul class="track-list" id="filesItemList"></ul>
+      </div>
+    </div>
+  </section>
 </main>
+
+<!-- PERSISTENT MINI PLAYER BAR (常驻底部迷你播放栏) -->
+<footer class="mini-player" id="miniPlayer">
+  <div class="mini-progress-line" id="miniProgressLine">
+    <div class="mini-progress-fill" id="miniProgressFill"></div>
+  </div>
+
+  <div class="mini-left" id="miniPlayerOpen">
+    <div class="mini-thumb" id="miniThumbBox" data-letter="♪">
+      <img id="miniThumbImg" alt="" hidden>
+    </div>
+    <div class="mini-info">
+      <div class="mini-title" id="miniTrackTitle">未播放</div>
+      <div class="mini-artist" id="miniTrackArtist">轻触展开全屏播放器</div>
+    </div>
+  </div>
+
+  <div class="mini-center">
+    <button type="button" id="miniBtnPrev" title="上一首"><svg class="icon"><use href="#i-prev"/></svg></button>
+    <button type="button" id="miniBtnPlay" class="play-btn" title="播放 / 暂停"><svg class="icon"><use id="miniPlayIcon" href="#i-play"/></svg></button>
+    <button type="button" id="miniBtnNext" title="下一首"><svg class="icon"><use href="#i-next"/></svg></button>
+  </div>
+
+  <div class="mini-right">
+    <button type="button" id="miniBtnLyrics" class="icon-btn" title="展开歌词"><svg class="icon"><use href="#i-lyrics"/></svg></button>
+    <button type="button" id="miniBtnQueue" class="icon-btn" title="播放队列"><svg class="icon"><use href="#i-queue"/></svg></button>
+    <input id="miniVolumeSlider" type="range" class="mini-vol-slider" min="0" max="1" step="0.01" value="0.8" aria-label="音量">
+  </div>
+</footer>
+
+<!-- FULLSCREEN IMMERSIVE PLAYER (全屏沉浸播放界面) -->
+<section class="fullscreen-player" id="fullscreenPlayer" aria-label="全屏播放器">
+  <div class="fs-backdrop" id="fsBackdrop"></div>
+
+  <div class="fs-topbar">
+    <button type="button" id="btnCloseFullscreen" class="icon-btn" title="收起全屏播放器">
+      <svg class="icon"><use href="#i-chevron-down"/></svg>
+    </button>
+    <div class="pill-switch">
+      <button type="button" id="fsSwitchArtwork" class="active">封面</button>
+      <button type="button" id="fsSwitchLyrics">动态歌词</button>
+    </div>
+    <button type="button" id="fsBtnQueue" class="icon-btn" title="查看队列">
+      <svg class="icon"><use href="#i-queue"/></svg>
+    </button>
+  </div>
+
+  <div class="fs-body">
+    <!-- View A: Large Cover Artwork -->
+    <div class="fs-artwork-container" id="fsArtworkSection">
+      <div class="fs-artwork-box" id="fsArtworkBox" data-letter="♪">
+        <img id="fsArtworkImg" alt="" hidden>
+      </div>
+      <div class="stage-meta">
+        <h2 id="fsTrackTitle">尚未播放</h2>
+        <p id="fsTrackArtist">轻触播放开始享受 Hi-Res 音乐</p>
+      </div>
+    </div>
+
+    <!-- View B: Synced Scrolling Lyrics -->
+    <div class="fs-lyrics-container" id="fsLyricsSection" hidden>
+      <div class="lyrics-empty" id="fsLyricsEmpty">正在载入动态歌词…</div>
+      <div id="fsLyricsList" style="width:100%; display:flex; flex-direction:column; align-items:center;"></div>
+    </div>
+  </div>
+
+  <div class="fs-controls-container">
+    <div class="stage-progress">
+      <input id="fsSeekSlider" type="range" min="0" max="1" step="0.001" value="0">
+      <div class="time-labels">
+        <span id="fsCurrentTime">0:00</span>
+        <span id="fsTotalDuration">0:00</span>
+      </div>
+    </div>
+
+    <div class="stage-transport">
+      <button type="button" id="fsBtnShuffle" class="mode-btn"><svg class="icon"><use href="#i-shuffle"/></svg></button>
+      <button type="button" id="fsBtnPrev"><svg class="icon"><use href="#i-prev"/></svg></button>
+      <button type="button" id="fsBtnPlay" class="play-hero"><svg class="icon"><use id="fsHeroPlayIcon" href="#i-play"/></svg></button>
+      <button type="button" id="fsBtnNext"><svg class="icon"><use href="#i-next"/></svg></button>
+      <button type="button" id="fsBtnRepeat" class="mode-btn"><svg class="icon"><use href="#i-repeat"/></svg></button>
+    </div>
+
+    <div class="volume-row" style="margin:0 auto 12px;">
+      <button type="button" id="fsBtnMute" class="icon-btn"><svg class="icon"><use id="fsVolIcon" href="#i-volume"/></svg></button>
+      <input id="fsVolumeSlider" type="range" min="0" max="1" step="0.01" value="0.8">
+    </div>
+  </div>
+</section>
+
+<!-- CUSTOM MODALS (取代 window.prompt 和原生弹窗) -->
+<div class="modal-overlay" id="customModalOverlay">
+  <div class="modal-box">
+    <h3 class="modal-title" id="customModalTitle">新建歌单</h3>
+    <p class="modal-lead" id="customModalLead">请输入新歌单的名称：</p>
+    <div id="customModalBody">
+      <input id="customModalInput" type="text" style="width:100%; font-size:16px;">
+    </div>
+    <div class="modal-actions">
+      <button type="button" id="btnCustomModalCancel" class="ghost">取消</button>
+      <button type="button" id="btnCustomModalConfirm" class="primary">确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- Floating Toast Container -->
+<div id="toastContainer"></div>
+
+<!-- SVG Icon Symbols Sprite -->
+<svg xmlns="http://www.w3.org/2000/svg" hidden>
+  <symbol id="i-play" viewBox="0 0 24 24"><polygon points="6 3 20 12 6 21 6 3" fill="currentColor"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16" rx="1.5" fill="currentColor"/><rect x="14" y="4" width="4" height="16" rx="1.5" fill="currentColor"/></symbol>
+  <symbol id="i-prev" viewBox="0 0 24 24"><polygon points="19 20 9 12 19 4 19 20" fill="currentColor"/><rect x="5" y="4" width="3" height="16" rx="1.5" fill="currentColor"/></symbol>
+  <symbol id="i-next" viewBox="0 0 24 24"><polygon points="5 4 15 12 5 20 5 4" fill="currentColor"/><rect x="16" y="4" width="3" height="16" rx="1.5" fill="currentColor"/></symbol>
+  <symbol id="i-shuffle" viewBox="0 0 24 24"><path d="M16 3h5v5M4 20l17-17M21 16v5h-5M15 15l6 6M4 4l5 5"/></symbol>
+  <symbol id="i-repeat" viewBox="0 0 24 24"><path d="M17 2l4 4-4 4M3 11V9a4 4 0 0 1 4-4h14M7 22l-4-4 4-4M21 13v2a4 4 0 0 1-4 4H3"/></symbol>
+  <symbol id="i-queue" viewBox="0 0 24 24"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><circle cx="3.5" cy="6" r="1.5" fill="currentColor"/><circle cx="3.5" cy="12" r="1.5" fill="currentColor"/><circle cx="3.5" cy="18" r="1.5" fill="currentColor"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></symbol>
+  <symbol id="i-heart" viewBox="0 0 24 24"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></symbol>
+  <symbol id="i-lyrics" viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></symbol>
+  <symbol id="i-radio" viewBox="0 0 24 24"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49m11.31-2.82a10 10 0 0 1 0 14.14m-14.14 0a10 10 0 0 1 0-14.14"/></symbol>
+  <symbol id="i-volume" viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></symbol>
+  <symbol id="i-volume-mute" viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></symbol>
+  <symbol id="i-chevron-down" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></symbol>
+  <symbol id="i-back" viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></symbol>
+  <symbol id="i-player" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8" fill="currentColor"/></symbol>
+  <symbol id="i-library" viewBox="0 0 24 24"><path d="M12 2v20M17 5v14M7 5v14M2 8v8M22 8v8"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></symbol>
+  <symbol id="i-upload" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></symbol>
+  <symbol id="i-music" viewBox="0 0 24 24"><circle cx="5.5" cy="17.5" r="2.5"/><circle cx="17.5" cy="15.5" r="2.5"/><path d="M8 17.5V6.5l12-2v11"/></symbol>
+  <symbol id="i-cloud" viewBox="0 0 24 24"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></symbol>
+  <symbol id="i-devices" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></symbol>
+</svg>
+
 <script src="/app.js" defer></script>
+</body>
 </html>

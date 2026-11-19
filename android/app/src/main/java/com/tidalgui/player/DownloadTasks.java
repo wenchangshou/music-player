@@ -48,6 +48,70 @@ final class DownloadTasks {
         return quality == 0 || quality == 3 || quality == HIGHEST;
     }
 
+    /** Downloads of TIDAL tracks through this TIDAL login. */
+    static Resolve tidal(TidalClient api) {
+        return new Resolve() {
+            @androidx.annotation.OptIn(markerClass = androidx.media3.common.util.UnstableApi.class)
+            @Override public Audio resolve(long track, int quality) throws Exception {
+                TidalClient.DownloadAudio audio = api.downloadAudio(track, PlaybackService.QUALITIES[quality]);
+                return new Audio(audio.uri, audio.extension, audio.resolution, audio.dash);
+            }
+
+            @Override public JSONObject lyrics(long track) throws Exception {
+                return api.lyrics(track);
+            }
+        };
+    }
+
+    static Resolve netease(NeteaseClient api) {
+        if (api == null) return null;
+        return new Resolve() {
+            @Override public Audio resolve(long track, int quality) throws Exception {
+                NeteaseClient.Audio audio = api.audio(track, quality);
+                NeteaseClient.verifyDownloadQuality(audio, quality);
+                String resolution = NeteaseClient.levelName(audio.actualLevel);
+                if (audio.bitrate > 0) resolution += " · " + audio.bitrate / 1000 + " kbps";
+                return new Audio(audio.stream.uri, audio.format, resolution);
+            }
+
+            @Override public JSONObject lyrics(long track) throws Exception {
+                return api.lyrics(track);
+            }
+        };
+    }
+
+    /** The album with its full metadata, or the fallback when it cannot be read. */
+    static TidalClient.Collection album(TidalClient api, String id, TidalClient.Collection fallback) {
+        try { return api.downloadAlbum(id); }
+        catch (Exception ignored) { return fallback; }
+    }
+
+    /** The tracks with their album title, artist and disc count, for tags and album folders. */
+    static List<TidalClient.Track> withAlbums(TidalClient api, List<TidalClient.Track> selected) throws Exception {
+        java.util.Map<Long, TidalClient.Collection> albums = new java.util.HashMap<>();
+        List<TidalClient.Track> tracks = new ArrayList<>();
+        for (TidalClient.Track track : selected) {
+            if (track.albumId <= 0) {
+                tracks.add(track);
+                continue;
+            }
+            if (!albums.containsKey(track.albumId)) {
+                albums.put(track.albumId, album(api, Long.toString(track.albumId), null));
+            }
+            TidalClient.Collection album = albums.get(track.albumId);
+            if (album == null) {
+                tracks.add(track);
+                continue;
+            }
+            JSONObject data = new JSONObject(track.payload.toString());
+            JSONObject release = data.getJSONObject("album");
+            release.put("title", album.title).put("numberOfVolumes", album.volumes);
+            if (!album.albumArtist.isEmpty()) release.put("artist", new JSONObject().put("name", album.albumArtist));
+            tracks.add(new TidalClient.Track(data));
+        }
+        return tracks;
+    }
+
     enum State { QUEUED, PREPARING, TRANSFERRING, WAITING, COMPLETE, FAILED, CANCELLED }
 
     interface Resolve {
@@ -89,6 +153,11 @@ final class DownloadTasks {
         String resolution = "";
         boolean verifiedLossless;
         boolean checkedDash;
+        /**
+         * The song was already in the local music library, saved some other way: the record only
+         * points at that file, which is never replaced, repaired or given cover and lyrics files.
+         */
+        boolean adopted;
         int number;
         int disc;
         int volumes;
@@ -135,6 +204,7 @@ final class DownloadTasks {
             resolution = saved.optString("resolution");
             verifiedLossless = saved.optBoolean("verifiedLossless");
             checkedDash = saved.optBoolean("checkedDash");
+            adopted = saved.optBoolean("adopted");
             number = saved.optInt("number");
             disc = saved.optInt("disc");
             volumes = saved.optInt("volumes");
@@ -151,7 +221,7 @@ final class DownloadTasks {
                     .put("albumId", albumId).put("albumTitle", albumTitle).put("batch", batch)
                     .put("albumArtist", albumArtist).put("cover", cover).put("totalTracks", totalTracks).put("date", date).put("resolution", resolution).put("verifiedLossless", verifiedLossless).put("checkedDash", checkedDash).put("number", number)
                     .put("disc", disc).put("volumes", volumes)
-                    .put("order", order).put("hidden", hidden);
+                    .put("order", order).put("hidden", hidden).put("adopted", adopted);
         }
 
         boolean active() {
@@ -206,26 +276,140 @@ final class DownloadTasks {
     static final class Downloaded {
         private final Map<String, String> tracks = new java.util.HashMap<>();
         private final Map<String, Integer> albums = new java.util.HashMap<>();
+        /** Songs in the local music library by title and artist, for files with no download record. */
+        private final Map<String, String> named = new java.util.HashMap<>();
+        /** Songs of each local album by album title and album artist. */
+        private final Map<String, Integer> namedAlbums = new java.util.HashMap<>();
 
         private static String source(TidalClient.Track track) {
             return track.isNetease() ? "网易云" : "TIDAL";
         }
 
-        /** "已下载 · Max", or null when the song has not been downloaded. */
+        /** "已下载 · Max", "本地已有", or null when the song is on neither list. */
         String label(TidalClient.Track track) {
             if (track.isLocal()) return null;
             String quality = tracks.get(source(track) + ":" + track.id);
-            return quality == null ? null : quality.isEmpty() ? "已下载" : "已下载 · " + quality;
+            if (quality != null) return quality.isEmpty() ? "已下载" : "已下载 · " + quality;
+            for (String key : nameKeys(track)) if (named.containsKey(key)) return "本地已有";
+            return null;
         }
 
-        /** Songs of this album already downloaded. */
+        /** Songs of this album already downloaded, or found in the local music library. */
         int album(TidalClient.Collection album) {
             Integer count = albums.get((album.isNetease() ? "网易云" : "TIDAL") + ":" + album.id);
-            return count == null ? 0 : count;
+            Integer local = album.kind == TidalClient.Collection.Kind.ALBUM
+                    ? namedAlbums.get(albumKey(album.title, album.albumArtist.isEmpty() ? album.subtitle : album.albumArtist))
+                    : null;
+            return Math.max(count == null ? 0 : count, local == null ? 0 : local);
+        }
+
+        boolean isEmpty() {
+            return tracks.isEmpty() && named.isEmpty();
+        }
+
+        void addLibrary(List<TidalClient.Track> library) {
+            for (TidalClient.Track track : library) {
+                String title = fileTitle(track.title);
+                String key = nameKey(title, track.artist);
+                if (key == null || named.put(key, "") != null) continue;
+                String albumArtist = track.payload.optString("album_artist");
+                String album = albumKey(track.album, albumArtist.isEmpty() ? track.artist : albumArtist);
+                if (album == null) continue;
+                Integer count = namedAlbums.get(album);
+                namedAlbums.put(album, count == null ? 1 : count + 1);
+            }
+        }
+
+        /** Sent to devices that control this one, so their lists mark what is saved here. */
+        JSONObject toJson() throws org.json.JSONException {
+            return new JSONObject().put("tracks", new JSONObject(tracks)).put("albums", new JSONObject(albums))
+                    .put("named", new JSONArray(new ArrayList<>(named.keySet()).subList(0, Math.min(named.size(), 20000))))
+                    .put("namedAlbums", new JSONObject(namedAlbums));
+        }
+
+        static Downloaded fromJson(JSONObject data) {
+            Downloaded result = new Downloaded();
+            if (data == null) return result;
+            JSONObject tracks = data.optJSONObject("tracks");
+            for (java.util.Iterator<String> keys = tracks == null ? null : tracks.keys(); keys != null && keys.hasNext(); ) {
+                String key = keys.next();
+                result.tracks.put(key, tracks.optString(key));
+            }
+            JSONObject albums = data.optJSONObject("albums");
+            for (java.util.Iterator<String> keys = albums == null ? null : albums.keys(); keys != null && keys.hasNext(); ) {
+                String key = keys.next();
+                result.albums.put(key, albums.optInt(key));
+            }
+            JSONArray named = data.optJSONArray("named");
+            for (int i = 0; named != null && i < named.length(); i++) result.named.put(named.optString(i), "");
+            JSONObject namedAlbums = data.optJSONObject("namedAlbums");
+            for (java.util.Iterator<String> keys = namedAlbums == null ? null : namedAlbums.keys(); keys != null && keys.hasNext(); ) {
+                String key = keys.next();
+                result.namedAlbums.put(key, namedAlbums.optInt(key));
+            }
+            return result;
         }
     }
 
-    synchronized Downloaded downloaded() {
+    /** Title and artist as one comparable key, e.g. "yellow|coldplay"; null when either is unknown. */
+    static String nameKey(String title, String artist) {
+        String name = normalize(title);
+        String by = normalize(firstArtist(artist));
+        return name.isEmpty() || by.isEmpty() ? null : name + "|" + by;
+    }
+
+    private static String albumKey(String album, String artist) {
+        String name = normalize(album);
+        String by = normalize(firstArtist(artist));
+        return name.isEmpty() || by.isEmpty() ? null : name + "|" + by;
+    }
+
+    /** Keys a TIDAL or NetEase song may be stored under: with and without its version, e.g. "(Live)". */
+    static List<String> nameKeys(TidalClient.Track track) {
+        List<String> keys = new ArrayList<>();
+        String plain = nameKey(track.title, track.artist);
+        if (plain != null) keys.add(plain);
+        String version = track.payload.optString("version");
+        if (!version.isEmpty() && !"null".equals(version)) {
+            String full = nameKey(track.title + " (" + version + ")", track.artist);
+            if (full != null) keys.add(full);
+        }
+        return keys;
+    }
+
+    private static final java.util.regex.Pattern FILE_NAME = java.util.regex.Pattern.compile(
+            "(?i)^(?:\\d{1,2}-)?\\d{1,3}[ .\\-_]+(.+)\\.(flac|wav|mp3|m4a|aac|ogg|oga|opus|ape|wv|aiff?|alac|dsf|dff|wma)$");
+    private static final java.util.regex.Pattern EXTENSION = java.util.regex.Pattern.compile(
+            "(?i)\\.(flac|wav|mp3|m4a|aac|ogg|oga|opus|ape|wv|aiff?|alac|dsf|dff|wma)$");
+
+    /** A song title; untagged files are titled by file name, e.g. "01. Yellow.flac". */
+    private static String fileTitle(String title) {
+        java.util.regex.Matcher numbered = FILE_NAME.matcher(title);
+        if (numbered.matches()) return numbered.group(1);
+        return EXTENSION.matcher(title).replaceFirst("");
+    }
+
+    private static String firstArtist(String artist) {
+        if (artist == null) return "";
+        return artist.split("\\s*(,|;|&|/|、|，| feat\\.? | ft\\.? )\\s*", 2)[0];
+    }
+
+    private static String normalize(String value) {
+        if (value == null) return "";
+        String text = java.text.Normalizer.normalize(value, java.text.Normalizer.Form.NFKC).toLowerCase(java.util.Locale.ROOT);
+        return text.replaceAll("[\\s\\p{Punct}·・—–‘’“”「」『』《》（）【】]+", "");
+    }
+
+    private Downloaded downloadedCache;
+    private String downloadedStamp = "";
+
+    /**
+     * Saved songs: the download records plus, for files saved some other way or before records
+     * were kept, the local music library. {@code libraryRevision} changes whenever the library does.
+     */
+    synchronized Downloaded downloaded(long libraryRevision) {
+        String stamp = revision + ":" + jobs.size() + ":" + libraryRevision + ":" + (library != null);
+        if (downloadedCache != null && stamp.equals(downloadedStamp)) return downloadedCache;
         Downloaded result = new Downloaded();
         for (Job job : jobs.values()) {
             if (job.state != State.COMPLETE) continue;
@@ -238,7 +422,17 @@ final class DownloadTasks {
                 result.albums.put(albumKey, count == null ? 1 : count + 1);
             }
         }
+        if (library != null) result.addLibrary(library.search("", null));
+        downloadedCache = result;
+        downloadedStamp = stamp;
         return result;
+    }
+
+    private LocalLibrary library;
+
+    /** The local music library, consulted so songs already on the phone are not downloaded again. */
+    synchronized void attach(LocalLibrary library) {
+        this.library = library;
     }
 
     /** Goes up whenever a download adds or removes a file, so file browsers know to reload. */
@@ -301,6 +495,7 @@ final class DownloadTasks {
                 return resolve.lyrics(track);
             }
         };
+        Map<String, TidalClient.Track> libraryIndex = libraryIndex();
         for (int index = 0; index < tracks.size(); index++) {
             TidalClient.Track track = tracks.get(index);
             Job reusable = null;
@@ -326,6 +521,23 @@ final class DownloadTasks {
                 skipped++;
                 continue;
             }
+            TidalClient.Track owned = libraryCopy(track, libraryIndex);
+            if (owned != null) {
+                // Already on the phone, e.g. copied over or downloaded before records were kept.
+                if (failed != null) jobs.remove(failed.id);
+                Job job = new Job(UUID.randomUUID().toString(), track.id, track.title, track.artist, source, quality, directory);
+                assignAlbum(job, track, album, batchId, index, perDisc);
+                job.state = State.COMPLETE;
+                job.document = owned.localUri;
+                job.resolution = "本地已有";
+                job.adopted = true;
+                job.verifiedLossless = true;
+                job.checkedDash = true;
+                jobs.put(job.id, job);
+                revision++;
+                skipped++;
+                continue;
+            }
             if (failed != null) {
                 if (album != null) assignAlbum(failed, track, album, batchId, index, perDisc);
                 reset(failed, directory, batch);
@@ -338,6 +550,34 @@ final class DownloadTasks {
         }
         save();
         return skipped;
+    }
+
+    /** Local music library songs by title and artist (see {@link #nameKey}). */
+    private Map<String, TidalClient.Track> libraryIndex() {
+        Map<String, TidalClient.Track> index = new java.util.HashMap<>();
+        if (library == null) return index;
+        for (TidalClient.Track track : library.search("", null)) {
+            if (track.localUri == null) continue;
+            String key = nameKey(fileTitle(track.title), track.artist);
+            if (key != null && !index.containsKey(key)) index.put(key, track);
+        }
+        return index;
+    }
+
+    private TidalClient.Track libraryCopy(TidalClient.Track track, Map<String, TidalClient.Track> index) {
+        for (String key : nameKeys(track)) {
+            TidalClient.Track owned = index.get(key);
+            if (owned != null && openable(owned.localUri)) return owned;
+        }
+        return null;
+    }
+
+    private boolean openable(Uri uri) {
+        try (android.content.res.AssetFileDescriptor file = context.getContentResolver().openAssetFileDescriptor(uri, "r")) {
+            return file != null;
+        } catch (Exception missing) {
+            return false;
+        }
     }
 
     private void assignAlbum(Job job, TidalClient.Track track, TidalClient.Collection album, String batch, int index,
@@ -385,6 +625,7 @@ final class DownloadTasks {
      * .lrc. Runs on the download queue.
      */
     private void verify(Job job, Resolve resolve) {
+        if (job.adopted) return;
         Uri file = available(job);
         if (file == null) return;
         int attempt = job.attempt;
@@ -438,6 +679,7 @@ final class DownloadTasks {
             save();
         }
         try {
+            if (adoptSaved(job, attempt, directory, resolve)) return;
             Audio audio = resolveQuality(resolve, job.track, job.quality);
             if (!audio.format.matches("mp3|flac|m4a|aac|wav|ogg|opus")) throw new IOException("未知音频格式");
             synchronized (this) {
@@ -490,6 +732,44 @@ final class DownloadTasks {
                 save();
             }
         }
+    }
+
+    /**
+     * When the song's file is already where this download would save it (with no record of it,
+     * e.g. after the records were cleared), keep that file instead of downloading it again. Files
+     * without tags or cover, from before tagging, are replaced.
+     */
+    private boolean adoptSaved(Job job, int attempt, Uri directory, Resolve resolve) {
+        Uri found;
+        try {
+            found = MusicDownload.saved(context, job, directory);
+        } catch (Exception unreadable) {
+            return false;
+        }
+        if (found == null) return false;
+        boolean tagged;
+        try (java.io.InputStream input = context.getContentResolver().openInputStream(found)) {
+            tagged = input != null && AudioTags.complete(input);
+        } catch (Exception unreadable) {
+            return false;
+        }
+        synchronized (this) {
+            if (!current(job, attempt)) return true;
+            if (!tagged) {
+                deleteDocument(found);
+                return false;
+            }
+            job.document = found;
+            job.state = State.COMPLETE;
+            job.resolution = "已存在";
+            job.verifiedLossless = requiresLossless(job.quality);
+            job.checkedDash = true;
+            revision++;
+            save();
+        }
+        MusicDownload.saveExtras(context, job, MusicDownload.extension(context, found), directory, found, resolve);
+        synchronized (this) { revision++; }
+        return true;
     }
 
     private boolean current(Job job, int attempt) {

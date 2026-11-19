@@ -116,6 +116,7 @@ public final class PlaybackService extends MediaSessionService {
         super.onCreate();
         settings = getSharedPreferences("tidal", MODE_PRIVATE);
         localLibrary = new LocalLibrary(this);
+        DownloadTasks.get(this).attach(localLibrary);
         remoteSettings = getSharedPreferences("lan_remote", MODE_PRIVATE);
         remoteRequested = remoteSettings.getBoolean("enabled", false);
         remoteFiles = remoteSettings.getBoolean("files", false) && localLibrary.hasFolders();
@@ -917,11 +918,15 @@ public final class PlaybackService extends MediaSessionService {
 
     static JSONObject remoteTrack(TidalClient.Track track) throws org.json.JSONException {
         Uri cover = TidalClient.artwork(track.cover, 640);
+        String coverUrl = cover == null ? "" : cover.toString();
+        if (coverUrl.isEmpty() && track.isLocal()) {
+            coverUrl = "/api/artwork/" + track.id;
+        }
         return new JSONObject().put("id", track.id).put("title", track.title)
                 .put("artist", track.artist).put("album", track.album)
                 .put("source", track.isLocal() ? "本地音乐" : track.isNetease() ? "网易云" : "TIDAL")
                 .put("kind", track.isLocal() ? "local" : track.isNetease() ? "netease" : "tidal")
-                .put("cover", cover == null ? "" : cover.toString());
+                .put("cover", coverUrl);
     }
 
     JSONObject remoteSnapshot() throws org.json.JSONException {

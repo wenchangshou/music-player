@@ -183,9 +183,54 @@ final class TidalClient {
     private volatile Session session;
     private final android.content.SharedPreferences preferences;
 
+    /** Sends TIDAL API requests to another device of the player account, which is signed in. */
+    interface Proxy {
+        String request(String method, String path, String form) throws Exception;
+    }
+
+    private final Proxy proxy;
+
     TidalClient(Session session, android.content.SharedPreferences preferences) {
         this.session = session;
         this.preferences = preferences;
+        proxy = null;
+    }
+
+    /** A client without a TIDAL login of its own: every request is answered by the controlled device. */
+    TidalClient(Proxy proxy) {
+        session = null;
+        preferences = null;
+        this.proxy = proxy;
+    }
+
+    boolean proxied() { return proxy != null; }
+
+    /** The signed-in user in API paths; "{user}" when proxied, which the answering device fills in. */
+    private String user() {
+        return proxy != null ? "{user}" : session.userId;
+    }
+
+    private static final java.util.regex.Pattern FORWARDED = java.util.regex.Pattern.compile(
+            "(search|tracks|albums|artists|playlists|mixes|pages|users/\\{user\\})(/[A-Za-z0-9_./-]*)?(\\?[^#\\s]*)?");
+
+    /**
+     * Answer a TIDAL API request made by another device of the player account that has no TIDAL
+     * login. Only catalogue and library reads, and favourite changes, are allowed: never stream or
+     * download URLs, which this device fetches itself.
+     */
+    String forward(String method, String path, String form) throws Exception {
+        String lower = path.toLowerCase(java.util.Locale.ROOT);
+        if (path.length() > 800 || !FORWARDED.matcher(path).matches() || path.contains("..")
+                || lower.contains("playbackinfo") || lower.contains("streamurl") || lower.contains("urlpostpaywall")
+                || lower.contains("countrycode=")) {
+            throw new IOException("不支持的 TIDAL 请求");
+        }
+        boolean favourite = path.startsWith("users/{user}/favorites/");
+        if (!"GET".equals(method) && !(favourite && ("POST".equals(method) || "DELETE".equals(method)))) {
+            throw new IOException("不支持的 TIDAL 请求");
+        }
+        if (form != null && form.length() > 400) throw new IOException("请求内容过长");
+        return request(method, path.replace("{user}", session.userId), "POST".equals(method) ? form : null);
     }
 
     synchronized boolean updateDesktopSession(Session account) throws Exception {
@@ -203,7 +248,7 @@ final class TidalClient {
 
     boolean hasHiResSession() {
         Session account = session;
-        return !account.hiresToken.isEmpty() && account.hiresExpiresAt > System.currentTimeMillis() / 1000;
+        return account != null && !account.hiresToken.isEmpty() && account.hiresExpiresAt > System.currentTimeMillis() / 1000;
     }
 
     synchronized void syncHiResOnly(Session account) throws Exception {
@@ -287,7 +332,7 @@ final class TidalClient {
     }
 
     List<Track> favorites(int offset) throws Exception {
-        JSONObject data = get("users/" + session.userId
+        JSONObject data = get("users/" + user()
                 + "/favorites/tracks?order=DATE&orderDirection=DESC&limit=50&offset=" + offset);
         return tracks(data.getJSONArray("items"));
     }
@@ -302,9 +347,9 @@ final class TidalClient {
         String page = "?limit=40&offset=" + offset;
         JSONObject data;
         if (own) {
-            data = get("users/" + session.userId + "/playlists" + page);
+            data = get("users/" + user() + "/playlists" + page);
         } else if (term.isEmpty()) {
-            data = get("users/" + session.userId + "/favorites/" + type + page + "&order=DATE&orderDirection=DESC");
+            data = get("users/" + user() + "/favorites/" + type + page + "&order=DATE&orderDirection=DESC");
         } else {
             data = get("search" + page + "&types=" + type.toUpperCase(java.util.Locale.ROOT)
                     + "&query=" + Uri.encode(term)).getJSONObject(type);
@@ -514,7 +559,7 @@ final class TidalClient {
     }
 
     void favorite(long id, boolean add) throws Exception {
-        String path = "users/" + session.userId + "/favorites/tracks";
+        String path = "users/" + user() + "/favorites/tracks";
         request(add ? "POST" : "DELETE", add ? path : path + "/" + id,
                 add ? "trackIds=" + id + "&onArtifactNotFound=FAIL" : null);
     }
@@ -581,6 +626,7 @@ final class TidalClient {
     }
 
     private String request(String method, String path, String form) throws Exception {
+        if (proxy != null) return proxy.request(method, path, form);
         String token = accessToken(null);
         try {
             return request(method, path, form, token);

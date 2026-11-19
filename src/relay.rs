@@ -156,6 +156,8 @@ impl Relay {
                         {
                             let payload = if body["op"] == "search" {
                                 search(&api, body)
+                            } else if body["op"] == "tidal" {
+                                forward(&api, body)
                             } else {
                                 let body = match prepare(&api, body.clone()) {
                                     Ok(body) => body,
@@ -366,6 +368,21 @@ fn prepare(api: &TidalApi, mut command: Value) -> Result<Value, String> {
     Ok(command)
 }
 
+/// A TIDAL request from another device of the account, answered with this device's login.
+fn forward(api: &TidalApi, command: &Value) -> Value {
+    if !api.is_authenticated() {
+        return json!({"error": "此设备尚未登录 TIDAL"});
+    }
+    let method = command["method"].as_str().unwrap_or("GET");
+    let Some(path) = command["path"].as_str() else { return json!({"error": "请求无效"}) };
+    match api.forward(method, path, command["form"].as_str()) {
+        // Replies travel through the relay, which accepts device requests of up to 1 MB.
+        Ok(body) if body.len() > 900 * 1024 => json!({"error": "TIDAL 返回的内容过多，无法通过远程连接传送"}),
+        Ok(body) => json!({"body": body}),
+        Err(error) => json!({"error": error}),
+    }
+}
+
 fn search(api: &TidalApi, command: &Value) -> Value {
     let query = command["query"].as_str().unwrap_or("").trim();
     if query.is_empty() || query.chars().count() > 160 {
@@ -418,7 +435,7 @@ pub fn snapshot(playback: &Playback, logged_in: bool) -> Value {
         "playing": player.active && !player.paused, "loading": playback.is_loading(),
         "position": (player.position.max(0.0) * 1000.0) as u64,
         "duration": (player.duration.max(0.0) * 1000.0) as u64, "seekable": player.active && player.duration > 0.0,
-        "loggedIn": logged_in, "version": env!("CARGO_PKG_VERSION"), "volume": playback.player.volume.round(), "requestedQuality": playback.quality.api_name(), "requestedNetease": playback.netease_level, "shuffle": playback.shuffle, "error": player.error,
+        "loggedIn": logged_in, "features": ["tidal", "downloads"], "version": env!("CARGO_PKG_VERSION"), "volume": playback.player.volume.round(), "requestedQuality": playback.quality.api_name(), "requestedNetease": playback.netease_level, "shuffle": playback.shuffle, "error": player.error,
         "actualQuality": playback.stream.as_ref().map(|stream| stream.quality.as_str()).unwrap_or(""),
         "resolution": playback.stream.as_ref().map(stream_resolution).unwrap_or_default(),
         "repeat": match playback.repeat { Repeat::Off => 0, Repeat::All => 1, Repeat::One => 2 }})

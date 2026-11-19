@@ -87,6 +87,10 @@ pub struct RemoteState {
     pub source_path: Option<String>,
     /// The 网易云 level the device asks for (see `netease::PLAY_LEVELS`).
     pub requested_netease: Option<String>,
+    /// The device is signed in to TIDAL and lets this one browse and download through it.
+    pub lends_tidal: bool,
+    /// The device runs downloads for this one and lists them.
+    pub downloads: bool,
     received: Instant,
 }
 
@@ -122,6 +126,8 @@ impl RemoteState {
                 None => label.to_owned(),
             }
         }));
+        let features: Vec<&str> = value["features"].as_array().map(Vec::as_slice).unwrap_or_default()
+            .iter().filter_map(Value::as_str).collect();
         Some(Self {
             queue,
             revision: value["revision"].clone(),
@@ -142,6 +148,8 @@ impl RemoteState {
             volume: value["volume"].as_f64().map(|volume| volume.clamp(0.0, 100.0) as f32),
             requested: value["requestedQuality"].as_str().and_then(stream_quality),
             requested_netease: value["requestedNetease"].as_str().filter(|level| !level.is_empty()).map(str::to_owned),
+            lends_tidal: value["loggedIn"] == true && features.contains(&"tidal"),
+            downloads: features.contains(&"downloads"),
             source_path: value["sourcePath"].as_str().filter(|path| !path.is_empty()).map(str::to_owned),
             received: Instant::now(),
         })
@@ -395,6 +403,11 @@ pub struct Remote {
     commands: VecDeque<Value>,
     pub command_busy: bool,
     pub library: LibraryView,
+    /// The controlled device's download list while the downloads page shows it.
+    pub downloads: Option<Value>,
+    pub downloads_error: Option<String>,
+    pub downloads_busy: bool,
+    pub last_downloads: Option<Instant>,
 }
 
 impl Remote {
@@ -420,6 +433,10 @@ impl Remote {
             commands: VecDeque::new(),
             command_busy: false,
             library: LibraryView::default(),
+            downloads: None,
+            downloads_error: None,
+            downloads_busy: false,
+            last_downloads: None,
         })
     }
 
@@ -451,6 +468,15 @@ impl Remote {
         self.state_busy = false;
         self.command_busy = false;
         self.library = LibraryView::default();
+        self.downloads = None;
+        self.downloads_error = None;
+        self.downloads_busy = false;
+        self.last_downloads = None;
+    }
+
+    /// Downloads run on the controlled device and the downloads page lists them.
+    pub fn remote_downloads(&self) -> bool {
+        self.target.is_some() && self.state.as_ref().is_some_and(|state| state.downloads)
     }
 
     pub fn devices_due(&self, period: Duration) -> bool {

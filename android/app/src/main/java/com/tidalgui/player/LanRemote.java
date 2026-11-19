@@ -86,10 +86,10 @@ final class LanRemote implements AutoCloseable {
         code = settings.getString("code", "");
         key = settings.getString("key", "");
         try (java.io.InputStream input = playback.getAssets().open("remote/index.html")) {
-            page = TidalClient.readText(input, 65536).getBytes(StandardCharsets.UTF_8);
+            page = TidalClient.readText(input, 524288).getBytes(StandardCharsets.UTF_8);
         }
         try (java.io.InputStream input = playback.getAssets().open("remote/app.js")) {
-            script = TidalClient.readText(input, 65536).getBytes(StandardCharsets.UTF_8);
+            script = TidalClient.readText(input, 524288).getBytes(StandardCharsets.UTF_8);
         }
         server = new ServerSocket();
         try {
@@ -237,6 +237,25 @@ final class LanRemote implements AutoCloseable {
             }
             if ("GET".equals(request[0]) && "/app.js".equals(request[1])) {
                 respond(connection, 200, "text/javascript; charset=utf-8", script);
+                return;
+            }
+            if ("GET".equals(request[0]) && request[1].startsWith("/api/artwork/")) {
+                try {
+                    long id = Long.parseLong(request[1].substring("/api/artwork/".length()));
+                    TidalClient.Track track = onMain(() -> {
+                        TidalClient.Track cur = playback.current();
+                        if (cur != null && cur.id == id) return cur;
+                        return playback.localLibrary.track(id);
+                    });
+                    if (track != null && track.isLocal()) {
+                        byte[] jpeg = ArtworkLoader.localJpeg(playback, track.localUri, 640, 300 * 1024);
+                        if (jpeg != null && jpeg.length > 0) {
+                            respond(connection, 200, "image/jpeg", jpeg);
+                            return;
+                        }
+                    }
+                } catch (Exception ignored) {}
+                respond(connection, 404, "text/plain", bytes("Not found"));
                 return;
             }
             if ("POST".equals(request[0]) && "/api/pair".equals(request[1])) {
@@ -538,7 +557,7 @@ final class LanRemote implements AutoCloseable {
                 + "Content-Type: " + type + "\r\nContent-Length: " + body.length
                 + "\r\nConnection: close\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer"
                 + "\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY"
-                + "\r\nContent-Security-Policy: default-src 'none'; script-src 'self'; connect-src 'self'; img-src 'self' https://resources.tidal.com; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'\r\n\r\n"));
+                + "\r\nContent-Security-Policy: default-src 'none'; script-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data: https: http:; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'\r\n\r\n"));
         socket.getOutputStream().write(body);
     }
 

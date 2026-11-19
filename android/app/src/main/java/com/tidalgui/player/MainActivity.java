@@ -33,6 +33,7 @@ import androidx.media3.common.util.UnstableApi;
 
 import com.tidalgui.player.LocalLibrary.LocalGroup;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.IOException;
@@ -303,7 +304,7 @@ public final class MainActivity extends ComponentActivity {
             }
             long now = android.os.SystemClock.uptimeMillis();
             if (page == Page.DOWNLOADS && now >= downloadNextRefresh) {
-                downloadNextRefresh = now + 1000;
+                downloadNextRefresh = now + (visibleRemoteDownloads ? 2000 : 1000);
                 refreshDownloads();
             }
             handler.postDelayed(this, 300);
@@ -463,7 +464,7 @@ public final class MainActivity extends ComponentActivity {
 
     private void render() {
         syncDevices();
-        downloaded = downloadTasks.downloaded();
+        downloaded = shownDownloads();
         visibleRemoteTarget = devices == null ? null : devices.target;
         visibleDevices = devicesSignature();
         visibleRemoteQueue = remoteQueueSignature();
@@ -480,7 +481,7 @@ public final class MainActivity extends ComponentActivity {
         visibleQueueIndex = playback == null ? -1 : playback.index;
         visibleQueueRevision = playback == null ? -1 : playback.queueRevision;
         visibleRemoteLink = playback == null ? "" : playback.remoteLink();
-        visibleAccount = playback == null ? null : playback.client;
+        visibleAccount = tidalApi();
         lyrics = null;
         lyricsPane = null;
         if (page == Page.PLAYER) {
@@ -801,7 +802,7 @@ public final class MainActivity extends ComponentActivity {
 
     private void loadPersonalHome(SearchSource source, NeteaseClient netease,
                                   android.content.SharedPreferences prefs) {
-        TidalClient tidal = playback == null ? null : playback.client;
+        TidalClient tidal = tidalApi();
         List<?> key = source == SearchSource.TIDAL ? java.util.Arrays.asList(source, tidal)
                 : java.util.Arrays.asList(source, prefs.getString(NeteaseClient.SETTING, ""),
                         prefs.getString(NeteaseClient.SESSION, ""));
@@ -861,7 +862,7 @@ public final class MainActivity extends ComponentActivity {
         boolean tidal = source == SearchSource.TIDAL;
         android.content.SharedPreferences prefs = getSharedPreferences("tidal", MODE_PRIVATE);
         NeteaseClient netease = new NeteaseClient(prefs);
-        boolean signedIn = tidal ? playback != null && playback.client != null : netease.signedIn();
+        boolean signedIn = tidal ? tidalApi() != null : netease.signedIn();
         loadPersonalHome(source, netease, prefs);
 
         List<TidalClient.Track> recent = new ArrayList<>();
@@ -1147,8 +1148,9 @@ public final class MainActivity extends ComponentActivity {
     }
 
     private void sources() {
-        boolean loggedIn = playback != null && playback.client != null;
-        LinearLayout tidal = panel("TIDAL", loggedIn ? "已连接 · Hi-Res 无损、收藏与歌单" : "在 TIDAL 网页授权一次即可，无需电脑。");
+        boolean loggedIn = tidalApi() != null;
+        LinearLayout tidal = panel("TIDAL", borrowsTidal() ? "使用「" + devices.targetName() + "」的登录 · 浏览、收藏和下载都经由该设备"
+                : loggedIn ? "已连接 · Hi-Res 无损、收藏与歌单" : "在 TIDAL 网页授权一次即可，无需电脑。");
         Button enterTidal = withIcon(loggedIn ? primary("进入 TIDAL", () -> enterSource(SearchSource.TIDAL))
                 : secondary("浏览", () -> enterSource(SearchSource.TIDAL)), "forward", loggedIn ? BG : ACCENT);
         tidal.addView(loggedIn ? toolbar(enterTidal, secondary("账号设置", () -> open(Page.ACCOUNT)))
@@ -1693,7 +1695,7 @@ public final class MainActivity extends ComponentActivity {
             render();
             return;
         }
-        TidalClient api = playback == null ? null : playback.client;
+        TidalClient api = tidalApi();
         boolean useNetease = page == Page.SEARCH && searchSource == SearchSource.NETEASE
                 || page == Page.COLLECTION && collection.isNetease();
         NeteaseClient netease = playback == null ? null : playback.netease();
@@ -2058,6 +2060,10 @@ public final class MainActivity extends ComponentActivity {
     }
 
     private void chooseTidalDownload(TidalClient.Collection album, List<TidalClient.Track> selected) {
+        if (remoteDownloads()) {
+            remoteDownload(album, selected);
+            return;
+        }
         TidalClient api = playback == null ? null : playback.client;
         if (api == null) {
             toast("请先登录 TIDAL");
@@ -2072,9 +2078,9 @@ public final class MainActivity extends ComponentActivity {
                     List<TidalClient.Track> items;
                     TidalClient.Collection metadata = album;
                     if (album != null) {
-                        metadata = tryDownloadAlbum(api, album.id, album);
+                        metadata = DownloadTasks.album(api, album.id, album);
                         items = api.albumTracks(metadata);
-                    } else items = enrichDownloadTracks(api, selected);
+                    } else items = DownloadTasks.withAlbums(api, selected);
                     if (items.isEmpty()) throw new IOException("暂无可下载的曲目");
                     int skipped = downloadTasks.add(items, "TIDAL", quality, directory, resolve, metadata);
                     handler.post(() -> showQueuedDownloads(skipped));
@@ -2087,34 +2093,146 @@ public final class MainActivity extends ComponentActivity {
         });
     }
 
-    private TidalClient.Collection tryDownloadAlbum(TidalClient api, String id, TidalClient.Collection fallback) {
-        try { return api.downloadAlbum(id); }
-        catch (Exception ignored) { return fallback; }
+    private static final String[] REMOTE_DOWNLOAD_QUALITIES = {"BEST", "HI_RES_LOSSLESS", "LOSSLESS", "HIGH", "LOW"};
+
+    /** Download on the controlled device, with its TIDAL login and into its download folder. */
+    private void remoteDownload(TidalClient.Collection album, List<TidalClient.Track> selected) {
+        JSONArray ids = new JSONArray();
+        if (album == null) {
+            for (TidalClient.Track track : selected) {
+                if (track.needsTidal() && !track.isNetease() && track.id > 0 && ids.length() < 100) ids.put(track.id);
+            }
+            if (ids.length() == 0) {
+                toast("没有可在远程设备下载的 TIDAL 歌曲");
+                return;
+            }
+        }
+        String device = devices.targetName();
+        String[] names = {"最高可用（Max 或 High）", "Max", "High", "Low", "Low 96k"};
+        int[] choice = {0};
+        String what = album == null ? ids.length() + " 首歌曲" : "专辑「" + album.title + "」";
+        new AlertDialog.Builder(this).setTitle("在「" + device + "」下载" + what)
+                .setSingleChoiceItems(names, 0, (dialog, which) -> choice[0] = which)
+                .setNegativeButton("取消", null)
+                .setPositiveButton("开始下载", (dialog, button) -> {
+                    try {
+                        JSONObject command = new JSONObject().put("op", "download")
+                                .put("quality", REMOTE_DOWNLOAD_QUALITIES[choice[0]]);
+                        if (album != null) command.put("album", album.id);
+                        else command.put("ids", ids);
+                        toast("正在发送到 " + device);
+                        devices.query(command, (result, error) -> {
+                            if (isDestroyed()) return;
+                            if (!error.isEmpty()) {
+                                toast("下载失败 · " + error);
+                                return;
+                            }
+                            int skipped = result.optInt("skipped");
+                            int queued = result.optInt("queued", -1);
+                            toast(queued < 0 ? "已在 " + device + " 加入下载"
+                                    : "已在 " + device + " 加入 " + queued + " 首" + (skipped > 0 ? "，" + skipped + " 首已下载" : ""));
+                            remoteDownloadList = result;
+                            open(Page.DOWNLOADS);
+                        });
+                    } catch (org.json.JSONException ignored) {}
+                }).show();
     }
 
-    private List<TidalClient.Track> enrichDownloadTracks(TidalClient api, List<TidalClient.Track> selected) throws Exception {
-        java.util.Map<Long, TidalClient.Collection> albums = new java.util.HashMap<>();
-        List<TidalClient.Track> tracks = new ArrayList<>();
-        for (TidalClient.Track track : selected) {
-            if (track.albumId <= 0) {
-                tracks.add(track);
-                continue;
-            }
-            if (!albums.containsKey(track.albumId)) {
-                albums.put(track.albumId, tryDownloadAlbum(api, Long.toString(track.albumId), null));
-            }
-            TidalClient.Collection album = albums.get(track.albumId);
-            if (album == null) {
-                tracks.add(track);
-                continue;
-            }
-            JSONObject data = new JSONObject(track.payload.toString());
-            JSONObject release = data.getJSONObject("album");
-            release.put("title", album.title).put("numberOfVolumes", album.volumes);
-            if (!album.albumArtist.isEmpty()) release.put("artist", new JSONObject().put("name", album.albumArtist));
-            tracks.add(new TidalClient.Track(data));
+    /** What the controlled device has saved, so lists here mark its downloads rather than this phone's. */
+    private DownloadTasks.Downloaded remoteMarks;
+    private String remoteMarksKey = "";
+    private long remoteMarksAt;
+    private boolean remoteMarksBusy;
+
+    private DownloadTasks.Downloaded shownDownloads() {
+        if (remoteDownloads()) return remoteMarks;
+        return downloadTasks.downloaded(playback == null ? -1 : playback.localRevision);
+    }
+
+    /** Fetch the controlled device's saved songs when they may have changed. */
+    private void syncRemoteMarks() {
+        if (!remoteDownloads() || remoteMarksBusy) return;
+        String key = devices.target + ":" + devices.state.filesRevision;
+        long now = android.os.SystemClock.elapsedRealtime();
+        // Desktop devices report no files revision, so refresh theirs now and then.
+        if (key.equals(remoteMarksKey) && (remoteMarks != null && (!devices.state.filesRevision.isEmpty()
+                || now - remoteMarksAt < 60_000))) return;
+        remoteMarksBusy = true;
+        String target = devices.target;
+        try {
+            devices.query(new JSONObject().put("op", "downloads").put("action", "marks"), (result, error) -> {
+                remoteMarksBusy = false;
+                remoteMarksAt = android.os.SystemClock.elapsedRealtime();
+                remoteMarksKey = key;
+                if (!error.isEmpty() || devices == null || !target.equals(devices.target)) return;
+                boolean first = remoteMarks == null;
+                remoteMarks = DownloadTasks.Downloaded.fromJson(result.optJSONObject("marks"));
+                downloaded = remoteMarks;
+                // Later changes show on the next page, so browsing is not interrupted while it downloads.
+                if (first && (page == Page.COLLECTION || page == Page.SEARCH || page == Page.LIBRARY || page == Page.HOME)) render();
+            });
+        } catch (org.json.JSONException ignored) {
+            remoteMarksBusy = false;
         }
-        return tracks;
+    }
+
+    /** The controlled device's latest download list, while the downloads page shows it. */
+    private JSONObject remoteDownloadList;
+    private boolean visibleRemoteDownloads;
+
+    private void remoteDownloadsArrived(JSONObject result) {
+        remoteDownloadList = result;
+        if (page != Page.DOWNLOADS || isDestroyed() || !visibleRemoteDownloads) return;
+        if (remoteParallelRow != null) {
+            String label = remoteParallelLabel();
+            if (!TextUtils.equals(remoteParallelRow.getText(), label)) remoteParallelRow.setText(label);
+        }
+        showDownloadRows(RemoteTidal.parse(result));
+    }
+
+    private TextView remoteParallelRow;
+
+    private String remoteParallelLabel() {
+        int parallel = remoteDownloadList == null ? 0 : remoteDownloadList.optInt("parallel");
+        return parallel > 0 ? "同时下载 · " + parallel + " 首" : "同时下载";
+    }
+
+    private void remoteDownloadAction(String action, String id) {
+        if (!remoteDownloads()) return;
+        try {
+            JSONObject command = new JSONObject().put("op", "downloads").put("action", action);
+            if (id != null) command.put("id", id);
+            devices.query(command, (result, error) -> {
+                if (!error.isEmpty()) toast(error);
+                else remoteDownloadsArrived(result);
+            });
+        } catch (org.json.JSONException ignored) {}
+    }
+
+    private void playRemoteDownload(DownloadTasks.Job job) {
+        try {
+            if (devices.send(new JSONObject().put("op", "tracks").put("ids", new JSONArray().put(job.track))
+                    .put("index", 0).put("mode", "play"))) toast("正在 " + devices.targetName() + " 播放：" + job.title);
+        } catch (org.json.JSONException ignored) {}
+    }
+
+    private void chooseRemoteParallel() {
+        int max = remoteDownloadList == null ? DownloadTasks.MAX_PARALLEL
+                : Math.max(1, remoteDownloadList.optInt("maxParallel", DownloadTasks.MAX_PARALLEL));
+        int current = remoteDownloadList == null ? 0 : remoteDownloadList.optInt("parallel");
+        String[] choices = new String[max];
+        for (int i = 0; i < max; i++) choices[i] = (i + 1) + " 首" + (i == 0 ? "（逐首下载）" : "");
+        new AlertDialog.Builder(this).setTitle(devices.targetName() + " · 同时下载")
+                .setSingleChoiceItems(choices, Math.max(-1, current - 1), (dialog, choice) -> {
+                    dialog.dismiss();
+                    try {
+                        devices.query(new JSONObject().put("op", "downloads").put("action", "parallel").put("count", choice + 1),
+                                (result, error) -> {
+                                    if (!error.isEmpty()) toast(error);
+                                    else remoteDownloadsArrived(result);
+                                });
+                    } catch (org.json.JSONException ignored) {}
+                }).setNegativeButton("取消", null).show();
     }
 
     private void downloadChoices(String title, int quality, Uri directory, DownloadChoice callback) {
@@ -2205,38 +2323,27 @@ public final class MainActivity extends ComponentActivity {
 
     private DownloadTasks.Resolve downloadResolver(String source) {
         if (playback == null) return null;
-        if ("网易云".equals(source)) {
-            NeteaseClient api = playback.netease();
-            if (api == null) return null;
-            return new DownloadTasks.Resolve() {
-                @Override public DownloadTasks.Audio resolve(long track, int quality) throws Exception {
-                    NeteaseClient.Audio audio = api.audio(track, quality);
-                    NeteaseClient.verifyDownloadQuality(audio, quality);
-                    String resolution = NeteaseClient.levelName(audio.actualLevel);
-                    if (audio.bitrate > 0) resolution += " · " + audio.bitrate / 1000 + " kbps";
-                    return new DownloadTasks.Audio(audio.stream.uri, audio.format, resolution);
-                }
-
-                @Override public JSONObject lyrics(long track) throws Exception {
-                    return api.lyrics(track);
-                }
-            };
-        }
-        TidalClient api = playback.client;
-        if (api == null) return null;
-        return new DownloadTasks.Resolve() {
-            @Override public DownloadTasks.Audio resolve(long track, int quality) throws Exception {
-                TidalClient.DownloadAudio audio = api.downloadAudio(track, PlaybackService.QUALITIES[quality]);
-                return new DownloadTasks.Audio(audio.uri, audio.extension, audio.resolution, audio.dash);
-            }
-
-            @Override public JSONObject lyrics(long track) throws Exception {
-                return api.lyrics(track);
-            }
-        };
+        if ("网易云".equals(source)) return DownloadTasks.netease(playback.netease());
+        return playback.client == null ? null : DownloadTasks.tidal(playback.client);
     }
 
     private void downloadsPage() {
+        visibleRemoteDownloads = remoteDownloads();
+        remoteParallelRow = null;
+        if (visibleRemoteDownloads) {
+            TextView where = text("正在查看「" + devices.targetName() + "」上的下载，文件保存在该设备", 13, ACCENT, true);
+            where.setPadding(dp(2), 0, dp(2), dp(8));
+            content.addView(where);
+            Button row = menuRow(remoteParallelLabel(), "设置该设备同时下载的歌曲数", this::chooseRemoteParallel);
+            content.addView(row);
+            remoteParallelRow = row;
+            downloadRows = column();
+            content.addView(downloadRows);
+            downloadSignature = null;
+            if (remoteDownloadList != null) showDownloadRows(RemoteTidal.parse(remoteDownloadList));
+            refreshDownloads();
+            return;
+        }
         content.addView(menuRow("同时下载 · " + downloadTasks.parallel() + " 首", "设置同时下载的歌曲数",
                 this::chooseParallelDownloads));
         downloadRows = column();
@@ -2262,6 +2369,19 @@ public final class MainActivity extends ComponentActivity {
 
     private void refreshDownloads() {
         if (downloadRefreshPending || page != Page.DOWNLOADS) return;
+        if (visibleRemoteDownloads) {
+            if (!remoteDownloads()) return;
+            downloadRefreshPending = true;
+            try {
+                devices.query(new JSONObject().put("op", "downloads").put("action", "list"), (result, error) -> {
+                    downloadRefreshPending = false;
+                    if (error.isEmpty()) remoteDownloadsArrived(result);
+                });
+            } catch (org.json.JSONException ignored) {
+                downloadRefreshPending = false;
+            }
+            return;
+        }
         downloadRefreshPending = true;
         worker.submit(() -> {
             List<DownloadTasks.Job> jobs = downloadTasks.snapshot();
@@ -2318,7 +2438,7 @@ public final class MainActivity extends ComponentActivity {
             filter.addView(tab, params);
         }
 
-        if (!visible.isEmpty() || selectingDownloads) showDownloadSelection(jobs, visible);
+        if (!visibleRemoteDownloads && (!visible.isEmpty() || selectingDownloads)) showDownloadSelection(jobs, visible);
         if (counts[downloadFilter] == 0) {
             panel(downloadRows, downloadFilter == 0 ? "暂无下载任务" : "暂无" + labels[downloadFilter] + "任务",
                     downloadFilter == 0 ? "下载歌曲或专辑后，可在这里查看进度。" : "");
@@ -2383,6 +2503,10 @@ public final class MainActivity extends ComponentActivity {
             showDownloadRows(jobs);
         }));
         if (!failed.isEmpty()) actions.addView(action("只重试失败项", "重试 " + first.albumTitle + " 的失败下载", () -> {
+            if (visibleRemoteDownloads) {
+                for (DownloadTasks.Job job : failed) remoteDownloadAction("retry", job.id);
+                return;
+            }
             DownloadTasks.Resolve resolve = downloadResolver(first.source);
             if (resolve == null) {
                 toast("请先连接 " + first.source);
@@ -2415,7 +2539,7 @@ public final class MainActivity extends ComponentActivity {
 
         LinearLayout line = row();
         item.addView(line);
-        item.setOnLongClickListener(view -> {
+        if (!visibleRemoteDownloads) item.setOnLongClickListener(view -> {
             selectingDownloads = true;
             selectedDownloads.add(job.id);
             showDownloadRows(jobs);
@@ -2454,7 +2578,15 @@ public final class MainActivity extends ComponentActivity {
         status.setPadding(0, dp(3), 0, 0);
         details.addView(status);
 
-        if (!selectingDownloads && job.active()) {
+        if (visibleRemoteDownloads) {
+            if (job.active()) line.addView(action("取消", "取消下载 " + job.title, () -> remoteDownloadAction("cancel", job.id)));
+            else {
+                if (complete && "TIDAL".equals(job.source) && job.track > 0) {
+                    line.addView(action("播放", "在远程设备播放 " + job.title, () -> playRemoteDownload(job)));
+                } else if (!complete) line.addView(action("重试", "重新下载 " + job.title, () -> remoteDownloadAction("retry", job.id)));
+                line.addView(action("移除", "移除下载记录 " + job.title, () -> remoteDownloadAction("remove", job.id)));
+            }
+        } else if (!selectingDownloads && job.active()) {
             line.addView(action("取消", "取消下载 " + job.title, () -> {
                 downloadTasks.cancel(job.id);
                 refreshDownloads();
@@ -2692,20 +2824,20 @@ public final class MainActivity extends ComponentActivity {
     }
 
     private void playRadio(TidalClient.Track track) {
-        TidalClient api = playback.client;
+        TidalClient api = tidalApi();
         if (api == null) return;
         toast("正在加载歌曲电台");
         worker.submit(() -> {
             try {
                 List<TidalClient.Track> mix = api.radio(track.id);
                 runOnUiThread(() -> {
-                    if (isDestroyed() || playback == null || playback.client != api) return;
+                    if (isDestroyed() || playback == null || tidalApi() != api) return;
                     if (mix.isEmpty()) toast("暂无电台歌曲");
                     else playList(mix, 0, false);
                 });
             } catch (Exception error) {
                 runOnUiThread(() -> {
-                    if (!isDestroyed() && playback != null && playback.client == api) toast(readable(error));
+                    if (!isDestroyed() && playback != null && tidalApi() == api) toast(readable(error));
                 });
             }
         });
@@ -2796,15 +2928,15 @@ public final class MainActivity extends ComponentActivity {
     }
 
     private void changeFavorite(TidalClient.Track track, boolean add) {
-        if (playback == null || !track.needsTidal() || playback.client == null || favoriteBusy) return;
-        TidalClient api = playback.client;
+        TidalClient api = tidalApi();
+        if (playback == null || !track.needsTidal() || api == null || favoriteBusy) return;
         favoriteBusy = true;
         updatePlayer();
         worker.submit(() -> {
             try {
                 api.favorite(track.id, add);
                 runOnUiThread(() -> {
-                    if (isDestroyed() || playback == null || playback.client != api) return;
+                    if (isDestroyed() || playback == null || tidalApi() != api) return;
                     favoriteBusy = false;
                     if (add) favoriteIds.add(track.id); else favoriteIds.remove(track.id);
                     toast(add ? "已收藏" : "已取消收藏");
@@ -2813,7 +2945,7 @@ public final class MainActivity extends ComponentActivity {
                 });
             } catch (Exception e) {
                 runOnUiThread(() -> {
-                    if (isDestroyed() || playback == null || playback.client != api) return;
+                    if (isDestroyed() || playback == null || tidalApi() != api) return;
                     favoriteBusy = false;
                     toast("收藏更新失败 · " + readable(e));
                     updatePlayer();
@@ -2879,6 +3011,41 @@ public final class MainActivity extends ComponentActivity {
         return devices != null && devices.active();
     }
 
+    private TidalClient borrowedTidal;
+    private String borrowedTidalDevice;
+
+    /**
+     * The TIDAL client pages browse with: this phone's login, or while controlling a device that is
+     * signed in to TIDAL and this phone is not, that device's login (requests go through it).
+     */
+    private TidalClient tidalApi() {
+        if (playback == null) return null;
+        if (playback.client != null) return playback.client;
+        if (!borrowsTidal()) return null;
+        String device = devices.target;
+        if (borrowedTidal == null || !device.equals(borrowedTidalDevice)) {
+            RemoteDevices link = devices;
+            borrowedTidal = new TidalClient((method, path, form) -> {
+                JSONObject command = new JSONObject().put("op", "tidal").put("method", method).put("path", path);
+                if (form != null) command.put("form", form);
+                return link.call(device, command).optString("body");
+            });
+            borrowedTidalDevice = device;
+        }
+        return borrowedTidal;
+    }
+
+    /** Browsing uses the controlled device's TIDAL login, since this phone has none. */
+    private boolean borrowsTidal() {
+        return playback != null && playback.client == null && remoteMode() && devices.state != null
+                && devices.state.lendsTidal;
+    }
+
+    /** Downloads go to the controlled device, which lists them on the downloads page here. */
+    private boolean remoteDownloads() {
+        return remoteMode() && devices.state != null && devices.state.downloads;
+    }
+
     private void remoteChanged() {
         if (isDestroyed() || devices == null) return;
         if (!devices.notice.isEmpty()) {
@@ -2888,7 +3055,15 @@ public final class MainActivity extends ComponentActivity {
         if (!java.util.Objects.equals(visibleRemoteTarget, devices.target)) resetRemoteLibrary();
         boolean rebuild = !java.util.Objects.equals(visibleRemoteTarget, devices.target)
                 || (page == Page.DEVICES && !visibleDevices.equals(devicesSignature()))
-                || (page == Page.QUEUE && remoteMode() && !visibleRemoteQueue.equals(remoteQueueSignature()));
+                || (page == Page.QUEUE && remoteMode() && !visibleRemoteQueue.equals(remoteQueueSignature()))
+                || (page == Page.DOWNLOADS && visibleRemoteDownloads != remoteDownloads());
+        if (!java.util.Objects.equals(visibleRemoteTarget, devices.target)) {
+            remoteDownloadList = null;
+            remoteMarks = null;
+            remoteMarksKey = "";
+            remoteMarksBusy = false;
+        }
+        syncRemoteMarks();
         if (rebuild) render();
         else updatePlayer();
     }
@@ -3045,7 +3220,7 @@ public final class MainActivity extends ComponentActivity {
         RemoteDevices.State state = devices.state;
         RemoteDevices.Track current = state == null ? null : state.current();
         if (current == null) return;
-        TidalClient api = playback == null ? null : playback.client;
+        TidalClient api = tidalApi();
         if (current.tidalId > 0 && api != null) {
             long id = current.tidalId;
             worker.submit(() -> {
@@ -3085,7 +3260,7 @@ public final class MainActivity extends ComponentActivity {
         RemoteDevices.Device device = devices.targetDevice();
         boolean library = device != null && device.android();
         TextView label = text("正在遥控 " + devices.targetName() + " · " + (library ? "播放、队列和音乐库" : "播放和队列")
-                + "都来自这台设备", 13, ACCENT, true);
+                + "都来自这台设备" + (borrowsTidal() ? "，TIDAL 浏览和下载使用它的登录" : ""), 13, ACCENT, true);
         label.setCompoundDrawablesRelativeWithIntrinsicBounds(new PlayerIcon("devices", ACCENT, dp(18)), null, null, null);
         label.setCompoundDrawablePadding(dp(8));
         banner.addView(label, new LinearLayout.LayoutParams(0, -2, 1));
@@ -4864,7 +5039,7 @@ public final class MainActivity extends ComponentActivity {
                 if (remoteMode()) devices.send(new JSONObject().put("op", "seek").put("ms", millis));
             } catch (org.json.JSONException ignored) {}
         });
-        TidalClient api = playback == null ? null : playback.client;
+        TidalClient api = tidalApi();
         if (track.tidalId > 0 && api != null) {
             long id = track.tidalId;
             worker.submit(() -> {
@@ -5074,8 +5249,8 @@ public final class MainActivity extends ComponentActivity {
             render();
             return;
         }
-        if (visibleAccount != playback.client) {
-            visibleAccount = playback.client;
+        if (visibleAccount != tidalApi()) {
+            visibleAccount = tidalApi();
             clearFavorites();
             if ((page == Page.SEARCH && searchSource != SearchSource.LOCAL) || page == Page.LIBRARY || page == Page.COLLECTION) load(false);
             else render();

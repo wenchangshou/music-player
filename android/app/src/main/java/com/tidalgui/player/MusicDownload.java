@@ -263,6 +263,68 @@ final class MusicDownload {
         return out.toByteArray();
     }
 
+    /**
+     * The song's file when it is already where this download saves it (as FLAC, M4A or MP3), or
+     * null. Looks only: creates no folders.
+     */
+    static Uri saved(Context context, DownloadTasks.Job job, Uri directory) throws IOException {
+        String[] path = location(job, "flac");
+        String base = path[2].substring(0, path[2].length() - ".flac".length());
+        String[] names = {base + ".flac", base + ".m4a", base + ".mp3"};
+        ContentResolver resolver = context.getContentResolver();
+        if (directory != null) {
+            Uri parent = DocumentsContract.buildDocumentUriUsingTree(directory, DocumentsContract.getTreeDocumentId(directory));
+            for (int i = 0; i < 2 && parent != null; i++) parent = child(resolver, directory, parent, path[i], true);
+            if (parent == null) return null;
+            for (String name : names) {
+                Uri file = child(resolver, directory, parent, name, false);
+                if (file != null) return file;
+            }
+            return null;
+        }
+        if (Build.VERSION.SDK_INT >= 29) {
+            String relative = Environment.DIRECTORY_DOWNLOADS + "/" + path[0] + "/" + path[1] + "/";
+            for (String name : names) {
+                try (Cursor cursor = resolver.query(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                        new String[]{android.provider.MediaStore.MediaColumns._ID},
+                        android.provider.MediaStore.MediaColumns.RELATIVE_PATH + "=? AND "
+                                + android.provider.MediaStore.MediaColumns.DISPLAY_NAME + "=? AND "
+                                + android.provider.MediaStore.MediaColumns.IS_PENDING + "=0",
+                        new String[]{relative, name}, null)) {
+                    if (cursor != null && cursor.moveToFirst()) {
+                        return android.content.ContentUris.withAppendedId(
+                                android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, cursor.getLong(0));
+                    }
+                }
+            }
+            return null;
+        }
+        File base29 = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+        if (base29 == null) return null;
+        for (String name : names) {
+            File file = new File(base29, path[0] + "/" + path[1] + "/" + name);
+            if (file.isFile()) return Uri.fromFile(file);
+        }
+        return null;
+    }
+
+    /** A child of {@code parent} named {@code name} (a folder when {@code folder}), or null. */
+    private static Uri child(ContentResolver resolver, Uri tree, Uri parent, String name, boolean folder) {
+        Uri listing = DocumentsContract.buildChildDocumentsUriUsingTree(tree, DocumentsContract.getDocumentId(parent));
+        String[] columns = {DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                DocumentsContract.Document.COLUMN_MIME_TYPE};
+        try (Cursor cursor = resolver.query(listing, columns, null, null, null)) {
+            while (cursor != null && cursor.moveToNext()) {
+                if (!name.equals(cursor.getString(1))) continue;
+                if (DocumentsContract.Document.MIME_TYPE_DIR.equals(cursor.getString(2)) != folder) continue;
+                return DocumentsContract.buildDocumentUriUsingTree(tree, cursor.getString(0));
+            }
+        } catch (RuntimeException unreadable) {
+            return null;
+        }
+        return null;
+    }
+
     /** Whether the album folder already has {@code name}, wherever this download is stored. */
     private static boolean exists(Context context, Uri directory, String[] path, String name) throws IOException {
         ContentResolver resolver = context.getContentResolver();
