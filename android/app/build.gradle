@@ -24,8 +24,8 @@ android {
         buildConfigField 'String', 'TIDAL_RELAY_ORIGIN', groovy.json.JsonOutput.toJson(relayOrigin)
         minSdk 23
         targetSdk 36
-        versionCode 66
-        versionName '0.6.56'
+        versionCode 70
+        versionName '0.6.60'
         testInstrumentationRunner "com.tidalgui.player.PlaybackSmoke"
     }
 }
@@ -35,7 +35,11 @@ dependencies {
     implementation 'androidx.media3:media3-exoplayer:1.8.0'
     implementation 'androidx.media3:media3-exoplayer-dash:1.8.0'
     implementation 'androidx.media3:media3-session:1.8.0'
+    implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+    implementation 'eu.agno3.jcifs:jcifs-ng:2.1.10'
     testImplementation 'junit:junit:4.13.2'
     // The JSON classes of android.jar are stubs on the JVM.
     testImplementation 'org.json:json:20240303'
+    testImplementation 'kxml2:kxml2:2.3.0'
+    testImplementation 'xmlpull:xmlpull:1.1.3.1'
 }

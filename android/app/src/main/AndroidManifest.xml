@@ -12,7 +12,7 @@
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:label="听音室"
         android:theme="@style/ListeningRoom"
-        android:usesCleartextTraffic="false">
+        android:usesCleartextTraffic="true">
         <provider android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.updates" android:exported="false"
             android:grantUriPermissions="true">
