@@ -34,8 +34,8 @@ pub fn show(app: &App, st: &mut UiState, ui: &mut egui::Ui, acts: &mut Vec<Actio
                         });
                     }
                     let mut lend = crate::relay::lends_tidal();
-                    if ui.checkbox(&mut lend, "允许我的其他设备使用本机的 TIDAL 登录和下载")
-                        .on_hover_text("开启后，同一播放器账号的设备遥控本机时，可以通过本机的 TIDAL 登录浏览、收藏，并在本机下载和管理下载。它们拿不到本机的登录凭据。")
+                    if ui.checkbox(&mut lend, "允许我的其他设备借用本机的 TIDAL 登录")
+                        .on_hover_text("开启后，未登录 TIDAL 的同账号设备遥控本机时，可以借用本机的登录浏览、收藏，它们拿不到本机的登录凭据。关闭后仍可遥控本机下载。")
                         .changed()
                     {
                         crate::relay::LEND_TIDAL.store(lend, std::sync::atomic::Ordering::Relaxed);

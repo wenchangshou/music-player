@@ -29,9 +29,6 @@ final class RemoteTidal {
 
     static JSONObject execute(PlaybackService playback, RemoteLibrary.Dispatcher main, JSONObject command) throws Exception {
         String operation = command.getString("op");
-        if (!main.run(() -> playback.lendTidal)) {
-            throw new IOException("对方未允许其他设备使用它的 TIDAL 登录和下载（在对方的设置 › 播放器账号中开启）");
-        }
         if ("downloads".equals(operation)) {
             String action = command.optString("action", "list");
             if ("download".equals(action)) {
@@ -50,6 +47,8 @@ final class RemoteTidal {
         TidalClient api = main.run(() -> playback.client);
         if (api == null) throw new IOException("此设备尚未登录 TIDAL");
         if ("download".equals(operation)) return download(playback, api, command);
+        // Downloads stay on this device; only browsing with its login needs the owner's consent.
+        if (!main.run(() -> playback.lendTidal)) throw new IOException("对方未允许其他设备借用它的 TIDAL 登录（在对方的设置 › 播放器账号中开启）");
         String body = api.forward(command.optString("method", "GET"), command.getString("path"),
                 command.has("form") ? command.getString("form") : null);
         return reply(body, "gzip".equals(command.optString("accept")));
@@ -172,6 +171,9 @@ final class RemoteTidal {
                 long libraryRevision = main.run(() -> playback.localRevision);
                 return new JSONObject().put("marks", tasks.downloaded(libraryRevision).toJson());
             }
+            case "info":
+                if (ids.size() != 1) throw new IOException("请选择一项下载");
+                return new JSONObject().put("info", tasks.info(ids.get(0)));
             case "cancel":
                 for (String id : ids) tasks.cancel(id);
                 break;
@@ -235,7 +237,8 @@ final class RemoteTidal {
         for (DownloadTasks.Job job : all) {
             if (jobs.length() >= limit) break;
             jobs.put(new JSONObject().put("id", job.id).put("track", job.track).put("title", job.title)
-                    .put("artist", job.artist).put("album", job.albumTitle).put("source", job.source)
+                    .put("artist", job.artist).put("album", job.albumTitle).put("version", job.version).put("source", job.source)
+                    .put("cover", job.cover == null ? "" : job.cover)
                     .put("state", job.state.name().toLowerCase(java.util.Locale.ROOT))
                     .put("bytes", job.bytes).put("total", job.total).put("resolution", job.resolution)
                     .put("error", job.error).put("batch", job.batch).put("order", job.order)
@@ -264,6 +267,7 @@ final class RemoteTidal {
             job.bytes = item.optLong("bytes");
             job.total = item.optLong("total", -1);
             job.albumTitle = item.optString("album");
+            job.cover = item.optString("cover");
             job.resolution = item.optString("resolution");
             job.error = item.optString("error");
             job.batch = item.optString("batch");

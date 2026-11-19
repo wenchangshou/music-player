@@ -731,6 +731,24 @@ final class LocalLibrary {
         return name != null && name.toLowerCase(Locale.ROOT).matches("(?s).+\\.(aac|aif|aiff|alac|ape|flac|m4a|mp3|oga|ogg|opus|wav|wma|wv)");
     }
 
+    /** Songs of the library with no .lrc next to them, in library order. */
+    synchronized List<TidalClient.Track> withoutLyrics() {
+        List<TidalClient.Track> result = new ArrayList<>();
+        for (TidalClient.Track track : tracks.values()) {
+            if (track.payload.optString("lrc_uri").isEmpty()) result.add(track);
+        }
+        return result;
+    }
+
+    /** Records the .lrc saved for a song, or that no lyrics could be found for it ({@code lrc} null). */
+    synchronized void lyricsFound(long id, String lrc) throws Exception {
+        TidalClient.Track track = tracks.get(id);
+        if (track == null) return;
+        if (lrc == null) track.payload.put("lyrics_missing", true);
+        else track.payload.put("lrc_uri", lrc).remove("lyrics_missing");
+        save();
+    }
+
     private void save() {
         JSONArray items = new JSONArray();
         for (TidalClient.Track track : tracks.values()) items.put(track.payload);

@@ -482,13 +482,13 @@ pub fn revision(playback: &Playback) -> String {
 
 /// Whether devices of the player account may use this device's TIDAL login and downloads (set
 /// in 设置 › 播放器账号; off until the owner allows it).
-pub static LEND_TIDAL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub static LEND_TIDAL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
 pub fn lends_tidal() -> bool {
     LEND_TIDAL.load(Ordering::Relaxed)
 }
 
-pub const NOT_LENT: &str = "对方未允许其他设备使用它的 TIDAL 登录和下载（在对方的设置 › 播放器账号中开启）";
+pub const NOT_LENT: &str = "对方未允许其他设备借用它的 TIDAL 登录（在对方的设置 › 播放器账号中开启）";
 
 pub fn snapshot(playback: &Playback, logged_in: bool) -> Value {
     let player = playback.player.snapshot();
@@ -497,7 +497,7 @@ pub fn snapshot(playback: &Playback, logged_in: bool) -> Value {
         "playing": player.active && !player.paused, "loading": playback.is_loading(),
         "position": (player.position.max(0.0) * 1000.0) as u64,
         "duration": (player.duration.max(0.0) * 1000.0) as u64, "seekable": player.active && player.duration > 0.0,
-        "loggedIn": logged_in, "features": if lends_tidal() { json!(["tidal", "downloads"]) } else { json!([]) }, "version": env!("CARGO_PKG_VERSION"), "volume": playback.player.volume.round(), "requestedQuality": playback.quality.api_name(), "requestedNetease": playback.netease_level, "shuffle": playback.shuffle, "error": player.error,
+        "loggedIn": logged_in, "features": if lends_tidal() { json!(["tidal", "downloads"]) } else { json!(["downloads"]) }, "version": env!("CARGO_PKG_VERSION"), "volume": playback.player.volume.round(), "requestedQuality": playback.quality.api_name(), "requestedNetease": playback.netease_level, "shuffle": playback.shuffle, "error": player.error,
         "actualQuality": playback.stream.as_ref().map(|stream| stream.quality.as_str()).unwrap_or(""),
         "resolution": playback.stream.as_ref().map(stream_resolution).unwrap_or_default(),
         "repeat": match playback.repeat { Repeat::Off => 0, Repeat::All => 1, Repeat::One => 2 }})

@@ -41,6 +41,7 @@ import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -71,7 +72,21 @@ public final class MainActivity extends ComponentActivity {
     private static final int PAGE_SIZE = 50;
     private static final int LOCAL_PAGE_SIZE = 80;
 
-    private enum Page { HOME, LOCAL, SEARCH, SOURCES, LIBRARY, COLLECTION, QUEUE, PLAYER, SETTINGS, CONNECTIONS, ACCOUNT, DOWNLOADS, NETEASE_PLAYLISTS, NETEASE_SQUARE, OFFLINE, DEVICES }
+    private enum Page { HOME, LOCAL, SEARCH, SOURCES, LIBRARY, COLLECTION, QUEUE, PLAYER, SETTINGS, CONNECTIONS, ACCOUNT, DOWNLOADS, NETEASE_PLAYLISTS, NETEASE_SQUARE, OFFLINE, DEVICES, WEBDAV, SMB }
+
+    private WebDavClient.Server webdavCurrentServer;
+    private String webdavCurrentPath = "";
+    private final List<WebDavClient.Item> webdavItems = new ArrayList<>();
+    private boolean webdavLoading;
+    private String webdavError = "";
+    private Page webdavBack = Page.SOURCES;
+
+    private SmbClient.Server smbCurrentServer;
+    private String smbCurrentPath = "";
+    private final List<SmbClient.Item> smbItems = new ArrayList<>();
+    private boolean smbLoading;
+    private String smbError = "";
+    private Page smbBack = Page.SOURCES;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private static final ExecutorService downloads = Executors.newSingleThreadExecutor();
@@ -432,6 +447,46 @@ public final class MainActivity extends ComponentActivity {
             case LIBRARY: navigate(Page.SOURCES); break;
             case CONNECTIONS: navigate(Page.SETTINGS); break;
             case ACCOUNT: navigate(Page.SOURCES); break;
+            case WEBDAV:
+                if (webdavCurrentServer != null) {
+                    if (webdavCurrentPath != null && !webdavCurrentPath.isEmpty() && !"/".equals(webdavCurrentPath)) {
+                        String p = webdavCurrentPath.endsWith("/")
+                                ? webdavCurrentPath.substring(0, webdavCurrentPath.length() - 1) : webdavCurrentPath;
+                        int lastSlash = p.lastIndexOf('/');
+                        webdavCurrentPath = lastSlash > 0 ? p.substring(0, lastSlash + 1) : "/";
+                        loadWebDavDirectory();
+                    } else {
+                        webdavCurrentServer = null;
+                        webdavCurrentPath = "";
+                        webdavItems.clear();
+                        render();
+                    }
+                } else {
+                    navigate(webdavBack);
+                }
+                break;
+            case SMB:
+                if (smbCurrentServer != null) {
+                    String root = smbCurrentServer.rootUrl();
+                    if (!root.endsWith("/")) root += "/";
+                    String cur = smbCurrentPath != null ? smbCurrentPath : "";
+                    if (!cur.endsWith("/")) cur += "/";
+
+                    if (!cur.isEmpty() && !cur.equalsIgnoreCase(root) && !"/".equals(cur)) {
+                        String p = cur.endsWith("/") ? cur.substring(0, cur.length() - 1) : cur;
+                        int lastSlash = p.lastIndexOf('/');
+                        smbCurrentPath = lastSlash > 0 ? p.substring(0, lastSlash + 1) : root;
+                        loadSmbDirectory();
+                    } else {
+                        smbCurrentServer = null;
+                        smbCurrentPath = "";
+                        smbItems.clear();
+                        render();
+                    }
+                } else {
+                    navigate(smbBack);
+                }
+                break;
             case HOME: getOnBackPressedDispatcher().onBackPressed(); break;
             default: open(Page.HOME);
         }
@@ -552,6 +607,8 @@ public final class MainActivity extends ComponentActivity {
                 break;
             case LOCAL: localMusic(); break;
             case SOURCES: sources(); break;
+            case WEBDAV: webdavPage(); break;
+            case SMB: smbPage(); break;
             case NETEASE_PLAYLISTS:
             case NETEASE_SQUARE: neteasePlaylistPage(); break;
             case SEARCH:
@@ -584,6 +641,8 @@ public final class MainActivity extends ComponentActivity {
                     : devices.targetName() + " 的音乐库";
                 return localPlaylist != null ? localPlaylist : localGroup != null ? localGroup.label : "音乐库";
             case SOURCES: return "音源";
+            case WEBDAV: return webdavTitle();
+            case SMB: return smbTitle();
             case NETEASE_PLAYLISTS: return "我的歌单";
             case NETEASE_SQUARE: return "歌单广场";
             case LIBRARY: return "TIDAL 收藏";
@@ -1190,6 +1249,36 @@ public final class MainActivity extends ComponentActivity {
         LinearLayout local = panel("本地文件", "音乐保存在手机或已授权的外接存储中。");
         local.addView(toolbar(withIcon(primary("打开音乐库", () -> open(Page.LOCAL)), "library", BG),
                 withIcon(secondary("扫描目录", this::chooseFolders), "folder", ACCENT)));
+        List<WebDavClient.Server> davServers = WebDavClient.loadServers(this);
+        LinearLayout webdav = panel("WebDAV 网络存储", davServers.isEmpty()
+                ? "连接 NAS、AList、坚果云等网络存储，在线流式播放与下载。"
+                : "已添加 " + davServers.size() + " 个服务器 · 支持直接串流与整目录播放。");
+        List<Button> davActions = new ArrayList<>();
+        if (!davServers.isEmpty()) {
+            davActions.add(withIcon(primary("浏览存储", () -> {
+                webdavBack = Page.SOURCES;
+                webdavCurrentServer = null;
+                webdavCurrentPath = "";
+                open(Page.WEBDAV);
+            }), "folder", BG));
+        }
+        davActions.add(withIcon(secondary("添加服务器", () -> showEditWebDavServer(null)), "plus", ACCENT));
+        webdav.addView(toolbar(davActions.toArray(new Button[0])));
+        List<SmbClient.Server> smbServers = SmbClient.loadServers(this);
+        LinearLayout smb = panel("SMB / Windows 共享", smbServers.isEmpty()
+                ? "连接 Windows 电脑、NAS、Samba 共享文件夹，直接流式播放网络音频与下载。"
+                : "已添加 " + smbServers.size() + " 个服务器 · 支持直接串流与整目录播放。");
+        List<Button> smbActions = new ArrayList<>();
+        if (!smbServers.isEmpty()) {
+            smbActions.add(withIcon(primary("浏览共享", () -> {
+                smbBack = Page.SOURCES;
+                smbCurrentServer = null;
+                smbCurrentPath = "";
+                open(Page.SMB);
+            }), "folder", BG));
+        }
+        smbActions.add(withIcon(secondary("添加共享", () -> showEditSmbServer(null)), "plus", ACCENT));
+        smb.addView(toolbar(smbActions.toArray(new Button[0])));
         if (!hasPlayerAccount()) {
             LinearLayout account = panel("播放器账号（可选）", "在电脑和手机之间同步登录、遥控播放。");
             account.addView(toolbar(withIcon(secondary("登录播放器账号", this::playerAccountLogin), "user", ACCENT)));
@@ -1345,6 +1434,900 @@ public final class MainActivity extends ComponentActivity {
                 address.setError(invalid.getMessage());
             }
         });
+    }
+
+    private String webdavTitle() {
+        if (webdavCurrentServer == null) return "WebDAV 网络存储";
+        if (webdavCurrentPath == null || webdavCurrentPath.isEmpty() || "/".equals(webdavCurrentPath)) {
+            return webdavCurrentServer.name;
+        }
+        String p = webdavCurrentPath.endsWith("/")
+                ? webdavCurrentPath.substring(0, webdavCurrentPath.length() - 1) : webdavCurrentPath;
+        int lastSlash = p.lastIndexOf('/');
+        return lastSlash >= 0 ? p.substring(lastSlash + 1) : p;
+    }
+
+    private void webdavPage() {
+        if (webdavCurrentServer == null) {
+            webdavServerList();
+        } else {
+            webdavDirectoryBrowser();
+        }
+    }
+
+    private void webdavServerList() {
+        List<WebDavClient.Server> servers = WebDavClient.loadServers(this);
+        LinearLayout topBar = row();
+        topBar.addView(text("已配置的 WebDAV 服务器", 16, INK, true), new LinearLayout.LayoutParams(0, -2, 1));
+        topBar.addView(withIcon(secondary("添加服务器", () -> showEditWebDavServer(null)), "plus", ACCENT));
+        content.addView(topBar);
+
+        if (servers.isEmpty()) {
+            empty("尚未添加 WebDAV 服务器", "支持连接群晖、威联通、AList、坚果云等任意 WebDAV 服务，直接流式播放网络音频。");
+            content.addView(toolbar(withIcon(primary("立即添加 WebDAV 服务器", () -> showEditWebDavServer(null)), "plus", BG)));
+            return;
+        }
+
+        for (WebDavClient.Server server : servers) {
+            LinearLayout card = panel(server.name, server.url + (server.user.isEmpty() ? "" : " · " + server.user));
+            Button browse = withIcon(primary("进入浏览", () -> {
+                webdavCurrentServer = server;
+                webdavCurrentPath = "/";
+                loadWebDavDirectory();
+            }), "folder", BG);
+            Button edit = secondary("设置 / 删除", () -> showEditWebDavServer(server));
+            card.addView(toolbar(browse, edit));
+        }
+    }
+
+    private void webdavDirectoryBrowser() {
+        LinearLayout navBar = row();
+        navBar.setPadding(0, 0, 0, dp(8));
+        boolean canGoUp = webdavCurrentPath != null && !webdavCurrentPath.isEmpty() && !"/".equals(webdavCurrentPath);
+        Button backBtn = withIcon(secondary(canGoUp ? "上一级" : "服务器列表", () -> {
+            if (canGoUp) {
+                String p = webdavCurrentPath.endsWith("/")
+                        ? webdavCurrentPath.substring(0, webdavCurrentPath.length() - 1) : webdavCurrentPath;
+                int lastSlash = p.lastIndexOf('/');
+                webdavCurrentPath = lastSlash > 0 ? p.substring(0, lastSlash + 1) : "/";
+                loadWebDavDirectory();
+            } else {
+                webdavCurrentServer = null;
+                webdavCurrentPath = "";
+                webdavItems.clear();
+                render();
+            }
+        }), "back", ACCENT);
+        navBar.addView(backBtn);
+
+        String pathDisplay = (webdavCurrentPath == null || webdavCurrentPath.isEmpty() || "/".equals(webdavCurrentPath))
+                ? "/" : webdavCurrentPath;
+        TextView pathView = single(pathDisplay, 13, MUTED, false);
+        pathView.setPadding(dp(12), 0, dp(8), 0);
+        navBar.addView(pathView, new LinearLayout.LayoutParams(0, -2, 1));
+        navBar.addView(iconButton("refresh", "刷新", this::loadWebDavDirectory));
+        content.addView(navBar);
+
+        List<WebDavClient.Item> audioItems = new ArrayList<>();
+        List<WebDavClient.Item> dirItems = new ArrayList<>();
+        for (WebDavClient.Item item : webdavItems) {
+            if (item.isDirectory) dirItems.add(item);
+            else if (item.isAudio) audioItems.add(item);
+        }
+
+        if (!audioItems.isEmpty()) {
+            List<TidalClient.Track> audioTracks = new ArrayList<>();
+            String folderName = webdavTitle();
+            for (WebDavClient.Item item : audioItems) {
+                try {
+                    audioTracks.add(WebDavClient.toTrack(webdavCurrentServer, item, folderName));
+                } catch (Exception ignored) {}
+            }
+            Button playAll = withIcon(primary("播放全部 (" + audioTracks.size() + ")", () -> playList(audioTracks, 0, false)), "play", BG);
+            Button random = withIcon(secondary("随机", () -> playList(audioTracks, 0, true)), "shuffle", ACCENT);
+            Button downloadAll = withIcon(secondary("下载本目录", () -> downloadWebDavDirectory(webdavCurrentServer, folderName, audioItems)), "download", ACCENT);
+            content.addView(toolbar(playAll, random, downloadAll));
+        }
+
+        if (webdavLoading) {
+            empty("正在加载目录…", "");
+            return;
+        }
+
+        if (!webdavError.isEmpty()) {
+            empty("加载失败 · " + webdavError, "");
+            content.addView(toolbar(withIcon(secondary("重试", this::loadWebDavDirectory), "refresh", ACCENT)));
+            return;
+        }
+
+        if (webdavItems.isEmpty()) {
+            empty("目录为空", "此路径下未发现文件或文件夹。");
+            return;
+        }
+
+        if (!dirItems.isEmpty()) {
+            section("文件夹 (" + dirItems.size() + ")");
+            for (WebDavClient.Item dir : dirItems) {
+                LinearLayout row = entry(dir.name, "文件夹", "", () -> {
+                    webdavCurrentPath = dir.path;
+                    loadWebDavDirectory();
+                });
+                ((ImageView) row.getChildAt(0)).setImageDrawable(new PlayerIcon("folder", ACCENT, dp(22)));
+                content.addView(row);
+            }
+        }
+
+        if (!audioItems.isEmpty()) {
+            section("音频文件 (" + audioItems.size() + ")");
+            String folderName = webdavTitle();
+            List<TidalClient.Track> audioTracks = new ArrayList<>();
+            for (WebDavClient.Item item : audioItems) {
+                try {
+                    audioTracks.add(WebDavClient.toTrack(webdavCurrentServer, item, folderName));
+                } catch (Exception ignored) {}
+            }
+
+            for (int i = 0; i < audioTracks.size(); i++) {
+                int at = i;
+                TidalClient.Track track = audioTracks.get(i);
+                WebDavClient.Item item = audioItems.get(i);
+                String sizeLabel = formatBytes(item.size);
+                String sub = sizeLabel.isEmpty() ? "WebDAV 音频" : sizeLabel + " · WebDAV";
+                LinearLayout row = entry(track.title, sub, "", () -> playList(audioTracks, at, false));
+                ((ImageView) row.getChildAt(0)).setImageDrawable(new PlayerIcon("note", ACCENT, dp(22)));
+                row.addView(iconButton("more", "更多 " + track.title, () -> webdavTrackMenu(track, item)));
+                content.addView(row);
+            }
+        }
+    }
+
+    private void loadWebDavDirectory() {
+        if (webdavCurrentServer == null) return;
+        webdavLoading = true;
+        webdavError = "";
+        webdavItems.clear();
+        render();
+
+        WebDavClient.Server targetServer = webdavCurrentServer;
+        String targetPath = webdavCurrentPath;
+        worker.submit(() -> {
+            try {
+                List<WebDavClient.Item> result = WebDavClient.list(targetServer, targetPath);
+                handler.post(() -> {
+                    if (webdavCurrentServer != targetServer || !java.util.Objects.equals(webdavCurrentPath, targetPath)) return;
+                    webdavItems.clear();
+                    webdavItems.addAll(result);
+                    webdavLoading = false;
+                    webdavError = "";
+                    render();
+                });
+            } catch (Exception e) {
+                handler.post(() -> {
+                    if (webdavCurrentServer != targetServer || !java.util.Objects.equals(webdavCurrentPath, targetPath)) return;
+                    webdavLoading = false;
+                    webdavError = e.getMessage() != null ? e.getMessage() : "读取目录失败";
+                    render();
+                });
+            }
+        });
+    }
+
+    private void showEditWebDavServer(WebDavClient.Server existing) {
+        LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
+        body.setPadding(dp(20), dp(10), dp(20), dp(10));
+
+        TextView nameLabel = text("服务器名称", 12, MUTED, false);
+        body.addView(nameLabel);
+        EditText nameInput = new EditText(this);
+        nameInput.setSingleLine(true);
+        nameInput.setHint("如：我的群晖 NAS / AList");
+        if (existing != null) nameInput.setText(existing.name);
+        body.addView(nameInput);
+
+        TextView urlLabel = text("WebDAV 地址 (URL)", 12, MUTED, false);
+        urlLabel.setPadding(0, dp(8), 0, 0);
+        body.addView(urlLabel);
+        EditText urlInput = new EditText(this);
+        urlInput.setSingleLine(true);
+        urlInput.setHint("http://192.168.1.100:5005/music/");
+        urlInput.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_URI);
+        if (existing != null) urlInput.setText(existing.url);
+        body.addView(urlInput);
+
+        TextView userLabel = text("用户名 (可选)", 12, MUTED, false);
+        userLabel.setPadding(0, dp(8), 0, 0);
+        body.addView(userLabel);
+        EditText userInput = new EditText(this);
+        userInput.setSingleLine(true);
+        userInput.setHint("如：admin");
+        if (existing != null) userInput.setText(existing.user);
+        body.addView(userInput);
+
+        TextView passLabel = text("密码 (可选)", 12, MUTED, false);
+        passLabel.setPadding(0, dp(8), 0, 0);
+        body.addView(passLabel);
+        EditText passInput = new EditText(this);
+        passInput.setSingleLine(true);
+        passInput.setHint("密码");
+        passInput.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        if (existing != null) passInput.setText(existing.pass);
+        body.addView(passInput);
+
+        TextView status = text("", 12, 0xffff6b6b, false);
+        status.setPadding(0, dp(8), 0, 0);
+        body.addView(status);
+
+        AlertDialog.Builder builder = new AlertDialog.Builder(this)
+                .setTitle(existing == null ? "添加 WebDAV 服务器" : "编辑 WebDAV 服务器")
+                .setView(body)
+                .setNegativeButton("取消", null)
+                .setPositiveButton("测试并保存", null);
+
+        if (existing != null) {
+            builder.setNeutralButton("删除服务器", (d, which) -> {
+                new AlertDialog.Builder(this)
+                        .setTitle("删除「" + existing.name + "」？")
+                        .setMessage("确定从列表中移除此 WebDAV 服务器吗？")
+                        .setNegativeButton("取消", null)
+                        .setPositiveButton("删除", (d2, which2) -> {
+                            WebDavClient.deleteServer(this, existing.id);
+                            if (webdavCurrentServer != null && webdavCurrentServer.id.equals(existing.id)) {
+                                webdavCurrentServer = null;
+                                webdavCurrentPath = "";
+                                webdavItems.clear();
+                            }
+                            render();
+                        }).show();
+            });
+        }
+
+        AlertDialog dialog = builder.show();
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(btn -> {
+            String name = nameInput.getText().toString().trim();
+            String url = urlInput.getText().toString().trim();
+            String user = userInput.getText().toString().trim();
+            String pass = passInput.getText().toString();
+
+            if (url.isEmpty()) {
+                urlInput.setError("请输入服务器地址");
+                return;
+            }
+            if (name.isEmpty()) name = "WebDAV";
+
+            String id = existing != null ? existing.id : UUID.randomUUID().toString();
+            WebDavClient.Server candidate = new WebDavClient.Server(id, name, url, user, pass);
+
+            btn.setEnabled(false);
+            status.setText("正在测试连接…");
+            status.setTextColor(ACCENT);
+
+            worker.submit(() -> {
+                try {
+                    WebDavClient.testConnection(candidate);
+                    handler.post(() -> {
+                        WebDavClient.saveServer(this, candidate);
+                        dialog.dismiss();
+                        toast("连接成功并已保存");
+                        render();
+                    });
+                } catch (Exception ex) {
+                    handler.post(() -> {
+                        btn.setEnabled(true);
+                        status.setTextColor(0xffff6b6b);
+                        status.setText("测试连接失败: " + (ex.getMessage() != null ? ex.getMessage() : "无法连接"));
+                    });
+                }
+            });
+        });
+    }
+
+    private interface FolderPickerCallback {
+        void onFolder(Uri folderUri);
+    }
+
+    private void pickDownloadRoot(FolderPickerCallback callback) {
+        if (playback == null || playback.localLibrary == null) return;
+        List<Uri> roots = playback.localLibrary.folders();
+        if (roots.isEmpty()) {
+            toast("请先在【本地文件】中扫描或授权一个存储目录");
+            chooseFolders();
+            return;
+        }
+        if (roots.size() == 1) {
+            callback.onFolder(roots.get(0));
+            return;
+        }
+        String[] labels = new String[roots.size()];
+        for (int i = 0; i < roots.size(); i++) {
+            labels[i] = LocalMusicFiles.displayPath(roots.get(i));
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("选择存储目录")
+                .setItems(labels, (d, which) -> {
+                    if (which >= 0 && which < roots.size()) {
+                        callback.onFolder(roots.get(which));
+                    }
+                })
+                .show();
+    }
+
+    private void webdavTrackMenu(TidalClient.Track track, WebDavClient.Item item) {
+        List<String> choices = new ArrayList<>();
+        List<Runnable> actions = new ArrayList<>();
+        choices.add("下一首播放");
+        actions.add(() -> { if (playback != null) { playback.enqueue(track, true); toast("已加入下一首"); } });
+        choices.add("追加到队列");
+        actions.add(() -> { if (playback != null) { playback.enqueue(track, false); toast("已加入队列"); } });
+
+        WebDavClient.Server targetServer = webdavCurrentServer;
+        if (targetServer == null) {
+            for (WebDavClient.Server s : WebDavClient.loadServers(this)) {
+                if (track.webdavUrl.startsWith(s.url) || s.authHeader().equals(track.webdavAuth)) {
+                    targetServer = s;
+                    break;
+                }
+            }
+        }
+        if (targetServer != null) {
+            final WebDavClient.Server s = targetServer;
+            choices.add("下载到本地");
+            actions.add(() -> downloadWebDavTrack(s, track, item));
+        }
+
+        new AlertDialog.Builder(this)
+                .setTitle(track.title)
+                .setItems(choices.toArray(new String[0]), (dialog, which) -> {
+                    if (which >= 0 && which < actions.size()) actions.get(which).run();
+                })
+                .show();
+    }
+
+    private void downloadWebDavTrack(WebDavClient.Server server, TidalClient.Track track, WebDavClient.Item item) {
+        pickDownloadRoot(targetRoot -> {
+            toast("开始下载: " + track.title);
+            worker.submit(() -> {
+                try {
+                    WebDavClient.Item targetItem = item;
+                    if (targetItem == null) {
+                        targetItem = new WebDavClient.Item(track.title + ".flac", "", track.webdavUrl, false, 0);
+                    }
+                    WebDavClient.downloadFile(this, server, targetItem, targetRoot, null);
+                    handler.post(() -> {
+                        toast("下载完成: " + track.title);
+                        scanDirectories(java.util.Collections.singletonList(targetRoot));
+                    });
+                } catch (Exception e) {
+                    handler.post(() -> toast("下载失败: " + (e.getMessage() != null ? e.getMessage() : "网络错误")));
+                }
+            });
+        });
+    }
+
+    private void downloadWebDavDirectory(WebDavClient.Server server, String folderName, List<WebDavClient.Item> items) {
+        pickDownloadRoot(targetRoot -> {
+            List<WebDavClient.Item> toDownload = new ArrayList<>();
+            for (WebDavClient.Item item : items) {
+                if (item.isAudio || item.name.toLowerCase(Locale.ROOT).endsWith(".lrc")
+                        || item.name.toLowerCase(Locale.ROOT).endsWith(".jpg")
+                        || item.name.toLowerCase(Locale.ROOT).endsWith(".png")) {
+                    toDownload.add(item);
+                }
+            }
+
+            if (toDownload.isEmpty()) {
+                toast("此目录下没有可下载的文件");
+                return;
+            }
+
+            new AlertDialog.Builder(this)
+                    .setTitle("下载整目录")
+                    .setMessage("即将下载「" + folderName + "」共 " + toDownload.size() + " 个文件到本地存储。")
+                    .setNegativeButton("取消", null)
+                    .setPositiveButton("开始下载", (dialog, which) -> {
+                        toast("开始下载 " + toDownload.size() + " 个文件…");
+                        worker.submit(() -> {
+                            int success = 0;
+                            int failed = 0;
+                            Uri folderUri = WebDavClient.findOrCreateDirectory(this, targetRoot, folderName);
+                            for (WebDavClient.Item item : toDownload) {
+                                try {
+                                    WebDavClient.downloadFile(this, server, item, folderUri, null);
+                                    success++;
+                                } catch (Exception e) {
+                                    failed++;
+                                }
+                            }
+                            int totalSuccess = success;
+                            int totalFailed = failed;
+                            handler.post(() -> {
+                                toast("目录下载完成：成功 " + totalSuccess + " 个文件" + (totalFailed > 0 ? "，失败 " + totalFailed + " 个" : ""));
+                                scanDirectories(java.util.Collections.singletonList(targetRoot));
+                            });
+                        });
+                    })
+                    .show();
+        });
+    }
+
+    private String smbTitle() {
+        if (smbCurrentServer == null) return "SMB / Windows 共享";
+        if (smbCurrentPath == null || smbCurrentPath.isEmpty() || "/".equals(smbCurrentPath)
+                || smbCurrentPath.equalsIgnoreCase(smbCurrentServer.rootUrl())) {
+            return smbCurrentServer.name;
+        }
+        String p = smbCurrentPath.endsWith("/")
+                ? smbCurrentPath.substring(0, smbCurrentPath.length() - 1) : smbCurrentPath;
+        int lastSlash = p.lastIndexOf('/');
+        return lastSlash >= 0 ? p.substring(lastSlash + 1) : p;
+    }
+
+    private void smbPage() {
+        if (smbCurrentServer == null) {
+            smbServerList();
+        } else {
+            smbDirectoryBrowser();
+        }
+    }
+
+    private void smbServerList() {
+        List<SmbClient.Server> servers = SmbClient.loadServers(this);
+        LinearLayout topBar = row();
+        topBar.addView(text("已配置的 SMB 共享服务器", 16, INK, true), new LinearLayout.LayoutParams(0, -2, 1));
+        topBar.addView(withIcon(secondary("添加共享", () -> showEditSmbServer(null)), "plus", ACCENT));
+        content.addView(topBar);
+
+        if (servers.isEmpty()) {
+            empty("尚未添加 SMB 共享", "连接 Windows 电脑、NAS、路由器等局域网共享文件夹，直接流式播放网络音频与下载。");
+            content.addView(toolbar(withIcon(primary("立即添加 SMB 共享", () -> showEditSmbServer(null)), "plus", BG)));
+            return;
+        }
+
+        for (SmbClient.Server server : servers) {
+            LinearLayout card = panel(server.name, server.displayAddress());
+            Button browse = withIcon(primary("进入浏览", () -> {
+                smbCurrentServer = server;
+                smbCurrentPath = server.rootUrl();
+                loadSmbDirectory();
+            }), "folder", BG);
+            Button edit = secondary("设置 / 删除", () -> showEditSmbServer(server));
+            card.addView(toolbar(browse, edit));
+        }
+    }
+
+    private void smbDirectoryBrowser() {
+        LinearLayout navBar = row();
+        navBar.setPadding(0, 0, 0, dp(8));
+        String rootRaw = smbCurrentServer != null ? smbCurrentServer.rootUrl() : "";
+        final String root = rootRaw.endsWith("/") ? rootRaw : rootRaw + "/";
+        String curRaw = smbCurrentPath != null ? smbCurrentPath : "";
+        final String cur = curRaw.endsWith("/") ? curRaw : curRaw + "/";
+        boolean canGoUp = !cur.isEmpty() && !cur.equalsIgnoreCase(root) && !"/".equals(cur);
+
+        Button backBtn = withIcon(secondary(canGoUp ? "上一级" : "服务器列表", () -> {
+            if (canGoUp) {
+                String p = cur.endsWith("/") ? cur.substring(0, cur.length() - 1) : cur;
+                int lastSlash = p.lastIndexOf('/');
+                smbCurrentPath = lastSlash > 0 ? p.substring(0, lastSlash + 1) : root;
+                loadSmbDirectory();
+            } else {
+                smbCurrentServer = null;
+                smbCurrentPath = "";
+                smbItems.clear();
+                render();
+            }
+        }), "back", ACCENT);
+        navBar.addView(backBtn);
+
+        String pathDisplay = smbDisplayPath(smbCurrentPath);
+        TextView pathView = single(pathDisplay, 13, MUTED, false);
+        pathView.setPadding(dp(12), 0, dp(8), 0);
+        navBar.addView(pathView, new LinearLayout.LayoutParams(0, -2, 1));
+        navBar.addView(iconButton("refresh", "刷新", this::loadSmbDirectory));
+        content.addView(navBar);
+
+        List<SmbClient.Item> audioItems = new ArrayList<>();
+        List<SmbClient.Item> dirItems = new ArrayList<>();
+        for (SmbClient.Item item : smbItems) {
+            if (item.isDirectory) dirItems.add(item);
+            else if (item.isAudio) audioItems.add(item);
+        }
+
+        if (!audioItems.isEmpty()) {
+            List<TidalClient.Track> audioTracks = new ArrayList<>();
+            String folderName = smbTitle();
+            for (SmbClient.Item item : audioItems) {
+                try {
+                    audioTracks.add(SmbClient.toTrack(smbCurrentServer, item, folderName));
+                } catch (Exception ignored) {}
+            }
+            Button playAll = withIcon(primary("播放全部 (" + audioTracks.size() + ")", () -> playList(audioTracks, 0, false)), "play", BG);
+            Button random = withIcon(secondary("随机", () -> playList(audioTracks, 0, true)), "shuffle", ACCENT);
+            Button downloadAll = withIcon(secondary("下载本目录", () -> downloadSmbDirectory(smbCurrentServer, folderName, audioItems)), "download", ACCENT);
+            content.addView(toolbar(playAll, random, downloadAll));
+        }
+
+        if (smbLoading) {
+            empty("正在加载目录…", "");
+            return;
+        }
+
+        if (!smbError.isEmpty()) {
+            empty("加载失败 · " + smbError, "");
+            content.addView(toolbar(withIcon(secondary("重试", this::loadSmbDirectory), "refresh", ACCENT)));
+            return;
+        }
+
+        if (smbItems.isEmpty()) {
+            empty("目录为空", "此路径下未发现文件或文件夹。");
+            return;
+        }
+
+        if (!dirItems.isEmpty()) {
+            section("文件夹 (" + dirItems.size() + ")");
+            for (SmbClient.Item dir : dirItems) {
+                LinearLayout row = entry(dir.name, "文件夹", "", () -> {
+                    smbCurrentPath = dir.url;
+                    loadSmbDirectory();
+                });
+                ((ImageView) row.getChildAt(0)).setImageDrawable(new PlayerIcon("folder", ACCENT, dp(22)));
+                content.addView(row);
+            }
+        }
+
+        if (!audioItems.isEmpty()) {
+            section("音频文件 (" + audioItems.size() + ")");
+            String folderName = smbTitle();
+            List<TidalClient.Track> audioTracks = new ArrayList<>();
+            for (SmbClient.Item item : audioItems) {
+                try {
+                    audioTracks.add(SmbClient.toTrack(smbCurrentServer, item, folderName));
+                } catch (Exception ignored) {}
+            }
+
+            for (int i = 0; i < audioTracks.size(); i++) {
+                int at = i;
+                TidalClient.Track track = audioTracks.get(i);
+                SmbClient.Item item = audioItems.get(i);
+                String sizeLabel = formatBytes(item.size);
+                String sub = sizeLabel.isEmpty() ? "SMB 音频" : sizeLabel + " · SMB";
+                LinearLayout row = entry(track.title, sub, "", () -> playList(audioTracks, at, false));
+                ((ImageView) row.getChildAt(0)).setImageDrawable(new PlayerIcon("note", ACCENT, dp(22)));
+                row.addView(iconButton("more", "更多 " + track.title, () -> smbTrackMenu(track, item)));
+                content.addView(row);
+            }
+        }
+    }
+
+    private void loadSmbDirectory() {
+        if (smbCurrentServer == null) return;
+        smbLoading = true;
+        smbError = "";
+        smbItems.clear();
+        render();
+
+        SmbClient.Server targetServer = smbCurrentServer;
+        String targetPath = smbCurrentPath;
+        worker.submit(() -> {
+            try {
+                List<SmbClient.Item> result = SmbClient.list(targetServer, targetPath);
+                handler.post(() -> {
+                    if (smbCurrentServer != targetServer || !java.util.Objects.equals(smbCurrentPath, targetPath)) return;
+                    smbItems.clear();
+                    smbItems.addAll(result);
+                    smbLoading = false;
+                    smbError = "";
+                    render();
+                });
+            } catch (Exception e) {
+                handler.post(() -> {
+                    if (smbCurrentServer != targetServer || !java.util.Objects.equals(smbCurrentPath, targetPath)) return;
+                    smbLoading = false;
+                    smbError = e.getMessage() != null ? e.getMessage() : "读取共享目录失败";
+                    render();
+                });
+            }
+        });
+    }
+
+    private void showEditSmbServer(SmbClient.Server existing) {
+        LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
+        body.setPadding(dp(20), dp(10), dp(20), dp(10));
+
+        TextView nameLabel = text("服务器备注", 12, MUTED, false);
+        EditText nameInput = new EditText(this);
+        nameInput.setSingleLine(true);
+        nameInput.setHint("如：家庭 NAS / 电脑共享");
+        if (existing != null) nameInput.setText(existing.name);
+
+        TextView hostLabel = text("主机地址 / IP", 12, MUTED, false);
+        hostLabel.setPadding(0, dp(8), 0, 0);
+        EditText hostInput = new EditText(this);
+        hostInput.setSingleLine(true);
+        hostInput.setHint("如：192.168.1.100 或 nas.local");
+        if (existing != null) hostInput.setText(existing.host);
+
+        TextView portLabel = text("端口 (默认 445)", 12, MUTED, false);
+        portLabel.setPadding(0, dp(8), 0, 0);
+        EditText portInput = new EditText(this);
+        portInput.setSingleLine(true);
+        portInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        portInput.setHint("445");
+        if (existing != null) portInput.setText(String.valueOf(existing.port));
+
+        TextView shareLabel = text("共享文件夹名称 (可选，留空自动列出所有共享)", 12, MUTED, false);
+        shareLabel.setPadding(0, dp(8), 0, 0);
+        EditText shareInput = new EditText(this);
+        shareInput.setSingleLine(true);
+        shareInput.setHint("如：music / share (留空则列出所有共享)");
+        if (existing != null) shareInput.setText(existing.share);
+
+        TextView userLabel = text("用户名 (匿名访问可留空)", 12, MUTED, false);
+        userLabel.setPadding(0, dp(8), 0, 0);
+        EditText userInput = new EditText(this);
+        userInput.setSingleLine(true);
+        userInput.setHint("如：guest 或 username");
+        if (existing != null) userInput.setText(existing.user);
+
+        TextView passLabel = text("密码", 12, MUTED, false);
+        passLabel.setPadding(0, dp(8), 0, 0);
+        EditText passInput = new EditText(this);
+        passInput.setSingleLine(true);
+        passInput.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        if (existing != null) passInput.setText(existing.pass);
+
+        TextView domainLabel = text("域名 / 工作组 (可选，默认 WORKGROUP)", 12, MUTED, false);
+        domainLabel.setPadding(0, dp(8), 0, 0);
+        EditText domainInput = new EditText(this);
+        domainInput.setSingleLine(true);
+        domainInput.setHint("留空使用默认工作组");
+        if (existing != null) domainInput.setText(existing.domain);
+
+        body.addView(nameLabel);
+        body.addView(nameInput);
+        body.addView(hostLabel);
+        body.addView(hostInput);
+        body.addView(portLabel);
+        body.addView(portInput);
+        body.addView(shareLabel);
+        body.addView(shareInput);
+        body.addView(userLabel);
+        body.addView(userInput);
+        body.addView(passLabel);
+        body.addView(passInput);
+        body.addView(domainLabel);
+        body.addView(domainInput);
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(body);
+
+        AlertDialog.Builder builder = new AlertDialog.Builder(this)
+                .setTitle(existing == null ? "添加 SMB 共享" : "编辑 SMB 共享")
+                .setView(scroll)
+                .setNegativeButton("取消", null)
+                .setPositiveButton("保存", null)
+                .setNeutralButton("测试连接", null);
+
+        if (existing != null) {
+            builder.setNegativeButton("删除", (dialog, which) -> {
+                new AlertDialog.Builder(this)
+                        .setTitle("确认删除")
+                        .setMessage("确定从列表中移除此 SMB 共享吗？")
+                        .setNegativeButton("取消", null)
+                        .setPositiveButton("删除", (d2, w2) -> {
+                            List<SmbClient.Server> list = SmbClient.loadServers(this);
+                            for (java.util.Iterator<SmbClient.Server> iterator = list.iterator(); iterator.hasNext();) {
+                                if (iterator.next().id.equals(existing.id)) iterator.remove();
+                            }
+                            SmbClient.saveServers(this, list);
+                            if (smbCurrentServer != null && smbCurrentServer.id.equals(existing.id)) {
+                                smbCurrentServer = null;
+                                smbCurrentPath = "";
+                                smbItems.clear();
+                            }
+                            render();
+                        })
+                        .show();
+            });
+        }
+
+        AlertDialog dialog = builder.create();
+        dialog.show();
+
+        dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> {
+            String host = hostInput.getText().toString().trim();
+            if (host.isEmpty()) {
+                toast("请输入主机地址 / IP");
+                return;
+            }
+            int port = 445;
+            try {
+                String pStr = portInput.getText().toString().trim();
+                if (!pStr.isEmpty()) port = Integer.parseInt(pStr);
+            } catch (Exception ignored) {}
+
+            SmbClient.Server testServer = new SmbClient.Server(
+                    existing != null ? existing.id : null,
+                    nameInput.getText().toString().trim(),
+                    host,
+                    port,
+                    shareInput.getText().toString().trim(),
+                    userInput.getText().toString().trim(),
+                    passInput.getText().toString(),
+                    domainInput.getText().toString().trim()
+            );
+
+            toast("正在测试连接 SMB…");
+            worker.submit(() -> {
+                try {
+                    SmbClient.testConnection(testServer);
+                    handler.post(() -> toast("SMB 连接成功！认证通过。"));
+                } catch (Exception e) {
+                    handler.post(() -> toast("连接失败: " + (e.getMessage() != null ? e.getMessage() : "网络超时")));
+                }
+            });
+        });
+
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            String host = hostInput.getText().toString().trim();
+            if (host.isEmpty()) {
+                toast("请输入主机地址 / IP");
+                return;
+            }
+            int port = 445;
+            try {
+                String pStr = portInput.getText().toString().trim();
+                if (!pStr.isEmpty()) port = Integer.parseInt(pStr);
+            } catch (Exception ignored) {}
+
+            String name = nameInput.getText().toString().trim();
+            if (name.isEmpty()) name = host;
+
+            SmbClient.Server server = new SmbClient.Server(
+                    existing != null ? existing.id : null,
+                    name,
+                    host,
+                    port,
+                    shareInput.getText().toString().trim(),
+                    userInput.getText().toString().trim(),
+                    passInput.getText().toString(),
+                    domainInput.getText().toString().trim()
+            );
+
+            List<SmbClient.Server> list = SmbClient.loadServers(this);
+            int idx = -1;
+            for (int i = 0; i < list.size(); i++) {
+                if (list.get(i).id.equals(server.id)) {
+                    idx = i;
+                    break;
+                }
+            }
+            if (idx >= 0) list.set(idx, server);
+            else list.add(server);
+
+            SmbClient.saveServers(this, list);
+            if (smbCurrentServer != null && smbCurrentServer.id.equals(server.id)) {
+                smbCurrentServer = server;
+            }
+            dialog.dismiss();
+            render();
+        });
+    }
+
+    private void smbTrackMenu(TidalClient.Track track, SmbClient.Item item) {
+        List<String> choices = new ArrayList<>();
+        List<Runnable> actions = new ArrayList<>();
+        choices.add("下一首播放");
+        actions.add(() -> { if (playback != null) { playback.enqueue(track, true); toast("已加入下一首"); } });
+        choices.add("追加到队列");
+        actions.add(() -> { if (playback != null) { playback.enqueue(track, false); toast("已加入队列"); } });
+
+        SmbClient.Server targetServer = smbCurrentServer;
+        if (targetServer == null) {
+            for (SmbClient.Server s : SmbClient.loadServers(this)) {
+                if (track.smbUrl.startsWith(s.rootUrl()) || (!s.host.isEmpty() && track.smbUrl.contains(s.host))) {
+                    targetServer = s;
+                    break;
+                }
+            }
+        }
+        if (targetServer != null) {
+            final SmbClient.Server s = targetServer;
+            choices.add("下载到本地");
+            actions.add(() -> downloadSmbTrack(s, track, item));
+        }
+
+        new AlertDialog.Builder(this)
+                .setTitle(track.title)
+                .setItems(choices.toArray(new String[0]), (dialog, which) -> {
+                    if (which >= 0 && which < actions.size()) actions.get(which).run();
+                })
+                .show();
+    }
+
+    private void downloadSmbTrack(SmbClient.Server server, TidalClient.Track track, SmbClient.Item item) {
+        pickDownloadRoot(targetRoot -> {
+            toast("开始下载: " + track.title);
+            worker.submit(() -> {
+                try {
+                    SmbClient.Item targetItem = item;
+                    if (targetItem == null) {
+                        targetItem = new SmbClient.Item(track.title + ".flac", "", track.smbUrl, false, 0);
+                    }
+                    SmbClient.downloadFile(this, server, targetItem, targetRoot, null);
+                    handler.post(() -> {
+                        toast("下载完成: " + track.title);
+                        scanDirectories(java.util.Collections.singletonList(targetRoot));
+                    });
+                } catch (Exception e) {
+                    handler.post(() -> toast("下载失败: " + (e.getMessage() != null ? e.getMessage() : "网络错误")));
+                }
+            });
+        });
+    }
+
+    private void downloadSmbDirectory(SmbClient.Server server, String folderName, List<SmbClient.Item> items) {
+        pickDownloadRoot(targetRoot -> {
+            List<SmbClient.Item> toDownload = new ArrayList<>();
+            for (SmbClient.Item item : items) {
+                if (item.isAudio || item.name.toLowerCase(Locale.ROOT).endsWith(".lrc")
+                        || item.name.toLowerCase(Locale.ROOT).endsWith(".jpg")
+                        || item.name.toLowerCase(Locale.ROOT).endsWith(".png")) {
+                    toDownload.add(item);
+                }
+            }
+
+            if (toDownload.isEmpty()) {
+                toast("此目录下没有可下载的文件");
+                return;
+            }
+
+            new AlertDialog.Builder(this)
+                    .setTitle("下载整目录")
+                    .setMessage("即将下载「" + folderName + "」共 " + toDownload.size() + " 个文件到本地存储。")
+                    .setNegativeButton("取消", null)
+                    .setPositiveButton("开始下载", (dialog, which) -> {
+                        toast("开始下载 " + toDownload.size() + " 个文件…");
+                        worker.submit(() -> {
+                            int success = 0;
+                            int failed = 0;
+                            Uri folderUri = SmbClient.findOrCreateDirectory(this, targetRoot, folderName);
+                            for (SmbClient.Item item : toDownload) {
+                                try {
+                                    SmbClient.downloadFile(this, server, item, folderUri, null);
+                                    success++;
+                                } catch (Exception e) {
+                                    failed++;
+                                }
+                            }
+                            int totalSuccess = success;
+                            int totalFailed = failed;
+                            handler.post(() -> {
+                                toast("目录下载完成：成功 " + totalSuccess + " 个文件" + (totalFailed > 0 ? "，失败 " + totalFailed + " 个" : ""));
+                                scanDirectories(java.util.Collections.singletonList(targetRoot));
+                            });
+                        });
+                    })
+                    .show();
+        });
+    }
+
+    private String smbDisplayPath(String path) {
+        if (path == null || path.isEmpty()) return "/";
+        try {
+            java.net.URI uri = new java.net.URI(path);
+            String p = uri.getPath();
+            return (p == null || p.isEmpty()) ? "/" : p;
+        } catch (Exception ignored) {
+            return path;
+        }
+    }
+
+    private static String formatBytes(long bytes) {
+        if (bytes <= 0) return "";
+        if (bytes < 1024 * 1024) return String.format(Locale.ROOT, "%.1f KB", bytes / 1024.0);
+        return String.format(Locale.ROOT, "%.1f MB", bytes / (1024.0 * 1024.0));
     }
 
     private void localMusic() {
@@ -1967,6 +2950,14 @@ public final class MainActivity extends ComponentActivity {
     private void trackMenu(TidalClient.Track track, boolean favoriteList) {
         if (track.isLocal()) {
             localTrackMenu(track);
+            return;
+        }
+        if (track.isWebdav()) {
+            webdavTrackMenu(track, null);
+            return;
+        }
+        if (track.isSmb()) {
+            smbTrackMenu(track, null);
             return;
         }
         boolean liked = favoriteList || favoriteIds.contains(track.id);
@@ -5063,13 +6054,19 @@ public final class MainActivity extends ComponentActivity {
         LinearLayout body = column();
         body.setPadding(dp(20), dp(8), dp(20), dp(18));
         body.addView(text(track.title, 17, INK, true));
-        body.addView(text((track.isLocal() ? "本地文件" : track.isNetease() ? "网易云" : "TIDAL")
-                + (service.actualQuality.isEmpty() || track.isLocal() ? "" : " · " + qualityLabel()), 13, MUTED, false));
-        if (!track.isLocal()) {
+        String sourceName = track.isLocal() ? "本地文件"
+                : track.isWebdav() ? "WebDAV"
+                : track.isSmb() ? "SMB"
+                : track.isNetease() ? "网易云" : "TIDAL";
+        body.addView(text(sourceName
+                + (service.actualQuality.isEmpty() || track.isLocal() || track.isWebdav() || track.isSmb() ? "" : " · " + qualityLabel()), 13, MUTED, false));
+        if (!track.isLocal() && !track.isWebdav() && !track.isSmb()) {
             body.addView(text("已选音质 · " + selectedQualityName(), 13, MUTED, false));
         }
-        sourceRows(body, track.isLocal() ? "本地文件" : track.isNetease() ? "网易云" : "TIDAL",
-                track.isLocal() ? LocalMusicFiles.displayPath(track.localUri) : "");
+        sourceRows(body, sourceName,
+                track.isLocal() ? LocalMusicFiles.displayPath(track.localUri)
+                : track.isWebdav() ? track.webdavUrl
+                : track.isSmb() ? track.smbUrl : "");
         audioInfoRow(body, "音源采样率", audioRate(rate), "音源位深", audioValue(depth, " bit"));
         if (track.needsTidal() && service.quality == 3 && !service.loading
                 && !service.actualQuality.isEmpty() && !"HI_RES_LOSSLESS".equals(service.actualQuality) && depth <= 16) {
@@ -5096,7 +6093,7 @@ public final class MainActivity extends ComponentActivity {
         scroll.addView(body);
         AlertDialog.Builder dialog = new AlertDialog.Builder(this).setTitle("播放信息")
                 .setView(scroll).setPositiveButton("关闭", null);
-        if (!track.isLocal()) dialog.setNeutralButton("选择音质", (view, choice) -> chooseQuality());
+        if (!track.isLocal() && !track.isWebdav() && !track.isSmb()) dialog.setNeutralButton("选择音质", (view, choice) -> chooseQuality());
         dialog.show();
     }
 
@@ -5407,13 +6404,23 @@ public final class MainActivity extends ComponentActivity {
         subtitle.setText(byline);
         showPlayingAlbum(current == null ? "" : current.album, current != null && !current.artist.isEmpty());
         boolean local = current != null && current.isLocal();
+        boolean webdav = current != null && current.isWebdav();
+        boolean smb = current != null && current.isSmb();
         playerDetails.setEnabled(current != null);
         playerQuality.setVisibility(current != null ? View.VISIBLE : View.GONE);
         if (current != null) {
             String actual = local ? playback.resolution.replaceFirst("^ · ", "")
+                    : webdav ? ("WebDAV" + playback.resolution)
+                    : smb ? ("SMB" + playback.resolution)
                     : qualityLabel() + playback.resolution;
-            playerQuality.setText(local ? (actual.isEmpty() ? "本地文件" : "本地 · " + actual) : actual + "  ▾");
-            playerQuality.setEnabled(!local);
+            playerQuality.setText(local ? (actual.isEmpty() ? "本地文件" : "本地 · " + actual)
+                    : (webdav || smb) ? actual
+                    : actual + "  ▾");
+            playerQuality.setOnClickListener(v -> {
+                if (local || webdav || smb) showPlayerDetails();
+                else chooseQuality();
+            });
+            playerQuality.setEnabled(true);
             boolean hiRes = "HI_RES_LOSSLESS".equals(playback.actualQuality);
             playerQuality.setTextColor(hiRes ? 0xffe8c77a : ACCENT);
         }

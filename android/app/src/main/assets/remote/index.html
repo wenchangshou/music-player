@@ -48,6 +48,10 @@ body {
   overflow-x: hidden;
   padding-bottom: 96px; /* Space for persistent Mini Player */
 }
+body[data-view="player"],
+body:not([data-view]) {
+  padding-bottom: 0 !important;
+}
 
 /* Ambient glow backdrop */
 #ambientGlow {
@@ -269,7 +273,7 @@ main {
   z-index: 10;
   max-width: 1440px;
   margin: 0 auto;
-  padding: 24px clamp(16px, 3.5vw, 40px) 40px;
+  padding: clamp(10px, 1.8vh, 18px) clamp(16px, 3.5vw, 40px) 20px;
 }
 
 /* Hero Cards */
@@ -278,39 +282,220 @@ main {
   backdrop-filter: blur(24px);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  padding: 22px;
+  padding: 18px;
   box-shadow: 0 10px 30px rgba(0,0,0,0.25);
 }
 
 /* View: Player Stage */
 .player-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(340px, 1fr);
-  gap: 28px;
-  align-items: start;
+  grid-template-columns: minmax(0, 1.25fr) minmax(320px, 1fr);
+  gap: 20px;
+  align-items: stretch;
 }
 .player-stage {
   position: relative;
   overflow: hidden;
   border-radius: var(--radius-lg);
   border: 1px solid var(--border);
-  background: linear-gradient(180deg, rgba(24, 34, 41, 0.65) 0%, rgba(9, 13, 16, 0.95) 100%);
-  padding: clamp(20px, 4vw, 40px);
+  background: linear-gradient(180deg, rgba(20, 28, 34, 0.75) 0%, rgba(9, 13, 16, 0.95) 100%);
+  padding: clamp(14px, 2vh, 18px) clamp(16px, 2.5vw, 32px);
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: space-evenly;
   text-align: center;
-  box-shadow: 0 16px 48px rgba(0,0,0,0.4);
+  box-shadow: 0 16px 48px rgba(0,0,0,0.45);
+  min-height: 0;
+}
+.stage-backdrop {
+  position: absolute;
+  inset: -60px;
+  background-size: cover;
+  background-position: center;
+  filter: blur(85px) saturate(2) brightness(0.36);
+  opacity: 0.7;
+  pointer-events: none;
+  transform: scale(1.15);
+  transition: background-image 0.8s ease, opacity 0.5s ease;
+  z-index: 1;
+}
+.stage-top-bar {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  max-width: 480px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.stage-mode-switch {
+  display: inline-flex;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: var(--radius-full);
+  padding: 3px;
+  gap: 3px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+}
+.stage-mode-switch button {
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-full);
+  padding: 4px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.65);
+  cursor: pointer;
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.stage-mode-switch button:hover {
+  color: #ffffff;
+}
+.stage-mode-switch button.active {
+  background: rgba(255, 255, 255, 0.22);
+  color: #ffffff;
+  font-weight: 700;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+}
+.stage-fs-btn {
+  color: rgba(255, 255, 255, 0.6);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: var(--radius-full);
+  padding: 6px;
+  transition: all 0.2s ease;
+}
+.stage-fs-btn:hover {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.16);
+  transform: scale(1.08);
 }
 .stage-artwork-wrap {
   position: relative;
-  width: min(380px, 100%, 48vh);
+  z-index: 2;
+  width: min(220px, 100%, 25vh);
+  height: min(220px, 100%, 25vh);
   aspect-ratio: 1;
-  margin: 0 auto 28px;
-  border-radius: 20px;
+  margin: 0 auto 12px;
+  border-radius: 16px;
   overflow: hidden;
-  box-shadow: 0 20px 60px rgba(0,0,0,0.7), 0 0 40px var(--ambient-color);
+  box-shadow: 0 16px 40px rgba(0,0,0,0.65), 0 0 35px var(--ambient-color);
   background: linear-gradient(135deg, hsl(var(--art-hue, 165) 34% 36%), hsl(calc(var(--art-hue, 165) + 40) 45% 15%));
+  cursor: pointer;
+  transition: transform 0.35s ease, box-shadow 0.35s ease;
+  animation: stage-view-fade 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.stage-artwork-wrap:hover {
+  transform: translateY(-2px) scale(1.01);
+  box-shadow: 0 20px 50px rgba(0,0,0,0.75), 0 0 45px var(--ambient-color);
+}
+.stage-lyrics-wrap {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  max-width: 520px;
+  height: min(230px, 26vh);
+  margin: 0 auto 10px;
+  background: transparent;
+  border: none;
+  overflow-y: auto;
+  scrollbar-width: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 24px 10px;
+  mask-image: linear-gradient(180deg, transparent 0%, black 18%, black 82%, transparent 100%);
+  -webkit-mask-image: linear-gradient(180deg, transparent 0%, black 18%, black 82%, transparent 100%);
+  animation: stage-view-fade 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.stage-lyrics-wrap::-webkit-scrollbar {
+  display: none;
+}
+@keyframes stage-view-fade {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.stage-lyrics-list,
+.side-lyrics-list {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.side-lyrics-list {
+  padding: 30px 10px;
+  max-height: 100%;
+  overflow-y: auto;
+  scrollbar-width: none;
+  mask-image: linear-gradient(180deg, transparent 0%, black 15%, black 85%, transparent 100%);
+  -webkit-mask-image: linear-gradient(180deg, transparent 0%, black 15%, black 85%, transparent 100%);
+}
+.side-lyrics-list::-webkit-scrollbar { display: none; }
+
+.lyric-line {
+  font-size: clamp(15px, 1.7vw, 20px);
+  font-weight: 650;
+  line-height: 1.6;
+  color: rgba(255, 255, 255, 0.48);
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  text-align: center;
+  padding: 5px 14px;
+  cursor: pointer;
+  border-radius: 10px;
+  width: 100%;
+  max-width: 520px;
+  user-select: none;
+  word-break: normal;
+  white-space: normal;
+}
+  cursor: pointer;
+  border-radius: 12px;
+  width: 100%;
+  max-width: 580px;
+  user-select: none;
+  word-break: normal;
+  white-space: normal;
+}
+.lyric-line:hover {
+  color: rgba(255, 255, 255, 0.95);
+  background: rgba(255, 255, 255, 0.08);
+  transform: scale(1.02);
+}
+.lyric-line.active {
+  color: #ffffff;
+  font-weight: 850;
+  font-size: 1.12em;
+  opacity: 1;
+  transform: scale(1.08);
+  text-shadow: 0 0 20px rgba(255, 255, 255, 0.6), 0 0 45px var(--accent-glow);
+}
+.stage-meta,
+.stage-progress,
+.stage-transport,
+.volume-row,
+.stage-actions {
+  position: relative;
+  z-index: 2;
+}
+#btnOpenLyrics.active {
+  background: rgba(255,255,255,0.14);
+  color: var(--accent);
+  border-color: var(--accent);
 }
 .stage-artwork-wrap:before {
   content: attr(data-letter);
@@ -345,20 +530,20 @@ main {
 
 .stage-meta {
   width: 100%;
-  max-width: 520px;
-  margin-bottom: 24px;
+  max-width: 480px;
+  margin-bottom: 10px;
 }
 .pill-badges {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 10px;
+  gap: 6px;
+  margin-bottom: 4px;
 }
 .badge {
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0.05em;
-  padding: 3px 10px;
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
   border-radius: var(--radius-full);
   background: rgba(255,255,255,0.08);
   color: var(--accent);
@@ -366,15 +551,15 @@ main {
 }
 .badge.gold { background: var(--gold-bg); color: var(--gold); }
 .stage-meta h2 {
-  font-size: clamp(22px, 3.2vw, 34px);
+  font-size: clamp(17px, 2vw, 22px);
   font-weight: 750;
-  letter-spacing: -0.02em;
-  line-height: 1.2;
-  margin-bottom: 6px;
+  letter-spacing: -0.01em;
+  line-height: 1.25;
+  margin-bottom: 2px;
   overflow-wrap: anywhere;
 }
 .stage-meta p {
-  font-size: 16px;
+  font-size: 13.5px;
   color: var(--muted);
   overflow-wrap: anywhere;
 }
@@ -382,16 +567,16 @@ main {
 /* Stage Progress */
 .stage-progress {
   width: 100%;
-  max-width: 520px;
-  margin-bottom: 24px;
+  max-width: 480px;
+  margin-bottom: 10px;
 }
 .time-labels {
   display: flex;
   justify-content: space-between;
-  font-size: 12.5px;
+  font-size: 11.5px;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
-  margin-top: 4px;
+  margin-top: 3px;
 }
 
 /* Stage Transport Controls */
@@ -399,29 +584,29 @@ main {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: clamp(12px, 3vw, 30px);
-  margin-bottom: 24px;
+  gap: clamp(10px, 2vw, 22px);
+  margin-bottom: 10px;
 }
 .stage-transport button {
   background: transparent;
   border: none;
   color: var(--ink);
-  width: 48px;
-  height: 48px;
+  width: 38px;
+  height: 38px;
   border-radius: 50%;
   padding: 0;
 }
 .stage-transport button:hover { background: rgba(255,255,255,0.08); }
 .stage-transport button.play-hero {
-  width: 72px;
-  height: 72px;
+  width: 52px;
+  height: 52px;
   background: var(--accent);
   color: var(--accent-ink);
-  box-shadow: 0 8px 24px var(--accent-glow);
+  box-shadow: 0 6px 18px var(--accent-glow);
 }
-.stage-transport button.play-hero:hover { background: #3ef0bb; transform: scale(1.05); }
-.stage-transport button.play-hero:active { transform: scale(0.95); }
-.stage-transport button.play-hero .icon { width: 32px; height: 32px; }
+.stage-transport button.play-hero:hover { background: #3ef0bb; transform: scale(1.04); }
+.stage-transport button.play-hero:active { transform: scale(0.96); }
+.stage-transport button.play-hero .icon { width: 24px; height: 24px; }
 .stage-transport .mode-btn { color: var(--muted); position: relative; }
 .stage-transport .mode-btn.on { color: var(--accent); }
 .stage-transport .mode-btn .badge-dot {
@@ -437,21 +622,26 @@ main {
 .volume-row {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   width: 100%;
-  max-width: 320px;
-  margin-bottom: 20px;
+  max-width: 260px;
+  margin-bottom: 10px;
 }
-.volume-row .icon-btn { width: 32px; height: 32px; }
+.volume-row .icon-btn { width: 26px; height: 26px; }
 .volume-row input[type=range] { flex: 1; }
 
 /* Stage Quick Actions */
 .stage-actions {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
   justify-content: center;
+}
+.stage-actions button,
+.stage-actions select {
+  padding: 4px 10px;
+  font-size: 12px;
 }
 
 /* Stage Side Panel (Tabs: Queue & Mini Search) */
@@ -459,6 +649,16 @@ main {
   padding: 0;
   overflow: hidden;
   border-radius: var(--radius-lg);
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.side-content {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+  padding: 14px;
 }
 .side-header-tabs {
   display: flex;
@@ -561,6 +761,12 @@ main {
   opacity: 0;
   pointer-events: none;
 }
+/* Touch screens have no hover: keep the song actions visible. */
+@media (hover: none) {
+  .track-row .track-actions .icon-btn.hover-only { opacity: 1 !important; pointer-events: auto !important; }
+}
+/* A local song without lyrics always shows where to get them. */
+.track-row .track-actions .icon-btn.btn-lyrics.needed { opacity: 1; pointer-events: auto; color: var(--accent); }
 
 /* Animated Equalizer Wave */
 .eq-wave {
@@ -627,6 +833,7 @@ main {
 }
 .library-header h2 { font-size: 26px; font-weight: 750; }
 .library-subnav-bar {
+  flex-wrap: wrap;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -721,6 +928,187 @@ main {
   margin-top: 2px;
 }
 
+/* Local Library Subnav Pills */
+.local-nav-pills {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  white-space: nowrap;
+  padding: 2px 0;
+  -webkit-overflow-scrolling: touch;
+}
+.local-nav-pills button {
+  background: var(--surface-glass);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  padding: 6px 14px;
+  border-radius: var(--radius-full);
+  font-size: 13px;
+  font-weight: 550;
+  transition: all 0.15s ease;
+  cursor: pointer;
+  flex: none;
+}
+.local-nav-pills button:hover {
+  background: var(--surface-hover);
+  color: var(--ink);
+}
+.local-nav-pills button[aria-current=true] {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-color: var(--accent);
+  font-weight: 700;
+}
+
+/* Album & Artist Hero Detail Header */
+.album-hero-card {
+  display: flex;
+  gap: 28px;
+  align-items: flex-end;
+  padding: 24px;
+  border-radius: var(--radius-lg);
+  background: linear-gradient(135deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.01) 100%);
+  border: 1px solid var(--border);
+  margin-bottom: 24px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+}
+.album-hero-artwork {
+  position: relative;
+  width: 180px;
+  height: 180px;
+  flex: none;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  box-shadow: 0 16px 36px rgba(0,0,0,0.5);
+  background: linear-gradient(135deg, hsl(var(--art-hue, 165) 34% 36%), hsl(calc(var(--art-hue, 165) + 40) 45% 15%));
+}
+.album-hero-artwork.artist {
+  border-radius: 50%;
+  width: 160px;
+  height: 160px;
+}
+.album-hero-artwork:before {
+  content: attr(data-letter);
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-weight: 750;
+  font-size: 64px;
+  color: rgba(255, 255, 255, 0.45);
+  z-index: 1;
+  transition: opacity 0.2s ease;
+}
+.album-hero-artwork.art-loaded:before { opacity: 0; }
+.album-hero-artwork img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  z-index: 2;
+}
+.album-hero-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.album-hero-tag {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.album-hero-title {
+  font-size: clamp(22px, 3vw, 32px);
+  font-weight: 800;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.album-hero-subtitle {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.album-hero-subtitle a {
+  color: var(--accent);
+  text-decoration: none;
+  cursor: pointer;
+}
+.album-hero-subtitle a:hover {
+  text-decoration: underline;
+}
+.album-hero-meta {
+  font-size: 13.5px;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.album-hero-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+
+/* Multi-disc dividers and track items */
+.disc-divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--accent);
+  border-bottom: 1px solid var(--border);
+  background: rgba(255,255,255,0.03);
+  margin-top: 10px;
+  border-radius: var(--radius-sm);
+}
+.track-num {
+  width: 28px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  flex: none;
+}
+.track-duration {
+  font-size: 12.5px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  margin-left: 8px;
+  margin-right: 6px;
+  flex: none;
+}
+.badge-tag {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(45, 226, 171, 0.15);
+  color: var(--accent);
+  margin-left: 6px;
+  vertical-align: middle;
+}
+.section-title {
+  font-size: 18px;
+  font-weight: 750;
+  margin: 24px 0 14px 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 /* Global Search View */
 .search-view {
   max-width: 900px;
@@ -770,6 +1158,531 @@ main {
   font-weight: 650;
 }
 
+/* Downloads page (手机下载管理) */
+.dl-view-container {
+  padding-bottom: 120px;
+}
+.dl-badge {
+  margin-left: 6px; min-width: 18px; padding: 0 6px; border-radius: 999px;
+  background: var(--accent); color: var(--accent-ink); font-size: 11px; font-weight: 700; line-height: 18px;
+}
+/* 顶部全局看板 */
+.dl-dashboard-card {
+  background: linear-gradient(145deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 18px 20px;
+  margin-bottom: 16px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.25);
+  backdrop-filter: blur(20px);
+}
+.dl-dashboard-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.dl-dashboard-title-box {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.dl-dashboard-title-box h2 {
+  font-size: 20px;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+}
+/* 实时速度动态发光指示药丸 */
+.dl-speed-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: var(--radius-full);
+  background: rgba(255,255,255,0.05);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--muted);
+  transition: all 0.3s ease;
+}
+.dl-speed-badge.active {
+  background: rgba(45, 226, 171, 0.12);
+  border-color: rgba(45, 226, 171, 0.4);
+  color: var(--accent);
+  box-shadow: 0 0 16px rgba(45, 226, 171, 0.15);
+}
+.dl-speed-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--dim);
+  transition: all 0.3s ease;
+}
+.dl-speed-badge.active .dl-speed-dot {
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
+  animation: dl-pulse 1.8s infinite;
+}
+@keyframes dl-pulse {
+  0% { transform: scale(0.9); opacity: 0.8; }
+  50% { transform: scale(1.3); opacity: 1; }
+  100% { transform: scale(0.9); opacity: 0.8; }
+}
+/* 控制工具栏 */
+.dl-dashboard-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.dl-btn-compact {
+  padding: 6px 12px;
+  font-size: 12.5px;
+  font-weight: 600;
+  border-radius: var(--radius-md);
+  transition: all 0.2s ease;
+}
+.dl-parallel-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  font-size: 12.5px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.dl-parallel-pill select {
+  background: transparent;
+  color: var(--ink);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+#btnDlGroup[aria-pressed=true], #btnLyricsMissing[aria-pressed=true] {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-color: transparent;
+}
+/* 总体进度条与统计 */
+.dl-overall-progress {
+  margin-top: 16px;
+}
+.dl-progress-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+  margin-bottom: 6px;
+}
+.dl-progress-count {
+  color: var(--muted);
+  font-weight: 600;
+}
+.dl-progress-percent {
+  font-weight: 750;
+  color: var(--accent);
+}
+.dl-overall-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+  position: relative;
+}
+.dl-overall-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--accent), #38ef7d);
+  transition: width 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+}
+/* 分段状态过滤标签栏 */
+.dl-filter-tabs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.dl-filter-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: var(--radius-full);
+  background: rgba(255,255,255,0.04);
+  border: 1px solid transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.2s;
+}
+.dl-filter-tab:hover {
+  background: rgba(255,255,255,0.08);
+  color: var(--ink);
+}
+.dl-filter-tab[aria-current="true"] {
+  background: var(--surface-raised);
+  border-color: rgba(45, 226, 171, 0.4);
+  color: var(--ink);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+}
+.dl-tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  background: rgba(255,255,255,0.1);
+  color: var(--muted);
+}
+.dl-filter-tab[aria-current="true"] .dl-tab-badge {
+  background: rgba(45, 226, 171, 0.2);
+  color: var(--accent);
+}
+.dl-tab-badge.active {
+  background: rgba(45, 226, 171, 0.2);
+  color: var(--accent);
+}
+.dl-tab-badge.danger {
+  background: rgba(255, 92, 108, 0.2);
+  color: var(--danger);
+}
+.dl-tab-badge.success {
+  background: rgba(56, 239, 125, 0.15);
+  color: #38ef7d;
+}
+/* 批量操作浮动栏 */
+.dl-batch-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding: 10px 16px;
+  border-radius: var(--radius-md);
+  background: rgba(24, 34, 41, 0.95);
+  border: 1px solid var(--accent);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(16px);
+}
+.dl-batch-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--accent);
+}
+.dl-batch-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.dl-batch-actions button {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+.danger-text {
+  color: var(--danger) !important;
+}
+/* 分组卡片与列表 */
+.dl-group-card {
+  margin-top: 14px;
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  overflow: hidden;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.dl-group-card:hover {
+  border-color: rgba(255,255,255,0.15);
+}
+.dl-group-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  cursor: pointer;
+  user-select: none;
+}
+.dl-group-header input[type="checkbox"],
+.dl-track-row input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  accent-color: var(--accent);
+  cursor: pointer;
+  flex: none;
+  margin: 0;
+}
+.dl-group-thumb,
+.dl-track-thumb {
+  border-radius: var(--radius-sm);
+  background: rgba(255,255,255,0.06);
+  flex: none;
+  position: relative;
+  overflow: hidden;
+}
+.dl-group-thumb {
+  width: 48px;
+  height: 48px;
+}
+.dl-track-thumb {
+  width: 42px;
+  height: 42px;
+}
+.dl-group-thumb img,
+.dl-track-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.dl-group-thumb::before,
+.dl-track-thumb::before {
+  content: attr(data-letter);
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 18px;
+  color: rgba(255,255,255,0.7);
+  background: hsl(var(--hue, 200), 40%, 20%);
+}
+.dl-track-thumb::before {
+  font-size: 15px;
+}
+.dl-group-thumb.art-loaded::before,
+.dl-track-thumb.art-loaded::before {
+  display: none;
+}
+.dl-group-info {
+  flex: 1;
+  min-width: 0;
+}
+.dl-group-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dl-group-sub {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dl-group-meta-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+.dl-group-progress-bar {
+  flex: 1;
+  max-width: 160px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255,255,255,0.08);
+  overflow: hidden;
+}
+.dl-group-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.3s;
+}
+.dl-group-count {
+  font-size: 11.5px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.dl-group-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+.dl-group-actions button {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+.dl-chevron-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  color: var(--muted);
+  transition: transform 0.25s ease, background 0.2s;
+  flex: none;
+}
+.dl-group-card.closed .dl-chevron-btn {
+  transform: rotate(-90deg);
+}
+.dl-group-members {
+  border-top: 1px solid rgba(255,255,255,0.05);
+  background: rgba(0, 0, 0, 0.15);
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+.dl-group-card.closed .dl-group-members {
+  display: none;
+}
+/* 单曲行 */
+.dl-track-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  transition: background 0.15s ease;
+  position: relative;
+  list-style: none;
+}
+.dl-track-row:last-child {
+  border-bottom: none;
+}
+.dl-track-row:hover {
+  background: rgba(255,255,255,0.03);
+}
+.dl-track-main {
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
+}
+.dl-track-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.dl-track-title {
+  font-size: 13.5px;
+  font-weight: 650;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dl-version {
+  color: var(--muted);
+  font-weight: 500;
+  font-size: 12px;
+}
+.dl-track-sub {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 3px;
+}
+.dl-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+.dl-pill-source-tidal {
+  background: rgba(0, 204, 255, 0.15);
+  color: #00e1ff;
+  border: 1px solid rgba(0, 204, 255, 0.3);
+}
+.dl-pill-source-netease {
+  background: rgba(230, 0, 38, 0.15);
+  color: #ff5466;
+  border: 1px solid rgba(230, 0, 38, 0.3);
+}
+.dl-pill-quality-hires {
+  background: var(--gold-bg);
+  color: var(--gold);
+  border: 1px solid rgba(245, 197, 66, 0.3);
+}
+.dl-pill-quality-lossless {
+  background: rgba(45, 226, 171, 0.15);
+  color: var(--accent);
+  border: 1px solid rgba(45, 226, 171, 0.3);
+}
+.dl-pill-quality-standard {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--muted);
+}
+.dl-status-line {
+  font-size: 11.5px;
+  color: var(--muted);
+  margin-top: 3px;
+  overflow-wrap: anywhere;
+}
+.dl-status-line.failed { color: var(--danger); font-weight: 600; }
+.dl-status-line.complete { color: var(--accent); }
+.dl-status-line.transferring { color: var(--accent); font-weight: 600; }
+.dl-stream-bar {
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255,255,255,0.08);
+  margin-top: 5px;
+  overflow: hidden;
+}
+.dl-stream-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--accent), #2ecc71);
+  transition: width 0.3s;
+}
+.dl-track-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+.dl-track-actions button {
+  padding: 3px 8px;
+  font-size: 11.5px;
+  border-radius: 6px;
+}
+/* 详情抽屉 */
+.dl-details-card {
+  margin: 8px 0 4px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: rgba(0,0,0,0.3);
+  border: 1px solid rgba(255,255,255,0.05);
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 14px;
+  font-size: 12px;
+}
+.dl-details-card dt { color: var(--muted); }
+.dl-details-card dd { margin: 0; overflow-wrap: anywhere; color: var(--ink); }
+
 /* Persistent Mini Player (常驻底部迷你播放栏) */
 .mini-player {
   position: fixed;
@@ -788,6 +1701,11 @@ main {
   gap: 16px;
   box-shadow: 0 -8px 32px rgba(0,0,0,0.5);
   transition: transform 0.3s cubic-bezier(0.2, 0, 0, 1);
+}
+/* 当处于播放主界面时，隐藏底部迷你播放条，杜绝高度溢出与控件重复 */
+body[data-view="player"] #miniPlayer,
+body:not([data-view]) #miniPlayer {
+  display: none !important;
 }
 .mini-progress-line {
   position: absolute;
@@ -1087,6 +2005,149 @@ main {
 .modal-title { font-size: 20px; font-weight: 700; margin-bottom: 8px; }
 .modal-lead { color: var(--muted); font-size: 14px; margin-bottom: 20px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px; }
+#lyricsModal { grid-template-columns: minmax(0, 600px); padding: 16px; }
+.lyrics-box { max-width: 600px; max-height: 88vh; display: flex; flex-direction: column; min-width: 0; padding: 20px; }
+.lyrics-box .modal-title, .lyrics-box .modal-lead { overflow-wrap: anywhere; }
+.lyrics-box .track-info { min-width: 0; }
+.lyrics-box .track-title, .lyrics-box .track-subtitle { white-space: normal; overflow-wrap: anywhere; }
+#lyricsCandidates, #lyricsPreview { overflow: auto; min-height: 0; flex: 1; margin: 0; }
+#lyricsPreview { white-space: pre-wrap; font: 13px/1.7 inherit; color: var(--ink); padding: 12px; border-radius: 10px; background: rgba(255,255,255,0.04); }
+.lyrics-match { color: var(--accent); font-weight: 650; }
+.lyrics-state { font-size: 12px; color: var(--muted); }
+.lyrics-state.missing { color: var(--danger); }
+#lyricsFillStatus { color: var(--muted); font-size: 13px; margin: -10px 0 12px; }
+
+/* Upload Folder Modal Styles */
+.upload-folder-box {
+  max-width: 620px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  padding: 24px;
+}
+.upload-target-hint {
+  padding: 10px 14px;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  border: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.upload-subfolders-container {
+  max-height: 300px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 2px;
+}
+.upload-folder-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  user-select: none;
+}
+.upload-folder-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+.upload-folder-item.selected {
+  border-color: var(--accent);
+  background: rgba(29, 185, 84, 0.08);
+}
+.upload-folder-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.upload-folder-meta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.upload-folder-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.upload-folder-parent {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.upload-folder-stats {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  text-align: right;
+  margin-left: 12px;
+}
+.upload-options-panel {
+  margin-top: 14px;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+}
+.upload-option-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  cursor: pointer;
+  color: var(--ink);
+}
+.upload-radio-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12.5px;
+  cursor: pointer;
+  color: var(--ink);
+  margin-left: 6px;
+}
+.upload-progress-track {
+  width: 100%;
+  height: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  overflow: hidden;
+  margin: 14px 0 10px;
+}
+.upload-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: 0 0 10px var(--accent-glow);
+}
+.upload-current-file {
+  font-size: 13px;
+  margin-top: 6px;
+  word-break: break-all;
+}
+.upload-result-box {
+  margin-top: 14px;
+  padding: 14px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  font-size: 13px;
+  line-height: 1.6;
+  max-height: 160px;
+  overflow-y: auto;
+}
 
 /* Floating Toasts */
 #toastContainer {
@@ -1120,31 +2181,279 @@ main {
 }
 
 /* File explorer */
-.file-explorer-grid {
-  display: grid;
-  grid-template-columns: 240px minmax(0, 1fr);
-  gap: 20px;
+.file-nav-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
 }
 .breadcrumbs {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 14px;
+  font-size: 13.5px;
   color: var(--muted);
-  margin-bottom: 14px;
   flex-wrap: wrap;
+  padding: 8px 14px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  flex: 1;
 }
-.breadcrumbs a { color: var(--accent); text-decoration: none; cursor: pointer; }
+.breadcrumb-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  padding: 3px 8px;
+  border-radius: 6px;
+}
+.breadcrumb-item:hover {
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.08);
+}
+.breadcrumb-item.current {
+  color: var(--accent);
+  font-weight: 650;
+  cursor: default;
+}
+.breadcrumb-item.current:hover {
+  background: transparent;
+}
+.breadcrumb-sep {
+  color: rgba(255, 255, 255, 0.2);
+  font-size: 11px;
+}
+.file-explorer-grid {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+.storage-roots-pane {
+  border-right: 1px solid var(--border);
+  padding-right: 20px;
+}
+.root-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 14px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 550;
+  text-align: left;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.root-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--ink);
+}
+.root-btn.active {
+  background: rgba(var(--accent-rgb, 10, 207, 131), 0.14);
+  border-color: rgba(var(--accent-rgb, 10, 207, 131), 0.3);
+  color: var(--accent);
+  font-weight: 700;
+}
+.folders-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+}
+.folder-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  user-select: none;
+}
+.folder-card:hover {
+  background: rgba(255, 255, 255, 0.09);
+  border-color: rgba(255, 255, 255, 0.18);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+}
+.folder-card .folder-icon {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  background: rgba(255, 184, 0, 0.15);
+  color: #ffb800;
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+.folder-card .folder-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+}
+.folder-empty {
+  text-align: center;
+  padding: 60px 20px;
+  color: var(--muted);
+  font-size: 14px;
+}
 
-/* Responsive adjustments */
+/* Responsive adjustments & Height Control */
+@media (min-width: 861px) {
+  .stage-mobile-only { display: none !important; }
+  main {
+    padding: 12px clamp(16px, 3.5vw, 40px) 12px;
+  }
+  #viewPlayer {
+    height: calc(100vh - 98px);
+    max-height: 680px;
+    margin: 0 auto;
+  }
+  .player-grid {
+    height: 100%;
+    max-height: 100%;
+    display: grid;
+    grid-template-columns: minmax(0, 1.25fr) minmax(300px, 1fr);
+    gap: 18px;
+    align-items: stretch;
+  }
+  .player-stage {
+    height: 100%;
+    max-height: 100%;
+    padding: 14px 20px 16px;
+    justify-content: space-evenly;
+  }
+  .side-card {
+    height: 100%;
+    max-height: 100%;
+  }
+}
+
 @media (max-width: 860px) {
-  .player-grid { grid-template-columns: 1fr; }
+  main { padding: 8px 12px 10px; }
+  .topbar { padding: 8px 14px; }
+  .brand-info h1 { font-size: 15px; }
+  .brand-mark { width: 34px; height: 34px; border-radius: 10px; }
+  #viewPlayer {
+    height: calc(100vh - 146px);
+    max-height: calc(100vh - 146px);
+    display: flex;
+    flex-direction: column;
+  }
+  .player-grid {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .player-stage {
+    height: 100%;
+    padding: 10px 14px 12px;
+    justify-content: space-evenly;
+  }
+  /* 移动端播放主界面下，侧边队列默认隐藏，通过按钮呼出悬浮抽屉，保证主界面单屏无滚动溢出 */
+  .player-grid .side-card {
+    display: none;
+  }
+  .player-grid.show-mobile-queue .side-card {
+    display: flex;
+    position: fixed;
+    inset: 60px 12px 12px;
+    z-index: 100;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.85);
+  }
+  .stage-artwork-wrap {
+    width: min(150px, 100%, 20vh);
+    height: min(150px, 100%, 20vh);
+    margin: 0 auto 6px;
+    border-radius: 14px;
+  }
+  .stage-lyrics-wrap {
+    height: min(160px, 22vh);
+    min-height: 140px;
+    padding: 14px 8px;
+    margin: 0 auto 6px;
+  }
+  .stage-top-bar { margin-bottom: 6px; }
+  .stage-meta { margin-bottom: 4px; }
+  .stage-meta h2 { font-size: 15.5px; margin-bottom: 2px; }
+  .stage-meta p { font-size: 12px; }
+  .stage-progress { margin-bottom: 4px; }
+  .time-labels { font-size: 11px; margin-top: 2px; }
+  .stage-transport { margin-bottom: 4px; gap: 10px; }
+  .stage-transport button { width: 34px; height: 34px; }
+  .stage-transport button.play-hero { width: 44px; height: 44px; }
+  .stage-transport button.play-hero .icon { width: 20px; height: 20px; }
+  .volume-row { margin-bottom: 4px; max-width: 200px; }
+  .stage-actions { gap: 6px; }
+  .stage-actions button, .stage-actions select { padding: 3px 8px; font-size: 11px; }
+  .lyric-line { font-size: clamp(13.5px, 3.4vw, 16px); padding: 3px 6px; }
   .library-layout { grid-template-columns: 1fr; }
   .library-nav-card { position: static; display: flex; overflow-x: auto; padding: 6px; }
   .file-explorer-grid { grid-template-columns: 1fr; }
   .mini-vol-slider { display: none; }
-  .topbar { padding: 10px 16px; }
   .nav-pills button { padding: 6px 10px; font-size: 12.5px; }
+}
+/* Phones: the five pages get their own row under the brand, as icons over labels. */
+@media (max-width: 640px) {
+  html, body { overflow-x: clip; }
+  .topbar { flex-wrap: wrap; row-gap: 8px; }
+  .nav-pills { order: 3; width: 100%; justify-content: space-between; }
+  .nav-pills button {
+    flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 2px;
+    padding: 5px 2px; font-size: 11px; position: relative;
+  }
+  .nav-pills .dl-badge { position: absolute; top: 0; right: 6px; margin: 0; font-size: 10px; line-height: 15px; min-width: 15px; padding: 0 4px; }
+  .dl-dashboard-card { padding: 14px 12px; margin-bottom: 12px; }
+  .dl-dashboard-header { flex-direction: column; align-items: stretch; gap: 10px; }
+  .dl-dashboard-title-box { justify-content: space-between; width: 100%; }
+  .dl-dashboard-controls { display: flex; flex-wrap: wrap; gap: 6px; width: 100%; }
+  .dl-dashboard-controls > * { flex: 1 1 calc(50% - 6px); justify-content: center; }
+  .dl-parallel-pill { justify-content: center; }
+  .dl-btn-compact { justify-content: center; }
+  .dl-filter-tabs { gap: 6px; margin-top: 12px; padding-top: 10px; }
+  .dl-filter-tab { padding: 4px 10px; font-size: 12px; gap: 4px; }
+  .dl-tab-badge { min-width: 16px; height: 16px; font-size: 10px; padding: 0 4px; }
+  .dl-group-header { padding: 10px 12px; gap: 8px; flex-wrap: nowrap; }
+  .dl-group-thumb { width: 42px; height: 42px; }
+  .dl-group-title { font-size: 14px; }
+  .dl-group-sub { font-size: 11.5px; }
+  .dl-group-actions { margin-left: auto; flex: none; }
+  .dl-group-actions button { padding: 3px 8px; font-size: 11.5px; }
+  .dl-chevron-btn { width: 24px; height: 24px; }
+  .dl-track-row { padding: 9px 12px; gap: 8px; flex-wrap: nowrap; }
+  .dl-track-thumb { width: 36px; height: 36px; }
+  .dl-track-actions { margin-left: auto; flex: none; }
+  .dl-track-actions button { padding: 3px 8px; font-size: 11.5px; }
+  .dl-group-progress-bar { max-width: 100px; }
+  .album-hero-card {
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    padding: 16px;
+    gap: 14px;
+  }
+  .album-hero-artwork { width: 120px; height: 120px; }
+  .album-hero-artwork.artist { width: 110px; height: 110px; }
+  .album-hero-info { align-items: center; width: 100%; }
+  .album-hero-meta { justify-content: center; font-size: 12.5px; }
+  .album-hero-actions { justify-content: center; width: 100%; }
+  .album-hero-actions button { flex: 1; min-width: 110px; padding: 7px 10px; font-size: 13px; }
+  .cards-grid { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 12px; }
 }
 </style>
 </head>
@@ -1170,6 +2479,7 @@ main {
     <button type="button" id="tabNavLibrary"><svg class="icon"><use href="#i-library"/></svg> 音乐库</button>
     <button type="button" id="tabNavSearch"><svg class="icon"><use href="#i-search"/></svg> 搜索</button>
     <button type="button" id="tabNavFiles"><svg class="icon"><use href="#i-folder"/></svg> 文件</button>
+    <button type="button" id="tabNavDownloads"><svg class="icon"><use href="#i-download"/></svg> 下载<span id="dlNavBadge" class="dl-badge" hidden></span></button>
   </nav>
 
   <div class="top-actions">
@@ -1205,8 +2515,27 @@ main {
     <div class="player-grid">
       <!-- Left: Player Stage -->
       <div class="player-stage">
-        <div class="stage-artwork-wrap" id="artworkBox" data-letter="♪">
+        <!-- Ambient Backdrop for Player Stage -->
+        <div class="stage-backdrop" id="stageBackdrop"></div>
+
+        <!-- Top bar with mode switcher (Cover / Lyrics) & Fullscreen button -->
+        <div class="stage-top-bar">
+          <div class="pill-switch stage-mode-switch" id="stageModeSwitch" role="tablist" aria-label="播放器模式">
+            <button type="button" id="stageSwitchArtwork" class="active" role="tab" aria-selected="true"><svg class="icon"><use href="#i-music"/></svg> 封面</button>
+            <button type="button" id="stageSwitchLyrics" role="tab" aria-selected="false"><svg class="icon"><use href="#i-lyrics"/></svg> 歌词</button>
+          </div>
+          <button type="button" id="btnStageFs" class="icon-btn stage-fs-btn" title="全屏沉浸播放"><svg class="icon"><use href="#i-player"/></svg></button>
+        </div>
+
+        <div class="stage-artwork-wrap" id="artworkBox" data-letter="♪" title="轻触切换歌词模式">
           <img id="artworkImg" alt="Album Artwork" hidden>
+        </div>
+
+        <!-- Stage Synced Scrolling Lyrics -->
+        <div class="stage-lyrics-wrap" id="stageLyricsWrap" hidden>
+          <div class="lyrics-empty" id="stageLyricsEmpty">正在读取动态歌词…</div>
+          <button type="button" id="btnStageLyricsDownload" class="primary" hidden style="margin:12px auto 0;"><svg class="icon"><use href="#i-download"/></svg> 搜索并保存歌词</button>
+          <div id="stageLyricsList" class="stage-lyrics-list"></div>
         </div>
 
         <div class="stage-meta">
@@ -1236,11 +2565,12 @@ main {
 
         <div class="volume-row">
           <button type="button" id="btnMute" class="icon-btn" title="静音切换"><svg class="icon"><use id="volIcon" href="#i-volume"/></svg></button>
-          <input id="volumeSlider" type="range" min="0" max="1" step="0.01" value="0.8" aria-label="音量">
+          <input id="volumeSlider" type="range" min="0" max="100" step="1" value="80" aria-label="音量">
         </div>
 
         <div class="stage-actions">
           <button type="button" id="btnOpenLyrics" class="ghost"><svg class="icon"><use href="#i-lyrics"/></svg> 动态歌词</button>
+          <button type="button" id="btnStageQueueMobile" class="ghost stage-mobile-only"><svg class="icon"><use href="#i-queue"/></svg> 播放队列</button>
           <button type="button" id="btnOpenRadio" class="ghost" disabled><svg class="icon"><use href="#i-radio"/></svg> 歌曲电台</button>
           <select id="qualitySelect">
             <option value="3">MAX (24-bit Hi-Res)</option>
@@ -1255,7 +2585,14 @@ main {
       <div class="card side-card">
         <div class="side-header-tabs">
           <button type="button" id="tabSideQueue" aria-current="true"><svg class="icon"><use href="#i-queue"/></svg> 播放队列 (<span id="queueCountNum">0</span>)</button>
+          <button type="button" id="tabSideLyrics"><svg class="icon"><use href="#i-lyrics"/></svg> 动态歌词</button>
           <button type="button" id="tabSideSearch"><svg class="icon"><use href="#i-search"/></svg> 快速添加</button>
+        </div>
+
+        <div class="side-content" id="sideLyricsContent" hidden>
+          <div class="lyrics-empty" id="sideLyricsEmpty">正在读取动态歌词…</div>
+          <button type="button" id="btnSideLyricsDownload" class="primary" hidden style="margin:16px auto 0;"><svg class="icon"><use href="#i-download"/></svg> 搜索并保存歌词</button>
+          <div id="sideLyricsList" class="side-lyrics-list"></div>
         </div>
 
         <div class="side-content" id="sideQueueContent">
@@ -1304,18 +2641,33 @@ main {
           </div>
         </div>
 
+        <p id="lyricsFillStatus" hidden></p>
         <!-- Subnav & Filters -->
         <div class="library-subnav-bar">
           <button type="button" id="btnLibBack" class="ghost" hidden><svg class="icon"><use href="#i-back"/></svg> 返回上级</button>
-          <div id="localControls" style="display:flex; gap:8px; align-items:center;">
+          <div id="localSubnavPills" class="local-nav-pills">
+            <button type="button" data-local-cat="songs" aria-current="true">歌曲</button>
+            <button type="button" data-local-cat="albums" aria-current="false">专辑</button>
+            <button type="button" data-local-cat="artists" aria-current="false">艺人</button>
+            <button type="button" data-local-cat="playlists" aria-current="false">歌单</button>
+            <select id="localCategorySelect" style="padding:4px 8px; font-size:12.5px;">
+              <option value="">更多分类…</option>
+              <option value="4">专辑艺人</option>
+              <option value="5">流派</option>
+              <option value="6">年份</option>
+            </select>
+          </div>
+          <div id="localControls" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
             <select id="localSort">
               <option value="added">按入库时间</option>
               <option value="artist">按艺人名称</option>
               <option value="album">按专辑名称</option>
               <option value="title">按歌曲名称</option>
             </select>
-            <select id="playlistSelect"><option value="">全部歌曲</option></select>
-            <button type="button" id="btnNewPlaylist"><svg class="icon"><use href="#i-plus"/></svg> 新建歌单</button>
+            <select id="playlistSelect" hidden><option value="">全部歌曲</option></select>
+            <button type="button" id="btnNewPlaylist" class="ghost" hidden><svg class="icon"><use href="#i-plus"/></svg> 新建歌单</button>
+            <button type="button" id="btnLyricsMissing" class="ghost" aria-pressed="false"><svg class="icon"><use href="#i-lyrics"/></svg> 缺歌词</button>
+            <button type="button" id="btnLyricsFill" class="ghost"><svg class="icon"><use href="#i-lyrics"/></svg> 补全歌词</button>
             <button type="button" id="btnDeletePlaylist" class="danger ghost" hidden><svg class="icon"><use href="#i-trash"/></svg> 删除歌单</button>
           </div>
           <div id="tidalControls" hidden style="display:flex; gap:8px;">
@@ -1328,12 +2680,39 @@ main {
           <input id="librarySearchInput" type="search" placeholder="筛选曲目、专辑或歌手…" style="max-width:280px; margin-left:auto;">
         </div>
 
-        <!-- Content Lists -->
+        <!-- Detail View (Album Detail / Artist Detail) -->
+        <div id="libraryDetailView" hidden>
+          <div id="albumHeroCard" class="album-hero-card">
+            <div id="albumHeroArtwork" class="album-hero-artwork">
+              <img alt="">
+            </div>
+            <div class="album-hero-info">
+              <div id="albumHeroTag" class="album-hero-tag">专辑 · 本地音乐</div>
+              <h1 id="albumHeroTitle" class="album-hero-title"></h1>
+              <div id="albumHeroSubtitle" class="album-hero-subtitle"></div>
+              <div id="albumHeroMeta" class="album-hero-meta"></div>
+              <div class="album-hero-actions">
+                <button type="button" id="btnDetailPlayAll" class="primary"><svg class="icon"><use href="#i-play"/></svg> 播放全部</button>
+                <button type="button" id="btnDetailShuffle" class="ghost"><svg class="icon"><use href="#i-shuffle"/></svg> 随机播放</button>
+                <button type="button" id="btnDetailDownload" class="ghost" hidden><svg class="icon"><use href="#i-download"/></svg> 下载整张专辑到手机</button>
+                <button type="button" id="btnDetailBack" class="ghost"><svg class="icon"><use href="#i-back"/></svg> 返回</button>
+              </div>
+            </div>
+          </div>
+          <div id="artistAlbumsSection" hidden>
+            <h3 class="section-title">专辑</h3>
+            <div id="artistAlbumsGrid" class="cards-grid"></div>
+          </div>
+          <div id="detailTracksSection">
+            <h3 id="detailTracksTitle" class="section-title" hidden>歌曲</h3>
+            <ul class="track-list album-track-list" id="detailTrackList"></ul>
+          </div>
+        </div>
+
+        <!-- Main Content Lists (when not in detail view) -->
         <div id="libraryCardsView" class="cards-grid" hidden></div>
         <ul class="track-list" id="libraryTrackList"></ul>
-        <div style="text-align:center; margin-top:20px;">
-          <button type="button" id="btnLoadMoreLib" hidden>加载更多…</button>
-        </div>
+        <div style="text-align:center; margin:16px 0;"><button type="button" id="btnLibMore" class="ghost" hidden>加载更多</button></div>
       </div>
     </div>
   </section>
@@ -1354,29 +2733,170 @@ main {
         <button type="button" data-search-src="tidal">TIDAL</button>
         <button type="button" data-search-src="netease">网易云音乐</button>
       </div>
+      <div class="search-tabs">
+        <button type="button" data-search-kind="TRACK" aria-current="true">歌曲</button>
+        <button type="button" data-search-kind="ALBUM">专辑</button>
+        <button type="button" data-search-kind="PLAYLIST">歌单</button>
+        <button type="button" data-search-kind="ARTIST">艺人</button>
+      </div>
     </div>
+    <div id="searchDetailBar" class="library-header" hidden>
+      <div style="display:flex; align-items:center; gap:12px; min-width:0;">
+        <button type="button" id="btnSearchBack" class="ghost"><svg class="icon"><use href="#i-back"/></svg> 返回</button>
+        <h2 id="searchDetailTitle" style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"></h2>
+      </div>
+      <button type="button" id="btnSearchDownloadAlbum" class="primary" hidden><svg class="icon"><use href="#i-download"/></svg> 下载整张专辑到手机</button>
+    </div>
+    <h3 id="searchCardsTitle" style="margin:4px 0 12px;" hidden></h3>
     <div id="searchCardsGrid" class="cards-grid" style="margin-bottom:24px;" hidden></div>
+    <h3 id="searchTracksTitle" style="margin:4px 0 12px;" hidden></h3>
     <ul class="track-list" id="searchTrackList"></ul>
   </section>
 
-  <!-- VIEW 4: FILES EXPLORER -->
-  <section id="viewFiles" hidden>
-    <div class="library-header">
-      <h2>已授权音乐文件</h2>
-      <div style="display:flex; gap:8px;">
-        <button type="button" id="btnUploadFiles" class="primary"><svg class="icon"><use href="#i-upload"/></svg> 上传文件</button>
-        <button type="button" id="btnRefreshFiles" class="ghost"><svg class="icon"><use href="#i-refresh"/></svg> 刷新</button>
-        <input id="uploadFileInput" type="file" multiple hidden>
+  <!-- VIEW 4: DOWNLOADS (手机下载管理与实时状态) -->
+  <section id="viewDownloads" hidden class="dl-view-container">
+    <!-- 顶部全局看板 -->
+    <div class="dl-dashboard-card">
+      <div class="dl-dashboard-header">
+        <div class="dl-dashboard-title-box">
+          <h2>手机下载管理</h2>
+          <div id="dlSpeedBadge" class="dl-speed-badge">
+            <span class="dl-speed-dot"></span>
+            <span id="dlSpeedText">空闲</span>
+          </div>
+        </div>
+        <div class="dl-dashboard-controls">
+          <label class="dl-parallel-pill" title="最大同时并发下载任务数">
+            <svg class="icon" style="width:14px;height:14px;"><use href="#i-download"/></svg>
+            <span>并发</span>
+            <select id="dlParallel"></select>
+          </label>
+          <button type="button" id="btnDlGroup" class="ghost dl-btn-compact" aria-pressed="true" title="切换视图模式">
+            <svg class="icon"><use href="#i-album"/></svg> <span id="dlGroupBtnText">专辑分组</span>
+          </button>
+          <button type="button" id="btnDlRetryAllFailed" class="ghost dl-btn-compact danger-text" hidden title="一键重试所有失败任务">
+            <svg class="icon"><use href="#i-refresh"/></svg> 重试失败
+          </button>
+          <button type="button" id="btnDlClear" class="ghost dl-btn-compact" title="清理已完成、失败及已取消的任务记录">
+            <svg class="icon"><use href="#i-trash"/></svg> 清理已结束
+          </button>
+          <button type="button" id="btnDlRefresh" class="ghost dl-btn-compact" title="立即刷新下载状态">
+            <svg class="icon"><use href="#i-refresh"/></svg> 刷新
+          </button>
+        </div>
+      </div>
+
+      <!-- 总体进度条及指标统计 -->
+      <div class="dl-overall-progress">
+        <div class="dl-progress-meta">
+          <span id="dlOverallCount" class="dl-progress-count">0 / 0 完成</span>
+          <span id="dlOverallPercent" class="dl-progress-percent">0%</span>
+        </div>
+        <div class="dl-overall-bar">
+          <div id="dlOverallFill" class="dl-overall-fill" style="width: 0%;"></div>
+        </div>
+      </div>
+
+      <!-- 状态分段过滤 Tabs -->
+      <div class="dl-filter-tabs" id="dlFilters">
+        <button type="button" class="dl-filter-tab" data-dl-filter="all" aria-current="true">
+          全部 <span class="dl-tab-badge" id="dlBadgeAll">0</span>
+        </button>
+        <button type="button" class="dl-filter-tab" data-dl-filter="active">
+          进行中 <span class="dl-tab-badge active" id="dlBadgeActive">0</span>
+        </button>
+        <button type="button" class="dl-filter-tab" data-dl-filter="failed">
+          失败 <span class="dl-tab-badge danger" id="dlBadgeFailed">0</span>
+        </button>
+        <button type="button" class="dl-filter-tab" data-dl-filter="complete">
+          已完成 <span class="dl-tab-badge success" id="dlBadgeComplete">0</span>
+        </button>
       </div>
     </div>
-    <div class="breadcrumbs" id="fileBreadcrumbs"></div>
-    <div class="card file-explorer-grid">
-      <div style="border-right:1px solid var(--border); padding-right:16px;">
-        <h4 style="margin-bottom:12px; color:var(--muted);">授权根目录</h4>
-        <div id="storageRootsList" style="display:grid; gap:6px;"></div>
+
+    <!-- 批量操作悬浮/吸顶栏 -->
+    <div id="dlBatchBar" class="dl-batch-bar" hidden>
+      <div class="dl-batch-info">
+        <span id="dlSelCount">已选 0 项</span>
       </div>
+      <div class="dl-batch-actions">
+        <button type="button" id="btnDlSelectAll" class="ghost">全选本页</button>
+        <button type="button" data-dl-batch="retry" class="ghost">重试</button>
+        <button type="button" data-dl-batch="cancel" class="ghost">取消</button>
+        <button type="button" data-dl-batch="remove" class="ghost danger-text">移除</button>
+        <button type="button" id="btnDlSelNone" class="ghost">取消选择</button>
+      </div>
+    </div>
+
+    <p id="dlSummary" class="dl-summary" hidden></p>
+    <ul class="track-list" id="dlList" style="padding:0; margin:0; list-style:none;"></ul>
+    <div style="text-align:center; margin:20px 0 60px;">
+      <button type="button" id="btnDlMore" class="ghost" hidden>加载更多任务记录</button>
+    </div>
+  </section>
+
+  <!-- VIEW 5: FILES EXPLORER (按文件夹层级管理音乐) -->
+  <section id="viewFiles" hidden>
+    <div class="library-header">
       <div>
-        <ul class="track-list" id="filesItemList"></ul>
+        <h2>文件夹与文件</h2>
+        <small id="fileSummaryText">按层级浏览与管理存储目录</small>
+      </div>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <button type="button" id="btnPlayFolder" class="primary" hidden><svg class="icon"><use href="#i-play"/></svg> 播放当前目录</button>
+        <button type="button" id="btnAddFolderToQueue" class="ghost" hidden><svg class="icon"><use href="#i-plus"/></svg> 全部入队</button>
+        <button type="button" id="btnUploadFolder" class="primary"><svg class="icon"><use href="#i-folder"/></svg> 上传文件夹</button>
+        <button type="button" id="btnUploadFiles" class="ghost"><svg class="icon"><use href="#i-upload"/></svg> 上传文件</button>
+        <button type="button" id="btnRefreshFiles" class="ghost"><svg class="icon"><use href="#i-refresh"/></svg> 刷新</button>
+        <input id="uploadFileInput" type="file" multiple hidden>
+        <input id="uploadFolderInput" type="file" webkitdirectory directory multiple hidden>
+        <input id="uploadMoreFolderInput" type="file" webkitdirectory directory multiple hidden>
+      </div>
+    </div>
+
+    <!-- 面包屑导航与快捷操作条 -->
+    <div class="file-nav-bar">
+      <button type="button" id="btnParentFolder" class="ghost" title="返回上一级文件夹" hidden style="padding:6px 12px; display:inline-flex; align-items:center; gap:6px;">
+        <svg class="icon"><use href="#i-back"/></svg> 返回上一级
+      </button>
+      <div class="breadcrumbs" id="fileBreadcrumbs"></div>
+    </div>
+
+    <div class="card file-explorer-grid">
+      <!-- 左侧：授权根目录 -->
+      <div class="storage-roots-pane">
+        <h4 style="margin-bottom:12px; color:var(--muted); font-size:12px; letter-spacing:0.04em;">授权存储目录</h4>
+        <div id="storageRootsList" style="display:grid; gap:8px;"></div>
+      </div>
+
+      <!-- 右侧：当前文件夹内容 -->
+      <div class="folder-content-pane">
+        <!-- 子文件夹区域 -->
+        <div id="subfoldersSection">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+            <h4 id="subfoldersTitle" style="color:var(--muted); font-size:12px;">子文件夹 (<span id="subfoldersCount">0</span>)</h4>
+          </div>
+          <div id="subfoldersGrid" class="folders-grid"></div>
+        </div>
+
+        <!-- 歌曲文件区域 -->
+        <div id="folderTracksSection" style="margin-top:24px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+            <h4 id="folderTracksTitle" style="color:var(--muted); font-size:12px;">音乐文件 (<span id="folderTracksCount">0</span>)</h4>
+          </div>
+          <ul class="track-list" id="filesItemList"></ul>
+        </div>
+
+        <!-- 附件区域（封面、LRC等） -->
+        <div id="folderAttachmentsSection" style="margin-top:24px;" hidden>
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+            <h4 style="color:var(--muted); font-size:12px;">附件与歌词 (<span id="folderAttachmentsCount">0</span>)</h4>
+          </div>
+          <ul class="track-list" id="folderAttachmentsList"></ul>
+        </div>
+
+        <!-- 空目录提示 -->
+        <div id="folderEmptyMessage" class="folder-empty" hidden>此文件夹为空</div>
       </div>
     </div>
   </section>
@@ -1407,7 +2927,7 @@ main {
   <div class="mini-right">
     <button type="button" id="miniBtnLyrics" class="icon-btn" title="展开歌词"><svg class="icon"><use href="#i-lyrics"/></svg></button>
     <button type="button" id="miniBtnQueue" class="icon-btn" title="播放队列"><svg class="icon"><use href="#i-queue"/></svg></button>
-    <input id="miniVolumeSlider" type="range" class="mini-vol-slider" min="0" max="1" step="0.01" value="0.8" aria-label="音量">
+    <input id="miniVolumeSlider" type="range" class="mini-vol-slider" min="0" max="100" step="1" value="80" aria-label="音量">
   </div>
 </footer>
 
@@ -1443,6 +2963,7 @@ main {
     <!-- View B: Synced Scrolling Lyrics -->
     <div class="fs-lyrics-container" id="fsLyricsSection" hidden>
       <div class="lyrics-empty" id="fsLyricsEmpty">正在载入动态歌词…</div>
+      <button type="button" id="btnFsLyricsDownload" class="primary" hidden style="margin:12px auto 0;"><svg class="icon"><use href="#i-download"/></svg> 下载歌词</button>
       <div id="fsLyricsList" style="width:100%; display:flex; flex-direction:column; align-items:center;"></div>
     </div>
   </div>
@@ -1466,12 +2987,26 @@ main {
 
     <div class="volume-row" style="margin:0 auto 12px;">
       <button type="button" id="fsBtnMute" class="icon-btn"><svg class="icon"><use id="fsVolIcon" href="#i-volume"/></svg></button>
-      <input id="fsVolumeSlider" type="range" min="0" max="1" step="0.01" value="0.8">
+      <input id="fsVolumeSlider" type="range" min="0" max="100" step="1" value="80">
     </div>
   </div>
 </section>
 
 <!-- CUSTOM MODALS (取代 window.prompt 和原生弹窗) -->
+<div class="modal-overlay" id="lyricsModal">
+  <div class="modal-box lyrics-box">
+    <div class="modal-title" id="lyricsModalTitle">歌词</div>
+    <div class="modal-lead" id="lyricsModalLead"></div>
+    <ul class="track-list" id="lyricsCandidates"></ul>
+    <pre id="lyricsPreview" hidden></pre>
+    <div class="modal-actions">
+      <button type="button" id="btnLyricsBack" class="ghost" hidden>换一个</button>
+      <button type="button" id="btnLyricsClose" class="ghost">关闭</button>
+      <button type="button" id="btnLyricsSave" class="primary" hidden>保存</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="customModalOverlay">
   <div class="modal-box">
     <h3 class="modal-title" id="customModalTitle">新建歌单</h3>
@@ -1483,6 +3018,96 @@ main {
       <button type="button" id="btnCustomModalCancel" class="ghost">取消</button>
       <button type="button" id="btnCustomModalConfirm" class="primary">确定</button>
     </div>
+  </div>
+</div>
+
+<!-- 文件夹多目录上传弹窗 -->
+<div class="modal-overlay" id="uploadFolderModal">
+  <div class="modal-box upload-folder-box">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+      <h3 class="modal-title" style="margin-bottom:0;">多目录批量上传</h3>
+      <button type="button" id="btnUploadFolderModalClose" class="ghost" style="padding:4px 10px; font-size:13px;">关闭</button>
+    </div>
+
+    <!-- 目标路径提示 -->
+    <div class="upload-target-hint">
+      <span style="color:var(--muted); flex-shrink:0;">目标目录：</span>
+      <span id="uploadTargetDirName" style="color:var(--accent); font-weight:600; word-break:break-all;">外置SD卡:music</span>
+    </div>
+
+    <!-- 上传前：选择与配置视图 -->
+    <div id="uploadConfigSection">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin:14px 0 8px; flex-wrap:wrap; gap:8px;">
+        <div style="font-size:13px; font-weight:600; color:var(--ink);">
+          待上传子目录 (<span id="uploadSelectedFolderCount">0</span>/<span id="uploadTotalFolderCount">0</span>)
+        </div>
+        <div style="display:flex; gap:6px;">
+          <button type="button" id="btnUploadSelectAll" class="ghost" style="padding:4px 8px; font-size:12px;">全选</button>
+          <button type="button" id="btnUploadDeselectAll" class="ghost" style="padding:4px 8px; font-size:12px;">全不选</button>
+          <button type="button" id="btnUploadAddMoreFolders" class="ghost" style="padding:4px 8px; font-size:12px; color:var(--accent);">
+            <svg class="icon" style="width:13px;height:13px; vertical-align:-2px;"><use href="#i-plus"/></svg> 添加更多文件夹
+          </button>
+        </div>
+      </div>
+
+      <!-- 子目录复选列表容器 -->
+      <div id="uploadSubfoldersList" class="upload-subfolders-container"></div>
+
+      <!-- 选项配置 -->
+      <div class="upload-options-panel">
+        <label class="upload-option-label">
+          <input type="checkbox" id="chkKeepParentFolder" checked>
+          <span>保留上级目录结构（在目标下自动建立 <code>歌手名/专辑名/</code>）</span>
+        </label>
+        <div style="display:flex; align-items:center; gap:8px; margin-top:10px;">
+          <span style="font-size:12px; color:var(--muted);">遇到同名文件：</span>
+          <label class="upload-radio-label">
+            <input type="radio" name="uploadConflictPolicy" value="skip" checked> 跳过
+          </label>
+          <label class="upload-radio-label">
+            <input type="radio" name="uploadConflictPolicy" value="replace"> 覆盖
+          </label>
+        </div>
+      </div>
+
+      <div class="modal-actions" style="margin-top:16px;">
+        <button type="button" id="btnUploadFolderCancel" class="ghost">取消</button>
+        <button type="button" id="btnUploadFolderStart" class="primary">
+          <svg class="icon"><use href="#i-upload"/></svg> 开始上传 (<span id="uploadSummaryBadge">0 个文件</span>)
+        </button>
+      </div>
+    </div>
+
+    <!-- 上传中 / 上传完成视图 -->
+    <div id="uploadProgressSection" hidden>
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px;">
+        <div id="uploadProgressStatusText" style="font-weight:600; font-size:14px; color:var(--accent);">正在上传中…</div>
+        <div id="uploadProgressRatioText" style="font-size:13px; color:var(--muted);">0 / 0</div>
+      </div>
+
+      <!-- 总体进度条 -->
+      <div class="upload-progress-track">
+        <div id="uploadProgressFill" class="upload-progress-fill" style="width:0%;"></div>
+      </div>
+
+      <div class="upload-current-file">
+        <span style="color:var(--muted);">当前文件：</span>
+        <span id="uploadCurrentFileName" style="color:var(--ink);">-</span>
+      </div>
+      <div style="display:flex; justify-content:space-between; font-size:12px; color:var(--muted); margin-top:6px;">
+        <span id="uploadCurrentFileProgress">0 MB / 0 MB</span>
+        <span id="uploadTotalSizeProgress">已上传 0%</span>
+      </div>
+
+      <!-- 上传结果摘要面板 -->
+      <div id="uploadSummaryResult" class="upload-result-box" hidden></div>
+
+      <div class="modal-actions" style="margin-top:20px;">
+        <button type="button" id="btnUploadAbort" class="ghost" style="color:var(--danger); margin-right:auto;">终止上传</button>
+        <button type="button" id="btnUploadFinish" class="primary" hidden>完成</button>
+      </div>
+    </div>
+
   </div>
 </div>
 

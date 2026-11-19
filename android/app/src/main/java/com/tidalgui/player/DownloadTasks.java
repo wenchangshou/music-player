@@ -148,6 +148,8 @@ final class DownloadTasks {
         String albumId = "";
         String albumTitle = "";
         String albumArtist = "";
+        /** The release version of the song, e.g. "Live" or "2011 Remaster"; empty when none. */
+        String version = "";
         /** Album cover: a TIDAL image id or a NetEase image URL. */
         String cover = "";
         String resolution = "";
@@ -200,6 +202,7 @@ final class DownloadTasks {
             albumId = saved.optString("albumId");
             albumTitle = saved.optString("albumTitle");
             albumArtist = saved.optString("albumArtist");
+            version = saved.optString("version");
             cover = saved.optString("cover");
             totalTracks = saved.optInt("totalTracks");
             date = saved.optString("date");
@@ -221,7 +224,7 @@ final class DownloadTasks {
                     .put("state", state.name()).put("error", error).put("systemId", systemId)
                     .put("document", document == null ? "" : document.toString())
                     .put("albumId", albumId).put("albumTitle", albumTitle).put("batch", batch)
-                    .put("albumArtist", albumArtist).put("cover", cover).put("totalTracks", totalTracks).put("date", date).put("resolution", resolution).put("verifiedLossless", verifiedLossless).put("checkedDash", checkedDash).put("number", number)
+                    .put("albumArtist", albumArtist).put("version", version).put("cover", cover).put("totalTracks", totalTracks).put("date", date).put("resolution", resolution).put("verifiedLossless", verifiedLossless).put("checkedDash", checkedDash).put("number", number)
                     .put("disc", disc).put("volumes", volumes)
                     .put("order", order).put("hidden", hidden).put("adopted", adopted);
         }
@@ -716,6 +719,8 @@ final class DownloadTasks {
                              Map<Integer, Integer> perDisc) {
         job.albumId = album == null ? (track.albumId == 0 ? "" : Long.toString(track.albumId)) : album.id;
         job.albumTitle = album == null ? track.album : album.title;
+        String version = track.payload == null ? "" : track.payload.optString("version");
+        job.version = "null".equals(version) ? "" : version.trim();
         job.cover = album != null && !album.cover.isEmpty() ? album.cover : track.cover;
         JSONObject release = track.payload.optJSONObject("album");
         JSONObject author = release == null ? null : release.optJSONObject("artist");
@@ -920,6 +925,87 @@ final class DownloadTasks {
         return job.attempt == attempt && job.active();
     }
 
+    /** Details of one task and its saved file, for a remote that opens it. */
+    JSONObject info(String id) throws Exception {
+        JSONObject result = new JSONObject();
+        Uri document;
+        Uri directory;
+        long systemId;
+        synchronized (this) {
+            Job job = jobs.get(id);
+            if (job == null || job.hidden) throw new IOException("下载记录已不存在");
+            result.put("id", job.id).put("track", job.track).put("title", job.title).put("artist", job.artist)
+                    .put("source", job.source).put("state", job.state.name().toLowerCase(java.util.Locale.ROOT))
+                    .put("error", job.error).put("resolution", job.resolution)
+                    .put("verifiedLossless", job.verifiedLossless).put("adopted", job.adopted)
+                    .put("album", job.albumTitle).put("albumArtist", job.albumArtist).put("albumId", job.albumId)
+                    .put("version", job.version)
+                    .put("number", job.number).put("disc", job.disc).put("volumes", job.volumes)
+                    .put("date", job.date).put("bytes", job.bytes).put("total", job.total)
+                    .put("attempts", job.attempt);
+            document = job.document;
+            directory = job.directory;
+            systemId = job.systemId;
+        }
+        if (directory != null) result.put("folder", readable(directory));
+        if (document != null) {
+            result.put("path", readable(document));
+            try (Cursor row = context.getContentResolver().query(document, new String[]{
+                    android.provider.OpenableColumns.DISPLAY_NAME, android.provider.OpenableColumns.SIZE},
+                    null, null, null)) {
+                if (row != null && row.moveToFirst()) {
+                    result.put("name", row.getString(0));
+                    if (!row.isNull(1)) result.put("size", row.getLong(1));
+                    result.put("exists", true);
+                } else result.put("exists", false);
+            } catch (Exception missing) {
+                result.put("exists", false);
+            }
+            if (result.optBoolean("exists")) audioDetails(document, result);
+        } else if (systemId > 0) result.put("path", "系统下载 #" + systemId);
+        return result;
+    }
+
+    /** Duration, bitrate, sample rate, bit depth and format, as read from the saved file. */
+    private void audioDetails(Uri document, JSONObject result) throws org.json.JSONException {
+        android.media.MediaMetadataRetriever retriever = new android.media.MediaMetadataRetriever();
+        try {
+            retriever.setDataSource(context, document);
+            String duration = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION);
+            String bitrate = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_BITRATE);
+            String mime = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_MIMETYPE);
+            if (duration != null) result.put("duration", Long.parseLong(duration) / 1000.0);
+            if (bitrate != null) result.put("bitrate", Long.parseLong(bitrate));
+            if (mime != null) result.put("mime", mime);
+            if (android.os.Build.VERSION.SDK_INT >= 31) {
+                String rate = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_SAMPLERATE);
+                String depth = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_BITS_PER_SAMPLE);
+                if (rate != null) result.put("sampleRate", Integer.parseInt(rate));
+                if (depth != null) result.put("bitDepth", Integer.parseInt(depth));
+            }
+        } catch (Exception unreadable) {
+            // Some providers or formats do not report these; the rest of the details still show.
+        } finally {
+            try { retriever.release(); } catch (Exception ignored) {}
+        }
+        // Average bitrate from size and length when the file does not report it (e.g. FLAC).
+        long size = result.optLong("size");
+        double seconds = result.optDouble("duration", 0);
+        if (!result.has("bitrate") && size > 0 && seconds > 0) result.put("bitrate", Math.round(size * 8 / seconds));
+    }
+
+    /** "Music/Album/01 Song.flac" for a storage-framework document, else the URI. */
+    private String readable(Uri uri) {
+        try {
+            String id = DocumentsContract.isDocumentUri(context, uri) ? DocumentsContract.getDocumentId(uri)
+                    : DocumentsContract.getTreeDocumentId(uri);
+            int colon = id.indexOf(':');
+            return colon >= 0 ? id.substring(colon + 1) : id;
+        } catch (Exception notDocument) {
+            return uri.getScheme() != null && uri.getScheme().equals("file") ? uri.getPath() : uri.toString();
+        }
+    }
+
     synchronized void cancel(String id) {
         Job job = jobs.get(id);
         if (job == null || !job.active()) return;
@@ -1019,6 +1105,7 @@ final class DownloadTasks {
             item.total = job.total;
             item.albumId = job.albumId;
             item.albumTitle = job.albumTitle;
+            item.version = job.version;
             item.resolution = job.resolution;
             item.batch = job.batch;
             item.order = job.order;

@@ -29,6 +29,15 @@ final class RemoteLibrary {
         switch (action) {
             case "local": {
                 List<TidalClient.Track> tracks = library.search(query, name.isEmpty() ? null : name);
+                String artist = input.optString("artist");
+                if (!artist.isEmpty()) {
+                    for (int i = tracks.size() - 1; i >= 0; i--) {
+                        TidalClient.Track track = tracks.get(i);
+                        String a = LocalLibrary.groupFor(track, 3).label;
+                        String aa = track.payload.optString("album_artist");
+                        if (!a.equalsIgnoreCase(artist) && !aa.equalsIgnoreCase(artist)) tracks.remove(i);
+                    }
+                }
                 int category = input.optInt("category", 0);
                 String group = input.optString("group");
                 if (category == 1 || (category >= 3 && category <= 6)) {
@@ -49,11 +58,57 @@ final class RemoteLibrary {
                         if ("album".equals(sort)) result = collator.compare(left.album, right.album);
                         return result == 0 ? collator.compare(left.title, right.title) : result;
                     });
+                } else if (category == 1 && !group.isEmpty()) {
+                    sortAlbum(tracks);
                 }
+                int limit = Math.max(1, Math.min(input.optInt("limit", 50), 500));
                 int start = Math.min(offset, tracks.size());
-                int end = Math.min(tracks.size(), start + 50);
+                int end = Math.min(tracks.size(), start + limit);
                 return page(tracks.subList(start, end), end < tracks.size() ? end : -1)
+                        .put("total", tracks.size())
                         .put("playlists", new JSONArray(library.playlists()));
+            }
+            case "lyrics-status":
+                return LyricsFill.get(player).status();
+            case "lyrics-fill": {
+                JSONArray chosen = input.optJSONArray("ids");
+                List<Long> ids = null;
+                if (chosen != null) {
+                    if (chosen.length() > 2000) throw new IOException("每次最多 2000 首");
+                    ids = new ArrayList<>();
+                    for (int i = 0; i < chosen.length(); i++) ids.add(chosen.getLong(i));
+                }
+                LyricsFill.get(player).start(ids, input.optBoolean("retry"));
+                return LyricsFill.get(player).status();
+            }
+            case "lyrics-stop":
+                LyricsFill.get(player).stop();
+                return LyricsFill.get(player).status();
+            case "lyrics-missing": {
+                List<TidalClient.Track> without = new ArrayList<>();
+                String term = query.toLowerCase(java.util.Locale.ROOT);
+                for (TidalClient.Track track : library.withoutLyrics()) {
+                    if (term.isEmpty() || (track.title + " " + track.artist + " " + track.album)
+                            .toLowerCase(java.util.Locale.ROOT).contains(term)) without.add(track);
+                }
+                int start = Math.min(offset, without.size());
+                int end = Math.min(without.size(), start + 50);
+                return page(without.subList(start, end), end < without.size() ? end : -1).put("total", without.size());
+            }
+            case "lyrics-candidates": {
+                TidalClient.Track song = library.track(id);
+                return new JSONObject().put("candidates", LyricsFill.json(LyricsFill.get(player).candidates(song)));
+            }
+            case "lyrics-preview":
+                return LyricsFill.get(player).fetch(input.optString("source"), input.getLong("track"));
+            case "lyrics-save": {
+                TidalClient.Track song = library.track(id);
+                JSONObject words = LyricsFill.get(player).fetch(input.optString("source"), input.getLong("track"));
+                String text = words.optString("synced");
+                if (text.isEmpty() && input.optBoolean("plain")) text = words.optString("plain");
+                if (text.trim().isEmpty()) throw new IOException("这个版本没有带时间轴的歌词");
+                LyricsFill.get(player).save(song, text);
+                return changed(player, main).put("synced", !words.optString("synced").isEmpty());
             }
             case "recent":
                 return page(main.run(() -> new ArrayList<>(player.history)), -1);
@@ -98,15 +153,7 @@ final class RemoteLibrary {
             case "song": {
                 String mode = input.getString("mode");
                 if (!"play".equals(mode) && !"next".equals(mode) && !"add".equals(mode)) throw new IOException("无效播放操作");
-                TidalClient.Track track;
-                if (input.has("track")) {
-                    track = new TidalClient.Track(input.getJSONObject("track"));
-                } else if (id < 0) {
-                    track = library.track(id);
-                } else {
-                    TidalClient api = account(player, main);
-                    track = api.track(id);
-                }
+                TidalClient.Track track = resolve(player, main, id, input.optJSONObject("track"));
                 return main.run(() -> {
                     if ("play".equals(mode)) player.replaceQueue(Collections.singletonList(track), 0, false);
                     else player.enqueue(track, "next".equals(mode));
@@ -117,12 +164,21 @@ final class RemoteLibrary {
                 List<TidalClient.Track> tracks = new ArrayList<>();
                 if (input.has("tracks")) {
                     JSONArray arr = input.getJSONArray("tracks");
-                    for (int i = 0; i < arr.length(); i++) tracks.add(new TidalClient.Track(arr.getJSONObject(i)));
+                    if (arr.length() < 1 || arr.length() > 500) throw new IOException("每次可播放 1–500 首歌曲");
+                    for (int i = 0; i < arr.length(); i++) {
+                        JSONObject sent = arr.getJSONObject(i);
+                        TidalClient.Track resolved = resolve(player, main, sent.getLong("id"), sent);
+                        if (resolved != null) tracks.add(resolved);
+                    }
                 } else {
                     JSONArray ids = input.getJSONArray("ids");
-                    if (ids.length() < 1 || ids.length() > 50) throw new IOException("每次可播放 1–50 首歌曲");
-                    for (int i = 0; i < ids.length(); i++) tracks.add(library.track(ids.getLong(i)));
+                    if (ids.length() < 1 || ids.length() > 500) throw new IOException("每次可播放 1–500 首歌曲");
+                    for (int i = 0; i < ids.length(); i++) {
+                        TidalClient.Track resolved = resolve(player, main, ids.getLong(i), null);
+                        if (resolved != null) tracks.add(resolved);
+                    }
                 }
+                if (tracks.isEmpty()) throw new IOException("未找到可播放曲目");
                 return main.run(() -> {
                     player.replaceQueue(tracks, 0, input.optBoolean("shuffle"));
                     return new JSONObject().put("ok", true);
@@ -152,6 +208,11 @@ final class RemoteLibrary {
                     JSONObject data = new JSONObject().put("id", collectionId).put("uuid", collectionId)
                             .put("name", "").put("title", "");
                     return tidalPage(netease.collectionTracks(new TidalClient.Collection(data, kind), offset), offset);
+                }
+                case "netease-artist-albums": {
+                    String artist = bounded(input, "collection", 100);
+                    if (!artist.matches("[0-9]+")) throw new IOException("无效艺人标识");
+                    return collections(netease.artistAlbums(artist), -1);
                 }
                 case "netease-recommended": {
                     List<TidalClient.Collection> collections = netease.recommendedPlaylists(netease.signedIn());
@@ -196,6 +257,22 @@ final class RemoteLibrary {
         }
     }
 
+    private static int trackNumber(TidalClient.Track track, String field, int fallback) {
+        String value = track.payload.optString(field).split("/", 2)[0].trim();
+        try { return Integer.parseInt(value); }
+        catch (NumberFormatException absent) { return fallback; }
+    }
+
+    private static void sortAlbum(List<TidalClient.Track> tracks) {
+        Collections.sort(tracks, (a, b) -> {
+            int disc = Integer.compare(trackNumber(a, "disc_number", 1), trackNumber(b, "disc_number", 1));
+            if (disc != 0) return disc;
+            int track = Integer.compare(trackNumber(a, "track_number", Integer.MAX_VALUE),
+                    trackNumber(b, "track_number", Integer.MAX_VALUE));
+            return track != 0 ? track : a.title.compareToIgnoreCase(b.title);
+        });
+    }
+
     private static JSONObject groups(List<TidalClient.Track> tracks, int category, int offset) throws Exception {
         java.util.Map<String, LocalLibrary.LocalGroup> groups = new java.util.LinkedHashMap<>();
         for (TidalClient.Track track : tracks) {
@@ -214,10 +291,24 @@ final class RemoteLibrary {
         int end = Math.min(offset + 50, sorted.size());
         for (int i = offset; i < end; i++) {
             LocalLibrary.LocalGroup group = sorted.get(i);
-            result.put(new JSONObject().put("id", group.key).put("title", group.label)
-                    .put("detail", group.detail).put("count", group.members.size()));
+            JSONObject item = new JSONObject().put("id", group.key).put("title", group.label)
+                    .put("detail", group.detail).put("count", group.members.size());
+            if (!group.members.isEmpty()) {
+                TidalClient.Track first = group.members.get(0);
+                item.put("artwork_id", first.id);
+                item.put("cover", "/api/artwork/" + first.id);
+                String year = "";
+                for (TidalClient.Track m : group.members) {
+                    String y = m.payload.optString("year");
+                    if (!y.isEmpty()) { year = y; break; }
+                }
+                item.put("year", year);
+            }
+            result.put(item);
         }
-        return new JSONObject().put("groups", result).put("next", end < sorted.size() ? end : -1);
+        return new JSONObject().put("groups", result)
+                .put("next", end < sorted.size() ? end : -1)
+                .put("total", sorted.size());
     }
 
     private static JSONObject collections(List<TidalClient.Collection> result, int next) throws Exception {
@@ -245,6 +336,26 @@ final class RemoteLibrary {
             player.libraryChanged();
             return new JSONObject().put("ok", true);
         });
+    }
+
+    /**
+     * The song a remote asks to play, looked up by its id on this device: a browser only sends
+     * the shortened form of PlaybackService.remoteTrack, without the local file or the artist and
+     * album records. NetEase songs, which cannot be looked up by id, are rebuilt from that form.
+     */
+    private static TidalClient.Track resolve(PlaybackService player, Dispatcher main, long id, JSONObject sent)
+            throws Exception {
+        if (id < 0) return player.localLibrary.track(id);
+        if (NeteaseClient.owns(id)) {
+            if (sent == null || sent.optString("title").isEmpty()) throw new IOException("缺少网易云曲目信息");
+            JSONObject data = new JSONObject().put("id", id).put("title", sent.optString("title"))
+                    .put("artist", new JSONObject().put("name", sent.optString("artist")))
+                    .put("album", new JSONObject().put("title", sent.optString("album"))
+                            .put("cover", sent.optString("cover")));
+            return new TidalClient.Track(data);
+        }
+        if (id <= 0) throw new IOException("无效曲目");
+        return account(player, main).track(id);
     }
 
     private static TidalClient account(PlaybackService player, Dispatcher main) throws Exception {

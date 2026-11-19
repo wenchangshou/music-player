@@ -122,7 +122,7 @@ pub fn show(ctx: &egui::Context, app: &App, st: &crate::app::UiState, acts: &mut
                     remote.state.as_ref().is_some_and(|state| state.tidal_logged_in && !state.lends_tidal)
                 }).map(crate::remote::Remote::target_name) {
                     ui.label(RichText::new(format!("○ {name} 未开放 TIDAL 登录")).size(12.0).color(theme::DANGER))
-                        .on_hover_text(format!("{name} 已登录 TIDAL，但未开放借用。请在该设备上更新到最新版，并在 设置 › 播放器账号 中打开“允许我的其他设备使用本机的 TIDAL 登录和下载”。"));
+                        .on_hover_text(format!("{name} 已登录 TIDAL，但未开放借用。请在该设备上更新到最新版，并在 设置 › 播放器账号 中打开“允许我的其他设备借用本机的 TIDAL 登录”。"));
                 } else if ui.link(RichText::new("○ 未授权 · 去设置").size(12.0).color(theme::DANGER)).clicked() {
                     acts.push(Action::Go(Route::Settings));
                 }

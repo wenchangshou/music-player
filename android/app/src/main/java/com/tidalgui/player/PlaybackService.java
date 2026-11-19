@@ -20,6 +20,7 @@ import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.dash.DashMediaSource;
 import androidx.media3.exoplayer.dash.manifest.DashManifest;
 import androidx.media3.exoplayer.dash.manifest.DashManifestParser;
+import androidx.media3.exoplayer.source.ProgressiveMediaSource;
 import androidx.media3.session.MediaSession;
 import androidx.media3.session.MediaSessionService;
 
@@ -122,7 +123,7 @@ public final class PlaybackService extends MediaSessionService {
         remoteSettings = getSharedPreferences("lan_remote", MODE_PRIVATE);
         remoteRequested = remoteSettings.getBoolean("enabled", false);
         remoteFiles = remoteSettings.getBoolean("files", false) && localLibrary.hasFolders();
-        lendTidal = remoteSettings.getBoolean("lend_tidal", false);
+        lendTidal = remoteSettings.getBoolean("lend_login", true);
         remoteRoutedLan = remoteSettings.getBoolean("routed", false);
         quality = Math.max(0, Math.min(QUALITIES.length - 1, settings.getInt("quality", 0)));
         String level = settings.getString("netease_level", "lossless");
@@ -607,6 +608,48 @@ public final class PlaybackService extends MediaSessionService {
             changed();
             return;
         }
+        if (track.isWebdav()) {
+            DefaultHttpDataSource.Factory httpFactory = new DefaultHttpDataSource.Factory();
+            if (track.webdavAuth != null && !track.webdavAuth.isEmpty()) {
+                httpFactory.setDefaultRequestProperties(Collections.singletonMap("Authorization", track.webdavAuth));
+            }
+            ProgressiveMediaSource mediaSource = new ProgressiveMediaSource.Factory(httpFactory)
+                    .createMediaSource(mediaItem(track).setUri(Uri.parse(track.webdavUrl)).build());
+            actualQuality = "WebDAV";
+            loading = false;
+            player.setPlayWhenReady(intendedPlay);
+            player.setMediaSource(mediaSource, position);
+            player.prepare();
+            changed();
+            return;
+        }
+        if (track.isSmb()) {
+            SmbClient.Server smbServer = SmbClient.findServer(this, track.smbServerId);
+            if (smbServer == null) {
+                for (SmbClient.Server s : SmbClient.loadServers(this)) {
+                    if (track.smbUrl.startsWith(s.rootUrl()) || (!s.host.isEmpty() && track.smbUrl.contains(s.host))) {
+                        smbServer = s;
+                        break;
+                    }
+                }
+            }
+            if (smbServer != null) {
+                SmbDataSource.Factory smbFactory = new SmbDataSource.Factory(smbServer.createContext());
+                ProgressiveMediaSource mediaSource = new ProgressiveMediaSource.Factory(smbFactory)
+                        .createMediaSource(mediaItem(track).setUri(Uri.parse(track.smbUrl)).build());
+                actualQuality = "SMB";
+                loading = false;
+                player.setPlayWhenReady(intendedPlay);
+                player.setMediaSource(mediaSource, position);
+                player.prepare();
+                changed();
+            } else {
+                error = "未找到对应的 SMB 服务器配置";
+                loading = false;
+                changed();
+            }
+            return;
+        }
         request = network.submit(() -> {
             try {
                 TidalClient.Stream stream = track.isNetease()
@@ -817,7 +860,7 @@ public final class PlaybackService extends MediaSessionService {
 
     void setLendTidal(boolean enabled) {
         lendTidal = enabled;
-        remoteSettings.edit().putBoolean("lend_tidal", enabled).commit();
+        remoteSettings.edit().putBoolean("lend_login", enabled).commit();
     }
 
     void setRemoteRoutedLan(boolean enabled) {
@@ -932,11 +975,36 @@ public final class PlaybackService extends MediaSessionService {
         if (coverUrl.isEmpty() && track.isLocal()) {
             coverUrl = "/api/artwork/" + track.id;
         }
-        return new JSONObject().put("id", track.id).put("title", track.title)
+        int trackNumber = track.payload.optInt("trackNumber", 0);
+        if (trackNumber == 0) {
+            String raw = track.payload.optString("track_number").split("/", 2)[0].trim();
+            try { trackNumber = Integer.parseInt(raw); } catch (Exception ignored) {}
+        }
+        int discNumber = track.payload.optInt("volumeNumber", 0);
+        if (discNumber == 0) {
+            String raw = track.payload.optString("disc_number").split("/", 2)[0].trim();
+            try { discNumber = Integer.parseInt(raw); } catch (Exception ignored) {}
+        }
+        JSONObject res = new JSONObject().put("id", track.id).put("title", track.title)
                 .put("artist", track.artist).put("album", track.album)
-                .put("source", track.isLocal() ? "本地音乐" : track.isNetease() ? "网易云" : "TIDAL")
-                .put("kind", track.isLocal() ? "local" : track.isNetease() ? "netease" : "tidal")
-                .put("cover", coverUrl);
+                .put("source", track.isLocal() ? "本地音乐" : track.isWebdav() ? "WebDAV" : track.isSmb() ? "SMB" : track.isNetease() ? "网易云" : "TIDAL")
+                .put("kind", track.isLocal() ? "local" : track.isWebdav() ? "webdav" : track.isSmb() ? "smb" : track.isNetease() ? "netease" : "tidal")
+                .put("cover", coverUrl)
+                .put("duration", DownloadTasks.length(track))
+                .put("lyrics", track.isLocal() ? (track.payload.optString("lrc_uri").isEmpty()
+                        ? (track.payload.optBoolean("lyrics_missing") ? "missing" : "none") : "saved") : "");
+        if (trackNumber > 0) res.put("trackNumber", trackNumber);
+        if (discNumber > 0) res.put("discNumber", discNumber);
+        if (track.isLocal()) {
+            String year = track.payload.optString("year");
+            if (!year.isEmpty()) res.put("year", year);
+            String genre = track.payload.optString("genre");
+            if (!genre.isEmpty()) res.put("genre", genre);
+            String albumArtist = track.payload.optString("album_artist");
+            if (!albumArtist.isEmpty()) res.put("albumArtist", albumArtist);
+            res.put("lossless", DownloadTasks.lossless(track));
+        }
+        return res;
     }
 
     JSONObject remoteSnapshot() throws org.json.JSONException {
@@ -952,7 +1020,9 @@ public final class PlaybackService extends MediaSessionService {
                 .put("shuffle", shuffle).put("repeat", remoteRepeat()).put("volume", mediaVolume()).put("requestedQuality", QUALITIES[quality]).put("requestedNetease", neteaseLevel)
                 // Changes when the music library or a download adds or removes files.
                 .put("filesRevision", localRevision + "." + DownloadTasks.get(this).revision())
-                .put("sourcePath", current() != null && current().isLocal() ? LocalMusicFiles.displayPath(current().localUri) : "").put("error", error)
+                .put("sourcePath", current() != null && current().isLocal() ? LocalMusicFiles.displayPath(current().localUri)
+                        : current() != null && current().isWebdav() ? current().webdavUrl
+                        : current() != null && current().isSmb() ? current().smbUrl : "").put("error", error)
                 .put("loginError", remoteLoginError)
                 .put("actualQuality", loading ? "" : actualQuality)
                 .put("resolution", loading ? "" : resolution.replaceFirst("^ · ", ""));
@@ -972,6 +1042,7 @@ public final class PlaybackService extends MediaSessionService {
     }
 
     private void setMediaVolume(double percent) throws IOException {
+        if (percent > 0 && percent <= 1.0) percent *= 100.0;
         if (!(percent >= 0 && percent <= 100)) throw new IOException("音量无效");
         android.media.AudioManager audio = getSystemService(android.media.AudioManager.class);
         int max = audio.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC);

@@ -37,7 +37,7 @@ final class LanRemote implements AutoCloseable {
     private final PlaybackService playback;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ServerSocket server;
-    private final ThreadPoolExecutor workers = new ThreadPoolExecutor(0, 6, 30, TimeUnit.SECONDS,
+    private final ThreadPoolExecutor workers = new ThreadPoolExecutor(0, 16, 30, TimeUnit.SECONDS,
             new SynchronousQueue<>());
     private static final SecureRandom RANDOM = new SecureRandom();
     private final SharedPreferences settings;
@@ -340,6 +340,7 @@ final class LanRemote implements AutoCloseable {
                 }
                 respond(connection, 200, "application/json; charset=utf-8", bytes(response.toString()));
             } catch (Exception error) {
+                if (!(error instanceof IOException)) android.util.Log.w("LanRemote", "Request failed", error);
                 String message = error instanceof IOException ? error.getMessage() : "遥控请求失败";
                 JSONObject failure = new JSONObject().put("error", message == null ? "遥控请求失败" : message);
                 respond(connection, 400, "application/json; charset=utf-8", bytes(failure.toString()));

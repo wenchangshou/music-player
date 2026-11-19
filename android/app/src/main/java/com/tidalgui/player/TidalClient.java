@@ -87,6 +87,10 @@ final class TidalClient {
         final JSONObject payload;
         final Uri localUri;
         final String localRoot;
+        final String webdavUrl;
+        final String webdavAuth;
+        final String smbUrl;
+        final String smbServerId;
 
         Track(JSONObject data) throws Exception {
             payload = data;
@@ -95,6 +99,10 @@ final class TidalClient {
             Uri candidate = id < 0 && !local.isEmpty() ? Uri.parse(local) : null;
             localRoot = data.optString("local_root", "");
             localUri = candidate != null && "content".equals(candidate.getScheme()) ? candidate : null;
+            webdavUrl = data.optString("webdav_url", "");
+            webdavAuth = data.optString("webdav_auth", "");
+            smbUrl = data.optString("smb_url", "");
+            smbServerId = data.optString("smb_server_id", "");
             title = data.getString("title");
             JSONObject primary = data.optJSONObject("artist");
             JSONArray artists = data.optJSONArray("artists");
@@ -111,8 +119,10 @@ final class TidalClient {
         }
 
         boolean isLocal() { return localUri != null; }
+        boolean isWebdav() { return !webdavUrl.isEmpty(); }
+        boolean isSmb() { return !smbUrl.isEmpty(); }
         boolean isNetease() { return NeteaseClient.owns(id); }
-        boolean needsTidal() { return !isLocal() && !isNetease(); }
+        boolean needsTidal() { return !isLocal() && !isNetease() && !isWebdav() && !isSmb(); }
 
     }
 
