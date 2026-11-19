@@ -52,8 +52,42 @@ final class RemoteTidal {
         if ("download".equals(operation)) return download(playback, api, command);
         String body = api.forward(command.optString("method", "GET"), command.getString("path"),
                 command.has("form") ? command.getString("form") : null);
+        return reply(body, "gzip".equals(command.optString("accept")));
+    }
+
+    /**
+     * A forwarded TIDAL reply: large ones go gzip-compressed and base64-encoded ("gz") to devices
+     * that accept it, since the relay takes device requests of up to 1 MB.
+     */
+    static JSONObject reply(String body, boolean gzip) throws Exception {
+        if (gzip && body.length() > 64 * 1024) {
+            java.io.ByteArrayOutputStream packed = new java.io.ByteArrayOutputStream();
+            try (java.util.zip.GZIPOutputStream output = new java.util.zip.GZIPOutputStream(packed)) {
+                output.write(body.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            }
+            String text = android.util.Base64.encodeToString(packed.toByteArray(), android.util.Base64.NO_WRAP);
+            if (text.length() <= MAX_REPLY) return new JSONObject().put("gz", text);
+        }
         if (body.length() > MAX_REPLY) throw new IOException("TIDAL 返回的内容过多，无法通过远程连接传送");
         return new JSONObject().put("body", body);
+    }
+
+    /** The body of a reply from {@link #reply}. */
+    static String body(JSONObject reply) throws IOException {
+        String packed = reply.optString("gz");
+        if (packed.isEmpty()) return reply.optString("body");
+        byte[] bytes;
+        try {
+            bytes = android.util.Base64.decode(packed, android.util.Base64.DEFAULT);
+        } catch (IllegalArgumentException invalid) {
+            throw new IOException("远程回复无法解码");
+        }
+        try (java.util.zip.GZIPInputStream input = new java.util.zip.GZIPInputStream(new java.io.ByteArrayInputStream(bytes))) {
+            java.io.ByteArrayOutputStream body = new java.io.ByteArrayOutputStream();
+            byte[] buffer = new byte[16384];
+            for (int read; (read = input.read(buffer)) > 0; ) body.write(buffer, 0, read);
+            return body.toString("UTF-8");
+        }
     }
 
     /** Download quality: a TIDAL API name, or "BEST" for Max falling back to High. */
@@ -122,7 +156,15 @@ final class RemoteTidal {
             throws Exception {
         DownloadTasks tasks = DownloadTasks.get(playback);
         String action = command.optString("action", "list");
-        String id = command.optString("id");
+        int limit = Math.max(1, Math.min(MAX_LIST, command.optInt("limit", 300)));
+        // One task ("id") or, from multi-select, several ("ids").
+        List<String> ids = new ArrayList<>();
+        JSONArray many = command.optJSONArray("ids");
+        if (many != null) {
+            if (many.length() > 500) throw new IOException("每次最多处理 500 项");
+            for (int i = 0; i < many.length(); i++) ids.add(many.getString(i));
+        } else if (!command.optString("id").isEmpty()) ids.add(command.optString("id"));
+        int skipped = 0;
         switch (action) {
             case "list":
                 break;
@@ -131,10 +173,10 @@ final class RemoteTidal {
                 return new JSONObject().put("marks", tasks.downloaded(libraryRevision).toJson());
             }
             case "cancel":
-                tasks.cancel(id);
+                for (String id : ids) tasks.cancel(id);
                 break;
             case "remove":
-                tasks.remove(id, false);
+                for (String id : ids) if (!tasks.remove(id, false)) skipped++;
                 break;
             case "clear":
                 for (DownloadTasks.Job job : tasks.snapshot()) if (!job.active()) tasks.remove(job.id, false);
@@ -143,30 +185,55 @@ final class RemoteTidal {
                 tasks.setParallel(command.getInt("count"));
                 break;
             case "retry": {
-                DownloadTasks.Job found = null;
-                for (DownloadTasks.Job job : tasks.snapshot()) if (job.id.equals(id)) found = job;
-                if (found == null) throw new IOException("下载记录已不存在");
-                DownloadTasks.Resolve resolve;
-                if ("网易云".equals(found.source)) resolve = DownloadTasks.netease(main.run(playback::netease));
-                else {
-                    TidalClient api = main.run(() -> playback.client);
-                    resolve = api == null ? null : DownloadTasks.tidal(api);
+                java.util.Map<String, DownloadTasks.Job> known = new java.util.HashMap<>();
+                for (DownloadTasks.Job job : tasks.snapshot()) known.put(job.id, job);
+                DownloadTasks.Resolve tidal = null, netease = null;
+                for (String id : ids) {
+                    DownloadTasks.Job found = known.get(id);
+                    if (found == null) {
+                        skipped++;
+                        continue;
+                    }
+                    DownloadTasks.Resolve resolve;
+                    if ("网易云".equals(found.source)) {
+                        if (netease == null) netease = DownloadTasks.netease(main.run(playback::netease));
+                        resolve = netease;
+                    } else {
+                        if (tidal == null) {
+                            TidalClient api = main.run(() -> playback.client);
+                            tidal = api == null ? null : DownloadTasks.tidal(api);
+                        }
+                        resolve = tidal;
+                    }
+                    if (resolve == null) {
+                        if (ids.size() == 1) throw new IOException("此设备尚未登录 " + found.source);
+                        skipped++;
+                        continue;
+                    }
+                    tasks.retry(id, found.directory, resolve);
                 }
-                if (resolve == null) throw new IOException("此设备尚未登录 " + found.source);
-                tasks.retry(id, found.directory, resolve);
+                if (ids.size() == 1 && skipped == 1) throw new IOException("下载记录已不存在");
                 break;
             }
             default:
                 throw new IOException("无效的下载操作");
         }
-        return list(tasks);
+        return list(tasks, limit).put("skipped", skipped);
     }
+
+    /** At most this many rows per list reply, which must stay well under the relay's 1 MB. */
+    static final int MAX_LIST = 2000;
 
     /** The download list as the controlling device shows it, newest first. */
     static JSONObject list(DownloadTasks tasks) throws Exception {
+        return list(tasks, 300);
+    }
+
+    static JSONObject list(DownloadTasks tasks, int limit) throws Exception {
         JSONArray jobs = new JSONArray();
-        for (DownloadTasks.Job job : tasks.snapshot()) {
-            if (jobs.length() >= 300) break;
+        List<DownloadTasks.Job> all = tasks.snapshot();
+        for (DownloadTasks.Job job : all) {
+            if (jobs.length() >= limit) break;
             jobs.put(new JSONObject().put("id", job.id).put("track", job.track).put("title", job.title)
                     .put("artist", job.artist).put("album", job.albumTitle).put("source", job.source)
                     .put("state", job.state.name().toLowerCase(java.util.Locale.ROOT))
@@ -174,7 +241,7 @@ final class RemoteTidal {
                     .put("error", job.error).put("batch", job.batch).put("order", job.order)
                     .put("quality", qualityName(job.quality)));
         }
-        return new JSONObject().put("jobs", jobs).put("parallel", tasks.parallel())
+        return new JSONObject().put("jobs", jobs).put("total", all.size()).put("parallel", tasks.parallel())
                 .put("maxParallel", DownloadTasks.MAX_PARALLEL).put("revision", tasks.revision())
                 .put("perTrack", true);
     }

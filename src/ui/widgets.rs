@@ -368,7 +368,9 @@ fn hover_play(ui: &mut egui::Ui, rect: Rect, id: egui::Id) -> bool {
 }
 
 pub fn album_card(ui: &mut egui::Ui, app: &App, a: &AlbumItem, acts: &mut Vec<Action>) {
-    ui.allocate_ui_with_layout(Vec2::new(CARD_W, CARD_W + 58.0), Layout::top_down(Align::Min), |ui| {
+    let saved = app.marks().album(a);
+    let height = CARD_W + if saved > 0 { 74.0 } else { 58.0 };
+    ui.allocate_ui_with_layout(Vec2::new(CARD_W, height), Layout::top_down(Align::Min), |ui| {
         ui.set_width(CARD_W);
         ui.spacing_mut().item_spacing.y = 2.0;
         let resp = artwork(ui, a.cover.as_deref(), CARD_W, 320, false, "💿");
@@ -390,6 +392,9 @@ pub fn album_card(ui: &mut egui::Ui, app: &App, a: &AlbumItem, acts: &mut Vec<Ac
             if let Some(ar) = a.main_artist() {
                 acts.push(Action::Go(Route::Artist(ar.id)));
             }
+        }
+        if saved > 0 {
+            ui.label(RichText::new(format!("已下载 {saved} 首")).color(theme::OK_GREEN).size(12.0));
         }
     });
 }
@@ -532,6 +537,9 @@ pub fn track_list(
                             ui.add(egui::Label::new(RichText::new(t.full_title()).color(c).size(14.5)).truncate().selectable(false));
                             if t.explicit == Some(true) {
                                 badge(ui, "E", Color32::GRAY);
+                            }
+                            if let Some(saved) = app.marks().track(t) {
+                                ui.add(egui::Label::new(RichText::new(saved).color(theme::OK_GREEN).size(11.5)).selectable(false));
                             }
                         });
                         if link_label(ui, RichText::new(t.artist_names()).color(TEXT_WEAK).size(12.5)).clicked() {

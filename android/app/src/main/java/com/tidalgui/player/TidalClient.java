@@ -91,9 +91,10 @@ final class TidalClient {
         Track(JSONObject data) throws Exception {
             payload = data;
             id = data.getLong("id");
-            Uri candidate = Uri.parse(data.optString("local_uri", ""));
+            String local = data.optString("local_uri", "");
+            Uri candidate = id < 0 && !local.isEmpty() ? Uri.parse(local) : null;
             localRoot = data.optString("local_root", "");
-            localUri = id < 0 && "content".equals(candidate.getScheme()) ? candidate : null;
+            localUri = candidate != null && "content".equals(candidate.getScheme()) ? candidate : null;
             title = data.getString("title");
             JSONObject primary = data.optJSONObject("artist");
             JSONArray artists = data.optJSONArray("artists");

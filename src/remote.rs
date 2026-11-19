@@ -89,6 +89,8 @@ pub struct RemoteState {
     pub requested_netease: Option<String>,
     /// The device is signed in to TIDAL and lets this one browse and download through it.
     pub lends_tidal: bool,
+    /// The device is signed in to TIDAL, whether or not it lends the login.
+    pub tidal_logged_in: bool,
     /// The device runs downloads for this one and lists them.
     pub downloads: bool,
     received: Instant,
@@ -149,6 +151,7 @@ impl RemoteState {
             requested: value["requestedQuality"].as_str().and_then(stream_quality),
             requested_netease: value["requestedNetease"].as_str().filter(|level| !level.is_empty()).map(str::to_owned),
             lends_tidal: value["loggedIn"] == true && features.contains(&"tidal"),
+            tidal_logged_in: value["loggedIn"] == true,
             downloads: features.contains(&"downloads"),
             source_path: value["sourcePath"].as_str().filter(|path| !path.is_empty()).map(str::to_owned),
             received: Instant::now(),
@@ -408,6 +411,10 @@ pub struct Remote {
     pub downloads_error: Option<String>,
     pub downloads_busy: bool,
     pub last_downloads: Option<Instant>,
+    /// What the controlled device has saved, for "已下载" marks in lists here.
+    pub marks: Option<crate::marks::Marks>,
+    pub marks_busy: bool,
+    pub last_marks: Option<Instant>,
 }
 
 impl Remote {
@@ -437,6 +444,9 @@ impl Remote {
             downloads_error: None,
             downloads_busy: false,
             last_downloads: None,
+            marks: None,
+            marks_busy: false,
+            last_marks: None,
         })
     }
 
@@ -472,6 +482,9 @@ impl Remote {
         self.downloads_error = None;
         self.downloads_busy = false;
         self.last_downloads = None;
+        self.marks = None;
+        self.marks_busy = false;
+        self.last_marks = None;
     }
 
     /// Downloads run on the controlled device and the downloads page lists them.

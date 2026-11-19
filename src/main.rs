@@ -2,6 +2,7 @@ mod api;
 mod app;
 mod download;
 mod library;
+mod marks;
 mod netease;
 mod playback;
 mod player;

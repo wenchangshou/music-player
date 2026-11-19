@@ -79,6 +79,8 @@ final class RemoteDevices {
         String requestedNetease = "";
         /** The device is signed in to TIDAL and lets this one browse and download through it. */
         boolean lendsTidal;
+        /** The device is signed in to TIDAL, whether or not it lends the login. */
+        boolean tidalLoggedIn;
         /** The device runs downloads for this one and lists them. */
         boolean downloads;
         /** Changes when the device's downloads or music files change (Android devices only). */
@@ -151,6 +153,7 @@ final class RemoteDevices {
             state.sourcePath = value.optString("sourcePath");
             state.requestedNetease = value.optString("requestedNetease");
             state.filesRevision = value.optString("filesRevision");
+            state.tidalLoggedIn = value.optBoolean("loggedIn");
             JSONArray features = value.optJSONArray("features");
             for (int i = 0; features != null && i < features.length(); i++) {
                 if ("tidal".equals(features.optString(i))) state.lendsTidal = value.optBoolean("loggedIn");
@@ -186,7 +189,7 @@ final class RemoteDevices {
     private long lastDevices, lastState;
     private int generation;
 
-    List<Device> devices = Collections.emptyList();
+    volatile List<Device> devices = Collections.emptyList();
     boolean devicesLoaded;
     String devicesError = "";
     String target;
@@ -430,6 +433,12 @@ final class RemoteDevices {
     }
 
     private JSONObject controlRaw(String device, JSONObject command) throws Exception {
+        // A device the relay lists as offline would only time out after 20 seconds.
+        for (Device known : devices) {
+            if (known.id.equals(device) && !known.online) {
+                throw new IOException((known.name.isEmpty() ? "该设备" : known.name) + " 当前离线");
+            }
+        }
         String suffix = "?device=" + encode(device);
         String id = request("POST", "/api/control" + suffix, command).optString("command");
         if (id.isEmpty()) throw new IOException("后台未返回命令编号");

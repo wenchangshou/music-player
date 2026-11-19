@@ -14,9 +14,9 @@
 
 **借用设备的 TIDAL 登录。** 本机没有登录 TIDAL 时，遥控一台已登录 TIDAL 的设备（Android 或桌面端），本机的 TIDAL 浏览、搜索、专辑、歌手、收藏都会经由该设备的登录读取，不需要在本机登录。下载也发到该设备，用它的登录下载并保存在它的下载目录，本机的下载页改为显示该设备的下载任务（取消、重试、移除、同时下载数）。支持的设备在状态中带 `features: ["tidal", "downloads"]`，`loggedIn` 表示它已登录 TIDAL。相关命令：
 
-- `tidal`：`{method, path, form?}`，由设备用自己的登录请求 TIDAL API 并返回 `{body}`。路径中的 `{user}` 由设备替换为自己的用户 ID。设备只接受 `search`、`tracks`、`albums`、`artists`、`playlists`、`mixes`、`pages`、`users/{user}` 下的读取请求，以及 `users/{user}/favorites/` 下的收藏增删；音频流和下载地址（`playbackinfo` 等）一律拒绝，回复超过约 900 KB 也会拒绝。
+- `tidal`：`{method, path, form?}`，由设备用自己的登录请求 TIDAL API 并返回 `{body}`。路径中的 `{user}` 由设备替换为自己的用户 ID。设备只接受 `search`、`tracks`、`albums`、`artists`、`playlists`、`mixes`、`pages`、`users/{user}` 下的读取请求，以及 `users/{user}/favorites/` 下的收藏增删；音频流和下载地址（`playbackinfo` 等）一律拒绝，请求带 `accept: "gzip"` 时，超过 64 KB 的回复改为 `{gz}`（gzip 后 base64），压缩后仍超过约 900 KB 才拒绝。
 - `download`：`{album}` 或 `{ids}`（最多 100 首 TIDAL 曲目），`quality` 为 `BEST`（Max，不可用时 High）、`HI_RES_LOSSLESS`、`LOSSLESS`、`HIGH` 或 `LOW`。回复为下载列表，另带 `queued` 和 `skipped`。
-- `downloads`：`action` 为 `list`、`cancel`、`retry`、`remove`、`clear` 或 `parallel`（带 `count`，仅 Android），`id` 为任务编号。回复 `{jobs, parallel, maxParallel, perTrack}`。`marks` 返回 `{marks: {tracks, albums, named, namedAlbums}}`：已下载的曲目和专辑，Android 另含本地音乐库中按歌名和歌手比对的歌曲，用于遥控端在列表中标注该设备已有的歌曲。Android 每首歌一个任务，桌面端每个专辑或链接一个任务，逐个下载。
+- `downloads`：`action` 为 `list`、`cancel`、`retry`、`remove`、`clear` 或 `parallel`（带 `count`，仅 Android），`id` 为任务编号；`cancel`、`retry`、`remove` 也可用 `ids`（最多 500 个）批量处理，回复带 `skipped`（未处理的项数）。`limit` 为返回的任务数（默认 300，最多 2000）。回复 `{jobs, total, parallel, maxParallel, perTrack}`，`total` 为任务总数。`marks` 返回 `{marks: {tracks, albums, namedHashes, namedAlbums}}`：已下载的曲目和专辑，Android 另含本地音乐库中按歌名、歌手和时长比对的歌曲（`namedHashes` 为 `哈希=时长秒,…;…`，哈希是规范化“歌名|歌手”的 48 位 FNV-1a，按回复不超过约 850KB 装入），用于遥控端在列表中标注该设备已有的歌曲。Android 每首歌一个任务，桌面端每个专辑或链接一个任务，逐个下载。
 
 设备只有在其设置中允许借用（默认关闭）时才在 `features` 中声明这两项，并拒绝 `tidal`、`download`、`downloads` 命令。借用登录只在遥控期间生效。切回本机或本机登录 TIDAL 后，改用本机的登录。
 

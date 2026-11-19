@@ -379,10 +379,59 @@ fn forward(api: &TidalApi, command: &Value) -> Value {
     let method = command["method"].as_str().unwrap_or("GET");
     let Some(path) = command["path"].as_str() else { return json!({"error": "请求无效"}) };
     match api.forward(method, path, command["form"].as_str()) {
-        // Replies travel through the relay, which accepts device requests of up to 1 MB.
-        Ok(body) if body.len() > 900 * 1024 => json!({"error": "TIDAL 返回的内容过多，无法通过远程连接传送"}),
-        Ok(body) => json!({"body": body}),
+        Ok(body) => tidal_reply(body, command["accept"] == "gzip"),
         Err(error) => json!({"error": error}),
+    }
+}
+
+/// A forwarded TIDAL reply. Replies travel through the relay, which accepts device requests of up
+/// to 1 MB, so large ones go gzip-compressed and base64-encoded ("gz") to devices that accept it.
+pub fn tidal_reply(body: String, gzip: bool) -> Value {
+    const LIMIT: usize = 900 * 1024;
+    if gzip && body.len() > 64 * 1024 {
+        use std::io::Write;
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        if encoder.write_all(body.as_bytes()).is_ok() {
+            if let Ok(packed) = encoder.finish() {
+                use base64::Engine;
+                let text = base64::engine::general_purpose::STANDARD.encode(packed);
+                if text.len() <= LIMIT {
+                    return json!({"gz": text});
+                }
+            }
+        }
+    }
+    if body.len() > LIMIT {
+        return json!({"error": "TIDAL 返回的内容过多，无法通过远程连接传送"});
+    }
+    json!({"body": body})
+}
+
+/// The body of a reply from [`tidal_reply`].
+pub fn tidal_body(reply: &Value) -> Result<String, String> {
+    let Some(packed) = reply["gz"].as_str() else {
+        return Ok(reply["body"].as_str().unwrap_or_default().to_owned());
+    };
+    use base64::Engine;
+    use std::io::Read;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(packed).map_err(|_| "远程回复无法解码".to_owned())?;
+    let mut body = String::new();
+    flate2::read::GzDecoder::new(bytes.as_slice()).read_to_string(&mut body).map_err(|_| "远程回复无法解压".to_owned())?;
+    Ok(body)
+}
+
+#[cfg(test)]
+mod reply_tests {
+    #[test]
+    fn large_replies_are_compressed_and_restored() {
+        let body = format!("{{\"items\":[{}]}}", vec!["{\"title\":\"Yellow\",\"artist\":\"Coldplay\"}"; 40000].join(","));
+        assert!(body.len() > 900 * 1024);
+        let packed = super::tidal_reply(body.clone(), true);
+        assert!(packed.get("gz").is_some());
+        assert_eq!(super::tidal_body(&packed).unwrap(), body);
+        assert!(super::tidal_reply(body, false).get("error").is_some());
+        let small = super::tidal_reply("{}".into(), true);
+        assert_eq!(super::tidal_body(&small).unwrap(), "{}");
     }
 }
 

@@ -307,6 +307,10 @@ public final class MainActivity extends ComponentActivity {
                 downloadNextRefresh = now + (visibleRemoteDownloads ? 2000 : 1000);
                 refreshDownloads();
             }
+            if (now >= marksNextCheck) {
+                marksNextCheck = now + 2000;
+                refreshLocalMarks();
+            }
             handler.postDelayed(this, 300);
         }
     };
@@ -465,6 +469,7 @@ public final class MainActivity extends ComponentActivity {
     private void render() {
         syncDevices();
         downloaded = shownDownloads();
+        markUpdates.clear();
         visibleRemoteTarget = devices == null ? null : devices.target;
         visibleDevices = devicesSignature();
         visibleRemoteQueue = remoteQueueSignature();
@@ -1009,9 +1014,14 @@ public final class MainActivity extends ComponentActivity {
             TextView name = single(item.title, 13, INK, true);
             name.setPadding(0, dp(7), 0, 0);
             card.addView(name);
-            int saved = item.kind == TidalClient.Collection.Kind.ALBUM && downloaded != null ? downloaded.album(item) : 0;
-            if (saved > 0) card.addView(single("已下载 " + saved + " 首", 12, ACCENT, false));
-            else if (!item.subtitle.isEmpty()) card.addView(single(item.subtitle, 12, MUTED, false));
+            TextView caption = single(item.subtitle, 12, MUTED, false);
+            card.addView(caption);
+            mark(() -> {
+                int saved = item.kind == TidalClient.Collection.Kind.ALBUM && downloaded != null ? downloaded.album(item) : 0;
+                caption.setText(saved > 0 ? "已下载 " + saved + " 首" : item.subtitle);
+                caption.setTextColor(saved > 0 ? ACCENT : MUTED);
+                caption.setVisibility(saved > 0 || !item.subtitle.isEmpty() ? View.VISIBLE : View.GONE);
+            });
             card.setContentDescription(item.title);
             card.setOnClickListener(view -> openCollection(item));
             LinearLayout.LayoutParams cardParams = new LinearLayout.LayoutParams(dp(124), -2);
@@ -1149,8 +1159,9 @@ public final class MainActivity extends ComponentActivity {
 
     private void sources() {
         boolean loggedIn = tidalApi() != null;
-        LinearLayout tidal = panel("TIDAL", borrowsTidal() ? "使用「" + devices.targetName() + "」的登录 · 浏览、收藏和下载都经由该设备"
-                : loggedIn ? "已连接 · Hi-Res 无损、收藏与歌单" : "在 TIDAL 网页授权一次即可，无需电脑。");
+        String hint = lendHint();
+        LinearLayout tidal = panel("TIDAL", borrowsTidal() ? "使用「" + devices.targetName() + "」的登录 · 浏览、收藏和下载都经由该设备，"
+                + "歌曲在该设备上播放" : hint != null ? hint : loggedIn ? "已连接 · Hi-Res 无损、收藏与歌单" : "在 TIDAL 网页授权一次即可，无需电脑。");
         Button enterTidal = withIcon(loggedIn ? primary("进入 TIDAL", () -> enterSource(SearchSource.TIDAL))
                 : secondary("浏览", () -> enterSource(SearchSource.TIDAL)), "forward", loggedIn ? BG : ACCENT);
         tidal.addView(loggedIn ? toolbar(enterTidal, secondary("账号设置", () -> open(Page.ACCOUNT)))
@@ -1814,9 +1825,12 @@ public final class MainActivity extends ComponentActivity {
         info.addView(name);
         if (!item.subtitle.isEmpty()) info.addView(single(item.subtitle, 13, MUTED, false));
         if (item.kind == TidalClient.Collection.Kind.ALBUM && !item.isNetease()) {
-            int saved = downloaded == null ? 0 : downloaded.album(item);
-            Button download = withIcon(secondary(saved > 0 ? "已下载 " + saved + " 首 · 继续下载" : "下载专辑",
+            Button download = withIcon(secondary("下载专辑",
                     () -> chooseTidalDownload(item, java.util.Collections.emptyList())), "download", ACCENT);
+            mark(() -> {
+                int saved = downloaded == null ? 0 : downloaded.album(item);
+                download.setText(saved > 0 ? "已下载 " + saved + " 首 · 继续下载" : "下载专辑");
+            });
             LinearLayout.LayoutParams chip = new LinearLayout.LayoutParams(-2, dp(36));
             chip.topMargin = dp(12);
             info.addView(download, chip);
@@ -1851,10 +1865,13 @@ public final class MainActivity extends ComponentActivity {
         String type = item.kind == TidalClient.Collection.Kind.ARTIST ? "艺人"
                 : item.kind == TidalClient.Collection.Kind.PLAYLIST ? "歌单" : "专辑";
         String detail = item.subtitle.isEmpty() ? type : item.subtitle;
-        int saved = item.kind == TidalClient.Collection.Kind.ALBUM && downloaded != null ? downloaded.album(item) : 0;
-        LinearLayout row = entry(item.title, saved > 0 ? "已下载 " + saved + " 首 · " + detail : detail,
-                item.cover, () -> openCollection(item));
-        if (saved > 0) ((TextView) ((LinearLayout) row.getChildAt(1)).getChildAt(1)).setTextColor(ACCENT);
+        LinearLayout row = entry(item.title, detail, item.cover, () -> openCollection(item));
+        TextView subtitle = (TextView) ((LinearLayout) row.getChildAt(1)).getChildAt(1);
+        mark(() -> {
+            int saved = item.kind == TidalClient.Collection.Kind.ALBUM && downloaded != null ? downloaded.album(item) : 0;
+            subtitle.setText(saved > 0 ? "已下载 " + saved + " 首 · " + detail : detail);
+            subtitle.setTextColor(saved > 0 ? ACCENT : MUTED);
+        });
         content.addView(row);
     }
 
@@ -1934,10 +1951,14 @@ public final class MainActivity extends ComponentActivity {
         String detail = track.artist;
         if (!track.album.isEmpty()) detail += (detail.isEmpty() ? "" : " · ") + track.album;
         if (detail.isEmpty()) detail = track.isLocal() ? "本地音频" : track.isNetease() ? "网易云" : "TIDAL";
-        String saved = downloaded == null ? null : downloaded.label(track);
-        if (saved != null) detail = saved + " · " + detail;
         LinearLayout view = entry(displayTitle(track), detail, "", playTrack);
-        if (saved != null) ((TextView) ((LinearLayout) view.getChildAt(1)).getChildAt(1)).setTextColor(ACCENT);
+        TextView subtitle = (TextView) ((LinearLayout) view.getChildAt(1)).getChildAt(1);
+        String plain = detail;
+        mark(() -> {
+            String saved = downloaded == null ? null : downloaded.label(track);
+            subtitle.setText(saved == null ? plain : saved + " · " + plain);
+            subtitle.setTextColor(saved == null ? MUTED : ACCENT);
+        });
         artwork.load((ImageView) view.getChildAt(0), track, 160);
         view.addView(iconButton("more", "更多 " + track.title, () -> trackMenu(track, favoriteList)));
         return view;
@@ -2028,7 +2049,8 @@ public final class MainActivity extends ComponentActivity {
     private String downloadLabel(TidalClient.Track track) {
         String saved = downloaded == null ? null : downloaded.label(track);
         if (saved == null) return "下载歌曲";
-        return saved.equals("已下载") ? "已下载 · 重新检查" : "已下载（" + saved.substring(6) + "）· 重新检查";
+        if (saved.startsWith("已下载 · ")) return "已下载（" + saved.substring("已下载 · ".length()) + "）· 重新检查";
+        return saved + " · 重新检查";
     }
 
         private void downloadTidal(TidalClient.Track track) {
@@ -2140,6 +2162,29 @@ public final class MainActivity extends ComponentActivity {
 
     /** What the controlled device has saved, so lists here mark its downloads rather than this phone's. */
     private DownloadTasks.Downloaded remoteMarks;
+
+    /** Views showing download marks on this page, updated in place when the marks change. */
+    private final List<Runnable> markUpdates = new ArrayList<>();
+
+    private long marksNextCheck;
+    private String localMarksStamp = "";
+
+    /** Songs this phone finishes downloading get marked on the page shown, without rebuilding it. */
+    private void refreshLocalMarks() {
+        if (playback == null || remoteDownloads() || markUpdates.isEmpty()) return;
+        String stamp = downloadTasks.revision() + ":" + playback.localRevision;
+        if (stamp.equals(localMarksStamp)) return;
+        boolean first = localMarksStamp.isEmpty();
+        localMarksStamp = stamp;
+        if (first) return;
+        downloaded = shownDownloads();
+        for (Runnable update : new ArrayList<>(markUpdates)) update.run();
+    }
+
+    private void mark(Runnable update) {
+        update.run();
+        markUpdates.add(update);
+    }
     private String remoteMarksKey = "";
     private long remoteMarksAt;
     private boolean remoteMarksBusy;
@@ -2165,11 +2210,10 @@ public final class MainActivity extends ComponentActivity {
                 remoteMarksAt = android.os.SystemClock.elapsedRealtime();
                 remoteMarksKey = key;
                 if (!error.isEmpty() || devices == null || !target.equals(devices.target)) return;
-                boolean first = remoteMarks == null;
                 remoteMarks = DownloadTasks.Downloaded.fromJson(result.optJSONObject("marks"));
                 downloaded = remoteMarks;
-                // Later changes show on the next page, so browsing is not interrupted while it downloads.
-                if (first && (page == Page.COLLECTION || page == Page.SEARCH || page == Page.LIBRARY || page == Page.HOME)) render();
+                // Only the marks change, so browsing is not interrupted while the device downloads.
+                for (Runnable update : new ArrayList<>(markUpdates)) update.run();
             });
         } catch (org.json.JSONException ignored) {
             remoteMarksBusy = false;
@@ -2178,6 +2222,8 @@ public final class MainActivity extends ComponentActivity {
 
     /** The controlled device's latest download list, while the downloads page shows it. */
     private JSONObject remoteDownloadList;
+    /** Rows asked of the controlled device; "显示更多" raises it. */
+    private int remoteDownloadLimit = 300;
     private boolean visibleRemoteDownloads;
 
     private void remoteDownloadsArrived(JSONObject result) {
@@ -2200,11 +2246,36 @@ public final class MainActivity extends ComponentActivity {
     private void remoteDownloadAction(String action, String id) {
         if (!remoteDownloads()) return;
         try {
-            JSONObject command = new JSONObject().put("op", "downloads").put("action", action);
+            JSONObject command = new JSONObject().put("op", "downloads").put("action", action)
+                    .put("limit", remoteDownloadLimit);
             if (id != null) command.put("id", id);
             devices.query(command, (result, error) -> {
                 if (!error.isEmpty()) toast(error);
                 else remoteDownloadsArrived(result);
+            });
+        } catch (org.json.JSONException ignored) {}
+    }
+
+    /** Selected rows of the controlled device's list, cancelled, retried or removed there at once. */
+    private void remoteDownloadBatch(DownloadBatch action, List<DownloadTasks.Job> targets) {
+        if (!remoteDownloads()) return;
+        String name = action == DownloadBatch.CANCEL ? "cancel" : action == DownloadBatch.RETRY ? "retry" : "remove";
+        JSONArray ids = new JSONArray();
+        for (DownloadTasks.Job job : targets) {
+            ids.put(job.id);
+            selectedDownloads.remove(job.id);
+        }
+        try {
+            devices.query(new JSONObject().put("op", "downloads").put("action", name).put("ids", ids)
+                    .put("limit", remoteDownloadLimit), (result, error) -> {
+                if (!error.isEmpty()) {
+                    toast(error);
+                    return;
+                }
+                int skipped = result.optInt("skipped");
+                if (skipped > 0) toast(skipped + " 项未处理" + (action == DownloadBatch.RETRY
+                        ? "，" + devices.targetName() + " 可能未连接对应音源" : ""));
+                remoteDownloadsArrived(result);
             });
         } catch (org.json.JSONException ignored) {}
     }
@@ -2373,7 +2444,8 @@ public final class MainActivity extends ComponentActivity {
             if (!remoteDownloads()) return;
             downloadRefreshPending = true;
             try {
-                devices.query(new JSONObject().put("op", "downloads").put("action", "list"), (result, error) -> {
+                devices.query(new JSONObject().put("op", "downloads").put("action", "list")
+                        .put("limit", remoteDownloadLimit), (result, error) -> {
                     downloadRefreshPending = false;
                     if (error.isEmpty()) remoteDownloadsArrived(result);
                 });
@@ -2403,7 +2475,8 @@ public final class MainActivity extends ComponentActivity {
         }
         selectedDownloads.retainAll(visibleIds);
         StringBuilder signature = new StringBuilder().append(expandedDownloads).append(':').append(downloadFilter)
-                .append(':').append(selectingDownloads).append(':').append(selectedDownloads);
+                .append(':').append(selectingDownloads).append(':').append(selectedDownloads)
+                .append(':').append(visibleRemoteDownloads && remoteDownloadList != null ? remoteDownloadList.optInt("total") : 0);
         for (DownloadTasks.Job job : jobs) {
             signature.append('|').append(job.id).append(':').append(downloadStatus(job))
                     .append(':').append(downloadProgress(job)).append(':').append(job.error).append(':').append(job.resolution);
@@ -2438,7 +2511,7 @@ public final class MainActivity extends ComponentActivity {
             filter.addView(tab, params);
         }
 
-        if (!visibleRemoteDownloads && (!visible.isEmpty() || selectingDownloads)) showDownloadSelection(jobs, visible);
+        if (!visible.isEmpty() || selectingDownloads) showDownloadSelection(jobs, visible);
         if (counts[downloadFilter] == 0) {
             panel(downloadRows, downloadFilter == 0 ? "暂无下载任务" : "暂无" + labels[downloadFilter] + "任务",
                     downloadFilter == 0 ? "下载歌曲或专辑后，可在这里查看进度。" : "");
@@ -2476,6 +2549,16 @@ public final class MainActivity extends ComponentActivity {
             for (DownloadTasks.Job job : visible) {
                 if (downloadGroup(job) == group && (selectingDownloads || job.batch.isEmpty())) downloadRow(job, jobs);
             }
+        }
+        int total = visibleRemoteDownloads && remoteDownloadList != null ? remoteDownloadList.optInt("total", jobs.size()) : 0;
+        if (total > jobs.size() && remoteDownloadLimit < RemoteTidal.MAX_LIST) {
+            downloadRows.addView(menuRow("显示更多", "已显示最近 " + jobs.size() + " 项，共 " + total + " 项", () -> {
+                remoteDownloadLimit = Math.min(RemoteTidal.MAX_LIST, remoteDownloadLimit + 300);
+                downloadNextRefresh = 0;
+                refreshDownloads();
+            }));
+        } else if (total > jobs.size()) {
+            downloadRows.addView(text("仅显示最近 " + jobs.size() + " 项，共 " + total + " 项", 13, MUTED, false));
         }
     }
 
@@ -2539,7 +2622,7 @@ public final class MainActivity extends ComponentActivity {
 
         LinearLayout line = row();
         item.addView(line);
-        if (!visibleRemoteDownloads) item.setOnLongClickListener(view -> {
+        item.setOnLongClickListener(view -> {
             selectingDownloads = true;
             selectedDownloads.add(job.id);
             showDownloadRows(jobs);
@@ -2672,6 +2755,8 @@ public final class MainActivity extends ComponentActivity {
         List<Runnable> options = new ArrayList<>();
         String[] names = {"取消下载", "重试下载", "移除记录", "删除文件"};
         for (DownloadBatch action : DownloadBatch.values()) {
+            // Files on the controlled device are deleted there only one by one, from its own list.
+            if (visibleRemoteDownloads && action == DownloadBatch.DELETE) continue;
             List<DownloadTasks.Job> targets = new ArrayList<>();
             for (DownloadTasks.Job job : visible) {
                 if (selectedDownloads.contains(job.id) && eligibleDownload(job, action)) targets.add(job);
@@ -2691,6 +2776,10 @@ public final class MainActivity extends ComponentActivity {
     }
 
     private void runDownloadBatch(DownloadBatch action, List<DownloadTasks.Job> targets) {
+        if (visibleRemoteDownloads) {
+            remoteDownloadBatch(action, targets);
+            return;
+        }
         DownloadTasks.Resolve tidal = action == DownloadBatch.RETRY ? downloadResolver("TIDAL") : null;
         DownloadTasks.Resolve netease = action == DownloadBatch.RETRY ? downloadResolver("网易云") : null;
         Uri destination = MusicDownload.directory(this);
@@ -3026,13 +3115,25 @@ public final class MainActivity extends ComponentActivity {
         if (borrowedTidal == null || !device.equals(borrowedTidalDevice)) {
             RemoteDevices link = devices;
             borrowedTidal = new TidalClient((method, path, form) -> {
-                JSONObject command = new JSONObject().put("op", "tidal").put("method", method).put("path", path);
+                JSONObject command = new JSONObject().put("op", "tidal").put("method", method).put("path", path)
+                        .put("accept", "gzip");
                 if (form != null) command.put("form", form);
-                return link.call(device, command).optString("body");
+                return RemoteTidal.body(link.call(device, command));
             });
             borrowedTidalDevice = device;
         }
         return borrowedTidal;
+    }
+
+    /**
+     * Why this phone, signed out of TIDAL, cannot use the controlled device's login although
+     * that device is signed in; null otherwise.
+     */
+    private String lendHint() {
+        if (playback == null || playback.client != null || !remoteMode() || devices.state == null
+                || !devices.state.tidalLoggedIn || devices.state.lendsTidal) return null;
+        return "「" + devices.targetName() + "」已登录 TIDAL，但未开放借用。请在该设备上更新到最新版，"
+                + "并在 设置 › 播放器账号 中打开“允许我的其他设备使用本机的 TIDAL 登录和下载”";
     }
 
     /** Browsing uses the controlled device's TIDAL login, since this phone has none. */
@@ -3060,6 +3161,7 @@ public final class MainActivity extends ComponentActivity {
         if (!java.util.Objects.equals(visibleRemoteTarget, devices.target)) {
             remoteDownloadList = null;
             remoteMarks = null;
+            remoteDownloadLimit = 300;
             remoteMarksKey = "";
             remoteMarksBusy = false;
         }
@@ -3261,6 +3363,8 @@ public final class MainActivity extends ComponentActivity {
         boolean library = device != null && device.android();
         TextView label = text("正在遥控 " + devices.targetName() + " · " + (library ? "播放、队列和音乐库" : "播放和队列")
                 + "都来自这台设备" + (borrowsTidal() ? "，TIDAL 浏览和下载使用它的登录" : ""), 13, ACCENT, true);
+        String hint = lendHint();
+        if (hint != null) label.append("\n" + hint);
         label.setCompoundDrawablesRelativeWithIntrinsicBounds(new PlayerIcon("devices", ACCENT, dp(18)), null, null, null);
         label.setCompoundDrawablePadding(dp(8));
         banner.addView(label, new LinearLayout.LayoutParams(0, -2, 1));
@@ -3583,7 +3687,8 @@ public final class MainActivity extends ComponentActivity {
         }
         TidalClient api = playback.client;
         if (api == null) {
-            toast("请先在本机登录 TIDAL");
+            toast(borrowsTidal() ? "本机未登录 TIDAL：借用的「" + devices.targetName() + "」登录只能浏览和下载，"
+                    + "歌曲需在该设备上播放。在本机登录 TIDAL 后才能转到本机继续" : "请先在本机登录 TIDAL");
             return;
         }
         // Same 50-track window around the current track as when sending a list.
@@ -3733,7 +3838,8 @@ public final class MainActivity extends ComponentActivity {
         }
         RemoteDevices.Track playing = state.current();
         if (playing != null && playing.tidalId > 0) {
-            content.addView(menuRow("在本机继续播放", "把队列和进度转到本机", this::transferHere));
+            content.addView(menuRow("在本机继续播放", playback != null && playback.client == null
+                    ? "需先在本机登录 TIDAL" : "把队列和进度转到本机", this::transferHere));
         }
         if (state.index >= 0 && state.index + 1 < state.queue.size()) {
             content.addView(menuRow("清空接下来", "清空该设备接下来的歌曲", () -> {
@@ -3782,8 +3888,11 @@ public final class MainActivity extends ComponentActivity {
 
     private void selectDevice(String id) {
         if (devices == null) return;
+        boolean borrowed = borrowsTidal();
+        String previous = devices.targetName();
         devices.select(id);
-        toast(id == null ? "已切回本机播放" : "正在遥控：" + devices.targetName());
+        if (id == null && borrowed) toast("已切回本机播放 · 本机未登录 TIDAL，不再使用「" + previous + "」的登录");
+        else toast(id == null ? "已切回本机播放" : "正在遥控：" + devices.targetName());
     }
 
     /** Choose which device the player controls. */

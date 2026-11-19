@@ -283,6 +283,8 @@ final class DownloadTasks {
          * with the lengths in seconds of the copies, e.g. "215,0" (0 when a length is unknown).
          */
         private final Map<String, String> named = new java.util.HashMap<>();
+        /** {@link #named} as another device sent it: hashed keys (see {@link #hash}) and lengths. */
+        private final Map<String, String> hashed = new java.util.HashMap<>();
         /** Songs of each local album by album title and album artist. */
         private final Map<String, Integer> namedAlbums = new java.util.HashMap<>();
 
@@ -297,6 +299,7 @@ final class DownloadTasks {
             if (quality != null) return quality.isEmpty() ? "已下载" : "已下载 · " + quality;
             for (String key : nameKeys(track)) {
                 String lengths = named.get(key);
+                if (lengths == null && !hashed.isEmpty()) lengths = hashed.get(hash(key));
                 if (lengths != null && anySameLength(lengths, length(track))) return "本地已有";
             }
             return null;
@@ -325,7 +328,7 @@ final class DownloadTasks {
         }
 
         boolean isEmpty() {
-            return tracks.isEmpty() && named.isEmpty();
+            return tracks.isEmpty() && named.isEmpty() && hashed.isEmpty();
         }
 
         void addLibrary(List<TidalClient.Track> library) {
@@ -346,13 +349,19 @@ final class DownloadTasks {
 
         /** Sent to devices that control this one, so their lists mark what is saved here. */
         JSONObject toJson() throws org.json.JSONException {
-            JSONObject songs = new JSONObject();
+            JSONObject result = new JSONObject().put("tracks", new JSONObject(tracks))
+                    .put("albums", new JSONObject(albums)).put("namedAlbums", new JSONObject(namedAlbums));
+            // The reply travels through the relay (1 MB per request), so library songs go as
+            // compact "hash=length,length;…" entries, as many as fit.
+            int room = 850_000 - result.toString().length();
+            StringBuilder songs = new StringBuilder();
             for (Map.Entry<String, String> song : named.entrySet()) {
-                if (songs.length() >= 20000) break;
-                songs.put(song.getKey(), song.getValue());
+                String entry = hash(song.getKey()) + "=" + song.getValue();
+                if (songs.length() + entry.length() + 1 > room) break;
+                if (songs.length() > 0) songs.append(';');
+                songs.append(entry);
             }
-            return new JSONObject().put("tracks", new JSONObject(tracks)).put("albums", new JSONObject(albums))
-                    .put("named", songs).put("namedAlbums", new JSONObject(namedAlbums));
+            return result.put("namedHashes", songs.toString());
         }
 
         static Downloaded fromJson(JSONObject data) {
@@ -373,6 +382,10 @@ final class DownloadTasks {
                 String key = keys.next();
                 result.named.put(key, named.optString(key));
             }
+            for (String entry : data.optString("namedHashes").split(";")) {
+                int split = entry.indexOf('=');
+                if (split > 0) result.hashed.put(entry.substring(0, split), entry.substring(split + 1));
+            }
             // Devices from before lengths were sent list the keys only.
             JSONArray listed = named == null ? data.optJSONArray("named") : null;
             for (int i = 0; listed != null && i < listed.length(); i++) result.named.put(listed.optString(i), "");
@@ -383,6 +396,16 @@ final class DownloadTasks {
             }
             return result;
         }
+    }
+
+    /** A 48-bit FNV-1a hash of a song key, in hex: short, and a false match is about one in 10¹⁰. */
+    static String hash(String key) {
+        long value = 0xcbf29ce484222325L;
+        for (byte part : key.getBytes(java.nio.charset.StandardCharsets.UTF_8)) {
+            value ^= part & 0xff;
+            value *= 0x100000001b3L;
+        }
+        return Long.toHexString(value & 0xffffffffffffL);
     }
 
     /** A song's length in seconds; 0 when unknown. */
@@ -437,7 +460,7 @@ final class DownloadTasks {
             "(?i)\\.(flac|wav|mp3|m4a|aac|ogg|oga|opus|ape|wv|aiff?|alac|dsf|dff|wma)$");
 
     /** A song title; untagged files are titled by file name, e.g. "01. Yellow.flac". */
-    private static String fileTitle(String title) {
+    static String fileTitle(String title) {
         java.util.regex.Matcher numbered = FILE_NAME.matcher(title);
         if (numbered.matches()) return numbered.group(1);
         return EXTENSION.matcher(title).replaceFirst("");
@@ -487,6 +510,48 @@ final class DownloadTasks {
     /** The local music library, consulted so songs already on the phone are not downloaded again. */
     synchronized void attach(LocalLibrary library) {
         this.library = library;
+        checkFiles();
+    }
+
+    private final ExecutorService checker = java.util.concurrent.Executors.newSingleThreadExecutor();
+    private final java.util.concurrent.atomic.AtomicBoolean checking = new java.util.concurrent.atomic.AtomicBoolean();
+
+    /**
+     * Look for downloaded songs whose files were deleted outside the app, so lists stop marking
+     * them downloaded: their records turn into failed downloads ("文件已不存在") that can be
+     * retried, or are dropped when already removed from the list. Runs in the background.
+     */
+    void checkFiles() {
+        if (!checking.compareAndSet(false, true)) return;
+        checker.submit(() -> {
+            try {
+                List<Job> complete = new ArrayList<>();
+                synchronized (this) {
+                    for (Job job : jobs.values()) if (job.state == State.COMPLETE) complete.add(job);
+                }
+                List<Job> missing = new ArrayList<>();
+                for (Job job : complete) if (available(job) == null) missing.add(job);
+                // Most files gone at once more likely means the storage or folder access is
+                // unavailable for now (an SD card, a revoked folder) than that they were deleted.
+                if (missing.isEmpty() || (missing.size() > 10 && missing.size() * 2 > complete.size())) return;
+                synchronized (this) {
+                    for (Job job : missing) {
+                        if (jobs.get(job.id) != job || job.state != State.COMPLETE) continue;
+                        if (job.hidden) {
+                            jobs.remove(job.id);
+                            continue;
+                        }
+                        job.state = State.FAILED;
+                        job.error = "文件已不存在";
+                        job.document = null;
+                    }
+                    revision++;
+                    save();
+                }
+            } finally {
+                checking.set(false);
+            }
+        });
     }
 
     /** Goes up whenever a download adds or removes a file, so file browsers know to reload. */

@@ -95,7 +95,9 @@ pub fn show(app: &App, ui: &mut egui::Ui, acts: &mut Vec<Action>, id: u64) {
                 if ui.add(egui::Button::new(ft.size(14.0)).corner_radius(18).min_size(egui::vec2(0.0, 36.0))).clicked() {
                     acts.push(Action::ToggleFav(FavTarget::Album(a.clone())));
                 }
-                ui.menu_button(RichText::new("⬇ 下载 ▼").size(14.0), |ui| download_items(ui, &a.url(), &a.title, acts));
+                let saved = app.marks().album(a);
+                let label = if saved > 0 { format!("⬇ 已下载 {saved} 首 ▼") } else { "⬇ 下载 ▼".to_owned() };
+                ui.menu_button(RichText::new(label).size(14.0), |ui| download_items(ui, &a.url(), &a.title, acts));
             }
             ui.menu_button(RichText::new("…").size(18.0), |ui| album_menu(ui, app, a, acts));
         });

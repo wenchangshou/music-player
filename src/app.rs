@@ -91,6 +91,7 @@ pub enum Ev {
     RemoteLibrary(u64, u64, bool, Result<serde_json::Value, String>),
     /// The controlled device's download list (generation, reply).
     RemoteDownloads(u64, Result<serde_json::Value, String>),
+    RemoteMarks(u64, Result<serde_json::Value, String>),
     /// Tracks fetched to continue a remote device's playback here: (tracks, index, seconds).
     TransferHere(Result<(Vec<TrackItem>, usize, f64), String>),
 }
@@ -270,6 +271,9 @@ pub struct App {
     pub remote: Option<crate::remote::Remote>,
     /// The controlled device whose TIDAL login this computer browses with, if any.
     borrowed_tidal: Option<String>,
+    /// This computer's finished downloads, for "已下载" marks; refreshed now and then.
+    local_marks: crate::marks::Marks,
+    local_marks_at: Option<Instant>,
     pub ui: UiState,
 }
 
@@ -309,6 +313,8 @@ impl App {
             player_account_busy: false,
             remote: None,
             borrowed_tidal: None,
+            local_marks: Default::default(),
+            local_marks_at: None,
             ui: UiState {
                 volume: p.volume,
                 show_queue: p.show_queue,
@@ -714,6 +720,14 @@ impl App {
                     }
                     Err(error) => self.notify(error),
                 },
+                Ev::RemoteMarks(generation, result) => {
+                    if let Some(remote) = self.remote.as_mut().filter(|remote| remote.generation == generation) {
+                        remote.marks_busy = false;
+                        if let Ok(reply) = result {
+                            remote.marks = Some(crate::marks::Marks::from_json(&reply["marks"]));
+                        }
+                    }
+                }
                 Ev::RemoteDownloads(generation, result) => {
                     if let Some(remote) = &mut self.remote {
                         if remote.generation == generation {
@@ -1308,32 +1322,57 @@ impl App {
             let total = urls.len();
             let queued = urls.into_iter().filter(|url| self.enqueue_download(url.clone(), quality, None)).count();
             self.notify(format!("⬇ 其他设备加入了 {queued} 个下载任务"));
-            let mut list = self.download_list();
+            let mut list = self.download_list(300);
             list["queued"] = queued.into();
             list["skipped"] = (total - queued).into();
             return Ok(list);
         }
-        let id = body["id"].as_str().and_then(|id| id.parse::<u64>().ok());
-        let action = match body["action"].as_str().unwrap_or("list") {
-            "list" => None,
+        let limit = body["limit"].as_u64().unwrap_or(300).clamp(1, 2000) as usize;
+        // One task ("id") or, from multi-select, several ("ids").
+        let ids: Vec<u64> = match body["ids"].as_array() {
+            Some(many) if many.len() > 500 => return Err("每次最多处理 500 项".into()),
+            Some(many) => many.iter().filter_map(|id| id.as_str()?.parse().ok()).collect(),
+            None => body["id"].as_str().and_then(|id| id.parse().ok()).into_iter().collect(),
+        };
+        let single = body["ids"].is_null();
+        let make: fn(u64) -> Action = match body["action"].as_str().unwrap_or("list") {
+            "list" => return Ok(self.download_list(limit)),
             "marks" => return Ok(serde_json::json!({"marks": self.download_marks()})),
-            "cancel" => Some(Action::CancelJob(id.ok_or("下载记录已不存在")?)),
-            "retry" => Some(Action::RetryJob(id.ok_or("下载记录已不存在")?)),
-            "remove" => Some(Action::RemoveJob(id.ok_or("下载记录已不存在")?)),
-            "clear" => Some(Action::ClearFinishedJobs),
+            "clear" => {
+                self.apply_local(Action::ClearFinishedJobs);
+                return Ok(self.download_list(limit));
+            }
+            "cancel" => Action::CancelJob,
+            "retry" => Action::RetryJob,
+            "remove" => Action::RemoveJob,
             "parallel" => return Err("桌面端逐个下载任务".into()),
             _ => return Err("无效的下载操作".into()),
         };
-        if let (Some(id), Some(Action::RetryJob(_) | Action::RemoveJob(_))) = (id, &action) {
-            let job = self.jobs.iter().find(|job| job.id == id).ok_or("下载记录已不存在")?;
-            if !job.status.is_finished() {
-                return Err("任务仍在下载".into());
+        let cancel = body["action"] == "cancel";
+        let mut skipped = 0;
+        for id in &ids {
+            let Some(job) = self.jobs.iter().find(|job| job.id == *id) else {
+                if single {
+                    return Err("下载记录已不存在".into());
+                }
+                skipped += 1;
+                continue;
+            };
+            if !cancel && !job.status.is_finished() {
+                if single {
+                    return Err("任务仍在下载".into());
+                }
+                skipped += 1;
+                continue;
             }
+            self.apply_local(make(*id));
         }
-        if let Some(action) = action {
-            self.apply_local(action);
+        if single && ids.is_empty() {
+            return Err("下载记录已不存在".into());
         }
-        Ok(self.download_list())
+        let mut list = self.download_list(limit);
+        list["skipped"] = skipped.into();
+        Ok(list)
     }
 
     /// Finished TIDAL downloads, so controlling devices mark them in their lists
@@ -1356,9 +1395,9 @@ impl App {
     }
 
     /// The download list as other devices show it, newest first. One row per download task.
-    fn download_list(&self) -> serde_json::Value {
+    fn download_list(&self, limit: usize) -> serde_json::Value {
         use crate::download::TrackStatus;
-        let jobs: Vec<_> = self.jobs.iter().rev().take(300).map(|job| {
+        let jobs: Vec<_> = self.jobs.iter().rev().take(limit).map(|job| {
             let state = match job.status {
                 JobStatus::Queued => "queued",
                 JobStatus::Resolving => "preparing",
@@ -1380,7 +1419,7 @@ impl App {
                 "error": if job.status == JobStatus::Failed { job.logs.last().cloned().unwrap_or_default() } else { String::new() },
                 "batch": "", "order": 0, "quality": job.quality})
         }).collect();
-        serde_json::json!({"jobs": jobs, "parallel": 1, "maxParallel": 1, "revision": 0, "perTrack": false})
+        serde_json::json!({"jobs": jobs, "total": self.jobs.len(), "parallel": 1, "maxParallel": 1, "revision": 0, "perTrack": false})
     }
 
     fn relay_tick(&mut self) {
@@ -1607,12 +1646,11 @@ impl App {
         self.borrowed_tidal = lender.as_ref().map(|(target, _)| target.clone());
         self.api.set_proxy(lender.map(|(target, connection)| -> crate::api::Proxy {
             std::sync::Arc::new(move |method: &str, path: &str, form: Option<String>| {
-                let mut command = serde_json::json!({"op": "tidal", "method": method, "path": path});
+                let mut command = serde_json::json!({"op": "tidal", "method": method, "path": path, "accept": "gzip"});
                 if let Some(form) = form {
                     command["form"] = form.into();
                 }
-                connection.query(&target, &command)
-                    .map(|reply| reply["body"].as_str().unwrap_or_default().to_owned())
+                connection.query(&target, &command).and_then(|reply| crate::relay::tidal_body(&reply))
             })
         }));
         // TIDAL pages and the library now come from the other login (or none).
@@ -1625,8 +1663,50 @@ impl App {
         self.ensure_loaded(&route);
     }
 
+    /// "已下载" marks for lists: the controlled device's while it downloads for this computer,
+    /// otherwise this computer's own.
+    pub fn marks(&self) -> &crate::marks::Marks {
+        match &self.remote {
+            Some(remote) if remote.remote_downloads() => {
+                static EMPTY: std::sync::OnceLock<crate::marks::Marks> = std::sync::OnceLock::new();
+                remote.marks.as_ref().unwrap_or_else(|| EMPTY.get_or_init(Default::default))
+            }
+            _ => &self.local_marks,
+        }
+    }
+
+    fn marks_tick(&mut self) {
+        if self.local_marks_at.is_none_or(|at| at.elapsed() >= Duration::from_secs(2)) {
+            self.local_marks_at = Some(Instant::now());
+            let mut marks = crate::marks::Marks::from_json(&self.download_marks());
+            use crate::download::TrackStatus;
+            for job in self.jobs.iter().filter(|job| job.status == JobStatus::Done) {
+                if let Some(("album", id)) = crate::download::url_kind(&job.url) {
+                    if let Ok(id) = id.parse() {
+                        marks.add_album_songs(id, job.meta.tracks.iter()
+                            .filter(|track| matches!(track.status, TrackStatus::Downloaded | TrackStatus::Exists))
+                            .map(|track| track.title.as_str()));
+                    }
+                }
+            }
+            self.local_marks = marks;
+        }
+        let Some(remote) = &mut self.remote else { return };
+        if !remote.remote_downloads() || remote.marks_busy
+            || remote.last_marks.is_some_and(|at| at.elapsed() < Duration::from_secs(20))
+        {
+            return;
+        }
+        let Some(target) = remote.target.clone() else { return };
+        let (generation, connection) = (remote.generation, remote.connection.clone());
+        remote.marks_busy = true;
+        remote.last_marks = Some(Instant::now());
+        self.spawn(move |_| Ev::RemoteMarks(generation, connection.query(&target, &serde_json::json!({"op": "downloads", "action": "marks"}))));
+    }
+
     fn remote_tick(&mut self) {
         self.sync_borrowed_tidal();
+        self.marks_tick();
         if self.route == Route::Downloads {
             if let Some(remote) = &self.remote {
                 if remote.remote_downloads() && !remote.downloads_busy

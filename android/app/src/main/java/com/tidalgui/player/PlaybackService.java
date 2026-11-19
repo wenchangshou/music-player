@@ -717,6 +717,8 @@ public final class PlaybackService extends MediaSessionService {
 
     void libraryChanged() {
         localRevision++;
+        // Songs deleted from the music folders may be downloads: stop marking them downloaded.
+        DownloadTasks.get(this).checkFiles();
         changed();
     }
 
