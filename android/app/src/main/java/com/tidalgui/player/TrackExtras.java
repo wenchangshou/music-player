@@ -187,6 +187,7 @@ final class TrackExtras {
 
     void closeLyrics() {
         ui.lyricsMode = false;
+        guideMode = false;
         ui.lyrics = null;
         if (ui.lyricsPane != null) {
             ui.lyricsPane.removeAllViews();
@@ -243,11 +244,11 @@ final class TrackExtras {
                 ui.runOnUiThread(() -> {
                     if (ui.lyrics != view) return;
                     boolean none = data.optString("subtitles").trim().isEmpty() && data.optString("lyrics").trim().isEmpty();
-                    if (!none || !showClassicalGuide(track, view)) view.display(data);
+                    if (!none || !offerClassicalGuide(track, view)) view.display(data);
                 });
             } catch (Exception error) {
                 ui.runOnUiThread(() -> {
-                    if (ui.lyrics == view && !showClassicalGuide(track, view)) {
+                    if (ui.lyrics == view && !offerClassicalGuide(track, view)) {
                         if (track.isLocal()) {
                             view.unavailable(UiKit.readable(error), () -> downloadLyricsDialog(track));
                         } else {
@@ -259,19 +260,41 @@ final class TrackExtras {
         });
     }
 
+    /** Turned on by tapping the guide button; stays on while lyrics are open, so the next movements follow. */
+    boolean guideMode;
+
     /**
-     * Classical tracks without lyrics get the AI listening guide instead, synced like lyrics: cached
-     * guides show at once (offline too); otherwise one is written when AI is reachable. Returns
-     * false to fall back to the usual "no lyrics" view.
+     * Classical tracks without lyrics: offer the AI listening guide with a button (off by default).
+     * Once tapped, later classical tracks show it directly until the lyrics view closes. Nothing is
+     * offered offline unless a guide is already cached. Returns false to keep the usual view.
      */
-    boolean showClassicalGuide(TidalClient.Track track, LyricsDialog view) {
+    boolean offerClassicalGuide(TidalClient.Track track, LyricsDialog view) {
         if (!ClassicalGuide.isClassical(track)) return false;
+        if (ClassicalGuide.cached(ui, track) == null && !AiProxy.available(ui)) return false;
+        if (guideMode) {
+            showClassicalGuide(track, view);
+            return true;
+        }
+        Runnable open = () -> {
+            guideMode = true;
+            showClassicalGuide(track, view);
+        };
+        if (track.isLocal()) {
+            view.unavailable("此歌曲暂无歌词", new String[] {"✨ AI 聆听导览", "在线搜索 / 下载歌词"},
+                    new Runnable[] {open, () -> downloadLyricsDialog(track)});
+        } else {
+            view.unavailable("此歌曲暂无歌词", new String[] {"✨ AI 聆听导览"}, new Runnable[] {open});
+        }
+        return true;
+    }
+
+    /** Shows the cached guide at once, or writes one (when AI is reachable) and then shows it. */
+    void showClassicalGuide(TidalClient.Track track, LyricsDialog view) {
         String cached = ClassicalGuide.cached(ui, track);
         if (cached != null) {
             view.display(guideData(cached));
-            return true;
+            return;
         }
-        if (!AiProxy.available(ui)) return false;
         long seconds = DownloadTasks.length(track);
         if (seconds <= 0 && ui.playback != null && ui.playback.current() != null && ui.playback.current().id == track.id) {
             seconds = Math.max(0, ui.playback.player.getDuration() / 1000);
@@ -289,10 +312,9 @@ final class TrackExtras {
             ui.runOnUiThread(() -> {
                 if (ui.lyrics != view) return;
                 if (result != null) view.display(guideData(result));
-                else view.unavailable("此歌曲暂无歌词");
+                else view.unavailable("此歌曲暂无歌词，聆听导览暂时无法生成");
             });
         });
-        return true;
     }
 
     private static org.json.JSONObject guideData(String lrc) {

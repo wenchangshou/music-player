@@ -139,11 +139,18 @@ final class LyricsDialog {
     }
 
     void unavailable(String reason, Runnable action) {
+        if (action == null) unavailable(reason, new String[0], new Runnable[0]);
+        else unavailable(reason, new String[] {"在线搜索 / 下载歌词"}, new Runnable[] {action});
+    }
+
+    /** A message with one capsule button per label, stacked and centred. */
+    void unavailable(String reason, String[] labels, Runnable[] actions) {
         body.removeAllViews();
         body.addView(text(reason));
-        if (action != null) {
+        for (int i = 0; i < labels.length; i++) {
+            Runnable action = actions[i];
             android.widget.Button btn = new android.widget.Button(body.getContext(), null, android.R.attr.borderlessButtonStyle);
-            btn.setText("在线搜索 / 下载歌词");
+            btn.setText(labels[i]);
             btn.setTextColor(ListeningRoomColors.GOLD);
             btn.setTextSize(12);
             android.graphics.drawable.GradientDrawable bg = new android.graphics.drawable.GradientDrawable();
