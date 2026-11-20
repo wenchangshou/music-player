@@ -19,6 +19,7 @@
   let currentVolume = 80;
   let volumeDragging = false;
   let volumeDebounceTimer = null;
+  let lastVolumeUserActionTime = 0;
   let activeView = "player";
   let libraryTab = "local";
   let currentLyrics = [];
@@ -37,6 +38,7 @@
   let currentDetailTracks = [];
   let libraryOffset = 0;
   let libraryNext = -1;
+  let autoDjEnabled = true; // 以手机上报的状态为准
   let libraryHasMore = false;
   let localPlaylistsCache = [];
 
@@ -141,13 +143,16 @@
     }
   });
 
+
   // --- Floating Toasts ---
   function toast(message, icon = "i-music") {
     const container = $("toastContainer");
     if (!container) return;
     const t = document.createElement("div");
     t.className = "toast";
-    t.innerHTML = `<svg class="icon" style="width:18px;height:18px;"><use href="#${icon}"/></svg><span>${message}</span>`;
+    t.innerHTML = `<svg class="icon" style="width:18px;height:18px;"><use href="#${icon}"/></svg><span></span>`;
+    // 消息里常带曲名、专辑名和 AI 生成的文字，只作为纯文本插入。
+    t.querySelector("span").textContent = message;
     container.appendChild(t);
     setTimeout(() => {
       t.style.opacity = "0";
@@ -193,6 +198,7 @@
     if (e.target === $("customModalOverlay")) closeCustomModal();
   });
 
+
   // --- Network API ---
   async function fetchJson(path, options = {}, timeout = 22000) {
     const controller = new AbortController();
@@ -223,11 +229,19 @@
 
   async function call(op, fields = {}) {
     const headers = { "Content-Type": "application/json" };
+    const suffix = central && device ? "?device=" + encodeURIComponent(device) : "";
+    let res;
     if (!central) {
-      return fetchJson("/api/control", { method: "POST", headers, body: JSON.stringify({ op, ...fields }) });
+      res = await fetchJson("/api/control", { method: "POST", headers, body: JSON.stringify({ op, ...fields }) });
+    } else {
+      res = await fetchJson("/api/control" + suffix, { method: "POST", headers, body: JSON.stringify({ op, ...fields }) });
     }
-    return fetchJson("/api/device/call", { method: "POST", headers, body: JSON.stringify({ device, op, ...fields }) });
+    if (res && res.queue && Array.isArray(res.queue)) {
+      renderPlayback(res);
+    }
+    return res;
   }
+
 
   // --- Router & Location State Persistence System ---
   const STATE_STORAGE_KEY = "tidal-spa-location-state";
@@ -478,6 +492,10 @@
     if (viewId === "library") {
       loadLibrary();
       pollFill();
+      renderAiMoodRadioChips("aiMoodRadioChipsLib");
+    }
+    if (viewId === "search") {
+      renderAiMoodRadioChips("aiMoodRadioChipsSearch");
     }
     if (viewId === "files") loadFiles();
     if (viewId === "downloads") loadDownloads();
@@ -493,6 +511,7 @@
     setTimeout(() => $("globalSearchInput").focus(), 100);
   });
   $("tabNavFiles").addEventListener("click", () => showView("files"));
+
 
   // --- Stage Mode Switcher (Cover vs Synced Lyrics) ---
   let isLyricsViewStage = false;
@@ -567,6 +586,7 @@
   $("fsSwitchArtwork").addEventListener("click", () => switchFullscreenMode(false));
   $("fsSwitchLyrics").addEventListener("click", () => switchFullscreenMode(true));
 
+
   // --- Formatter & Utilities ---
   function formatTime(seconds) {
     if (isNaN(seconds) || seconds < 0) return "0:00";
@@ -622,6 +642,8 @@
       container.style.setProperty("--hue", hue);
     }
     if (!img) return;
+    img.loading = "lazy";
+    img.decoding = "async";
     if (!url) {
       img.hidden = true;
       img.removeAttribute("src");
@@ -654,6 +676,7 @@
       }
     }
   }
+
 
   // --- Lyrics Parser & Engine ---
   function parseLrc(text) {
@@ -789,6 +812,14 @@
       if (currentLyrics[i].time <= currentTime + 0.25) newIndex = i;
       else break;
     }
+    // Asymmetric hysteresis: prevent jittering back to previous line due to small network jitter or polling latency.
+    // Only allow stepping backward if currentTime rewound significantly (> 0.45s before active line's start).
+    if (activeLyricIndex >= 0 && newIndex < activeLyricIndex) {
+      const activeLineTime = currentLyrics[activeLyricIndex]?.time ?? 0;
+      if (currentTime + 0.25 >= activeLineTime - 0.45) {
+        return;
+      }
+    }
     if (newIndex === activeLyricIndex) return;
     activeLyricIndex = newIndex;
 
@@ -809,9 +840,29 @@
     if (isLyricsViewFs) highlightContainer($("fsLyricsList"));
   }
 
+
   // --- Playback State Rendering ---
   function renderPlayback(state) {
+    if (lastState && lastState.playing && state.playing && lastState.index === state.index) {
+      // Calculate continuous local progress
+      const prevEst = ((lastState.position || 0) / 1000) + (lastState.time ? ((Date.now() - lastState.time) / 1000) * (lastState.speed || 1) : 0);
+      const newPos = (state.position || 0) / 1000;
+      // If polling returns a slightly stale position within 1.5s due to network transit, smooth it instead of jumping backwards
+      if (prevEst > newPos && prevEst - newPos < 1.5) {
+        state.time = Date.now() - ((prevEst - newPos) * 1000);
+      } else {
+        state.time = Date.now();
+      }
+    } else {
+      state.time = Date.now();
+    }
     lastState = state;
+    updateAiNowPlayingSeed();
+    if (typeof state.autoDj === "boolean" && state.autoDj !== autoDjEnabled) {
+      autoDjEnabled = state.autoDj;
+      $("btnToggleAutoDj")?.classList.toggle("active", autoDjEnabled);
+    }
+    maybeRefreshSideNotes(state);
     ready = true;
     $("status").textContent = "已连接设备";
     $("status").classList.add("ok");
@@ -874,13 +925,17 @@
     // Quality Selector
     if (state.quality !== undefined) $("qualitySelect").value = String(state.quality);
 
-    // Volume
-    if (state.volume !== undefined && !volumeDragging && Math.abs(state.volume - currentVolume) >= 1) {
-      currentVolume = Math.round(state.volume);
-      $("volumeSlider").value = String(currentVolume);
-      $("fsVolumeSlider").value = String(currentVolume);
-      $("miniVolumeSlider").value = String(currentVolume);
-      updateVolumeIcon(currentVolume);
+    // Volume: Echo and oscillation suppression (lock window of 1200ms after user adjustment)
+    const isRecentVolumeAction = volumeDragging || (Date.now() - lastVolumeUserActionTime < 1200);
+    if (state.volume !== undefined && !isRecentVolumeAction) {
+      const incomingVol = Math.round(state.volume);
+      if (Math.abs(incomingVol - currentVolume) >= 1) {
+        currentVolume = incomingVol;
+        $("volumeSlider").value = String(currentVolume);
+        $("fsVolumeSlider").value = String(currentVolume);
+        $("miniVolumeSlider").value = String(currentVolume);
+        updateVolumeIcon(currentVolume);
+      }
     }
 
     // Radio availability
@@ -901,6 +956,7 @@
   }
 
   // --- Real-time Progress Animation Loop ---
+  let lastMonotonicPos = 0;
   function startProgressTicker() {
     setInterval(() => {
       if (!lastState || seeking) return;
@@ -910,6 +966,19 @@
         pos += delta * (lastState.speed || 1);
       }
       const dur = (lastState.duration || 0) / 1000;
+      pos = dur > 0 ? Math.min(pos, dur) : Math.max(0, pos);
+
+      // Monotonic smoothing: clamp against micro-stutters during normal playback
+      if (lastState.playing && !lastState.loading) {
+        if (pos < lastMonotonicPos && lastMonotonicPos - pos < 1.2) {
+          pos = lastMonotonicPos;
+        } else {
+          lastMonotonicPos = pos;
+        }
+      } else {
+        lastMonotonicPos = pos;
+      }
+
       const pct = dur > 0 ? Math.min(1, Math.max(0, pos / dur)) : 0;
 
       // Update Sliders
@@ -929,7 +998,7 @@
 
       // Sync Lyrics
       syncLyricsPosition(pos);
-    }, 250);
+    }, 125);
   }
 
   // --- Transport Controls Event Bindings ---
@@ -964,6 +1033,7 @@
 
   function handleVolumeInput(v) {
     volumeDragging = true;
+    lastVolumeUserActionTime = Date.now();
     currentVolume = Math.max(0, Math.min(100, Math.round(v)));
     $("volumeSlider").value = String(currentVolume);
     $("fsVolumeSlider").value = String(currentVolume);
@@ -973,11 +1043,12 @@
     clearTimeout(volumeDebounceTimer);
     volumeDebounceTimer = setTimeout(() => {
       sendVolume(currentVolume);
-    }, 80);
+    }, 60);
   }
 
   function handleVolumeChange(v) {
     clearTimeout(volumeDebounceTimer);
+    lastVolumeUserActionTime = Date.now();
     currentVolume = Math.max(0, Math.min(100, Math.round(v)));
     $("volumeSlider").value = String(currentVolume);
     $("fsVolumeSlider").value = String(currentVolume);
@@ -986,7 +1057,7 @@
     sendVolume(currentVolume);
     setTimeout(() => {
       volumeDragging = false;
-    }, 300);
+    }, 800);
   }
 
   ["volumeSlider", "fsVolumeSlider", "miniVolumeSlider"].forEach(id => {
@@ -1036,6 +1107,7 @@
     loadRadio(track.id, track.title);
   });
 
+
   // --- Queue View Rendering ---
   function renderQueue(queue, currentIndex) {
     $("queueCountNum").textContent = queue.length;
@@ -1067,13 +1139,27 @@
         </div>
       `;
       applyArtwork(li.querySelector(".track-thumb"), li.querySelector(".track-thumb img"), cover, item.title);
-      li.addEventListener("click", e => {
+      li.addEventListener("click", async e => {
         if (e.target.closest(".btn-remove")) {
           e.stopPropagation();
-          call("remove", { index, revision: lastState.queueRevision });
+          const rev = lastState ? (lastState.revision ?? lastState.queueRevision) : null;
+          try {
+            const res = await call("remove", rev != null ? { index, revision: rev } : { index });
+            if (res && res.queue) renderPlayback(res);
+            toast(`已移出队列：${item.title}`);
+          } catch (err) {
+            toast(`移除失败：${err.message}`, "i-trash");
+          }
           return;
         }
-        call("play", { index, revision: lastState.queueRevision });
+        const rev = lastState ? (lastState.revision ?? lastState.queueRevision) : null;
+        try {
+          const res = await call("play", rev != null ? { index, revision: rev } : { index });
+          if (res && res.queue) renderPlayback(res);
+          toast(`切换播放：${item.title}`);
+        } catch (err) {
+          toast(`切换歌曲失败：${err.message}`, "i-trash");
+        }
       });
       frag.appendChild(li);
     });
@@ -1085,13 +1171,30 @@
     toast("已清空后续队列");
   });
 
-  // --- Side Queue / Side Lyrics / Side Search Tab Switching ---
+  const btnAutoDj = $("btnToggleAutoDj");
+  if (btnAutoDj) {
+    // 续播由手机自己执行（不依赖打开的网页），这里只读写手机上的开关。
+    btnAutoDj.classList.toggle("active", autoDjEnabled);
+    btnAutoDj.addEventListener("click", async () => {
+      const enabled = !autoDjEnabled;
+      try {
+        await call("library", { action: "autodj", enabled });
+        toast(enabled ? "✨ 已开启智能续播：队列快播完时，手机会自动续上同频曲目" : "已关闭智能续播", "i-sparkles");
+      } catch (err) {
+        toast(`设置失败：${err.message}`, "i-trash");
+      }
+    });
+  }
+
+  // --- Side Queue / Side Lyrics / Side Notes / Side Search Tab Switching ---
   function switchSideTab(tab) {
     $("tabSideQueue").setAttribute("aria-current", String(tab === "queue"));
     $("tabSideLyrics").setAttribute("aria-current", String(tab === "lyrics"));
+    if ($("tabSideNotes")) $("tabSideNotes").setAttribute("aria-current", String(tab === "notes"));
     $("tabSideSearch").setAttribute("aria-current", String(tab === "search"));
     $("sideQueueContent").hidden = tab !== "queue";
     $("sideLyricsContent").hidden = tab !== "lyrics";
+    if ($("sideNotesContent")) $("sideNotesContent").hidden = tab !== "notes";
     $("sideSearchContent").hidden = tab !== "search";
     if (tab === "lyrics" && lastState) {
       const track = lastState.queue?.[lastState.index];
@@ -1099,6 +1202,9 @@
       let pos = (lastState.position || 0) / 1000;
       activeLyricIndex = -1;
       syncLyricsPosition(pos);
+    }
+    if (tab === "notes") {
+      renderSideNotes();
     }
     if (activeView === "player") syncRouteToHash();
     if (tab === "search") {
@@ -1108,6 +1214,8 @@
 
   $("tabSideQueue").addEventListener("click", () => switchSideTab("queue"));
   $("tabSideLyrics").addEventListener("click", () => switchSideTab("lyrics"));
+  if ($("tabSideNotes")) $("tabSideNotes").addEventListener("click", () => switchSideTab("notes"));
+  if ($("btnOpenNotes")) $("btnOpenNotes").addEventListener("click", () => switchSideTab("notes"));
   $("tabSideSearch").addEventListener("click", () => switchSideTab("search"));
   if ($("btnSideLyricsDownload")) {
     $("btnSideLyricsDownload").addEventListener("click", () => {
@@ -1130,6 +1238,7 @@
       list.appendChild(li);
     }
   });
+
 
   // --- Music Library System ---
   function formatTotalDuration(seconds) {
@@ -1186,12 +1295,20 @@
     loadLibrary();
   });
 
-  async function playTracks(tracks, shuffle = false) {
+  async function playTracks(tracks, shuffle = false, index = 0) {
     if (!tracks || !tracks.length) return;
     try {
-      const ids = tracks.map(t => t.id);
-      await call("library", { action: "play-list", ids, shuffle });
-      toast(shuffle ? "已开始随机播放" : `开始播放「${tracks[0].title}」`);
+      const items = tracks.map(t => ({
+        id: t.id,
+        title: t.title,
+        artist: t.artist,
+        album: t.album,
+        cover: t.cover
+      }));
+      const res = await call("library", { action: "play-list", tracks: items, shuffle, index });
+      if (res && res.queue) renderPlayback(res);
+      const title = tracks[index]?.title || tracks[0]?.title;
+      toast(shuffle ? "已开始随机播放" : `开始播放「${title}」`);
     } catch (err) {
       toast(`播放失败：${err.message}`, "i-trash");
     }
@@ -1214,6 +1331,7 @@
     libraryNext = -1;
     $("btnLibMore").hidden = true;
     if (!append) {
+      hideLibraryAiBanner();
       $("libraryCountText").textContent = "";
       libraryOffset = 0;
       $("libraryTrackList").replaceChildren();
@@ -1266,6 +1384,9 @@
           }
           renderTrackRows(res.tracks || [], $("libraryTrackList"), append);
           libraryNext = res.next ?? -1;
+          if (!append && !currentPlaylist) {
+            updateLibraryAiSearch($("librarySearchInput").value.trim(), res.total ?? (res.tracks || []).length, rev);
+          }
         }
         else if (localSubCat === "albums") {
           $("libraryTitle").textContent = "本地专辑";
@@ -1310,6 +1431,12 @@
           if (res.playlists) localPlaylistsCache = res.playlists;
           renderPlaylistGridCards(localPlaylistsCache, $("libraryCardsView"));
         }
+        else if (localSubCat === "ai-recommend") {
+          $("libraryTitle").textContent = "✨ 猜你喜欢 · 个性化推荐";
+          $("libraryTrackList").hidden = true;
+          $("libraryCardsView").hidden = false;
+          await executeAiCuratedLibrary(rev);
+        }
         else if (localSubCat === "4" || localSubCat === "5" || localSubCat === "6") {
           const catMap = { "4": "专辑艺人", "5": "音乐流派", "6": "发行年份" };
           const name = catMap[localSubCat] || "分类";
@@ -1323,10 +1450,14 @@
             offset: libraryOffset
           });
           if (rev !== libraryRevision) return;
-          if (res.total !== undefined) {
-            $("libraryCountText").textContent = `共 ${res.total} 个${name}`;
+          let groups = res.groups || [];
+          if (localSubCat === "5") {
+            groups = enrichGenreGroups(groups);
           }
-          renderGeneralGroupCards(res.groups || [], name, $("libraryCardsView"));
+          if (res.total !== undefined) {
+            $("libraryCountText").textContent = `共 ${groups.length} 个${name}`;
+          }
+          renderGeneralGroupCards(groups, name, $("libraryCardsView"));
           libraryNext = res.next ?? -1;
         }
       }
@@ -1419,9 +1550,18 @@
       return;
     }
     const frag = document.createDocumentFragment();
-    tracks.forEach(track => {
+    tracks.forEach((track, idx) => {
       const li = createTrackRow(track, () => {
-        call("library", songRequest(track, "play"));
+        if (tracks.length > 1) {
+          playTracks(tracks, false, idx);
+        } else {
+          call("library", songRequest(track, "play"))
+            .then(res => {
+              if (res && res.queue) renderPlayback(res);
+              toast(`开始播放「${track.title}」`);
+            })
+            .catch(err => toast(`播放失败：${err.message}`, "i-trash"));
+        }
       });
       frag.appendChild(li);
     });
@@ -1567,7 +1707,7 @@
       }
 
       const row = createTrackRow(track, () => {
-        call("library", songRequest(track, "play"));
+        playTracks(tracks, false, index);
       }, { isAlbumView: true, trackIndex: track.trackNumber || (index + 1) });
 
       frag.appendChild(row);
@@ -1751,7 +1891,7 @@
       card.className = "card-item";
       card.innerHTML = `
         <div class="card-artwork">
-          <img alt="">
+          <img alt="" loading="lazy" decoding="async">
         </div>
         <div class="card-title"></div>
         <div class="card-subtitle"></div>
@@ -1852,6 +1992,7 @@
     $("libraryTrackList").hidden = true;
     $("btnLibMore").hidden = true;
     $("artistAlbumsSection").hidden = true;
+    if ($("albumAiCuratorCard")) $("albumAiCuratorCard").hidden = true;
     $("detailTracksTitle").hidden = true;
     $("detailTrackList").replaceChildren();
 
@@ -1915,6 +2056,9 @@
       $("albumHeroMeta").textContent = metaParts.join(" · ");
 
       renderAlbumTracks(tracks, $("detailTrackList"));
+      if (typeof renderAlbumDetailCurator === "function") {
+        renderAlbumDetailCurator(album, tracks, "album");
+      }
     } catch (err) {
       $("albumHeroMeta").textContent = `加载失败：${err.message}`;
       toast(err.message, "i-trash");
@@ -1933,6 +2077,7 @@
     $("libraryTrackList").hidden = true;
     $("btnLibMore").hidden = true;
     $("artistAlbumsSection").hidden = true;
+    if ($("albumAiCuratorCard")) $("albumAiCuratorCard").hidden = true;
     $("detailTracksTitle").hidden = false;
     $("detailTracksTitle").textContent = "全部歌曲";
     $("detailTrackList").replaceChildren();
@@ -2006,6 +2151,7 @@
       document.querySelector(".library-header").hidden = false;
       document.querySelector(".library-subnav-bar").hidden = false;
       $("libraryDetailView").hidden = true;
+      if ($("albumAiCuratorCard")) $("albumAiCuratorCard").hidden = true;
       $("btnLibBack").hidden = true;
       loadLibrary();
     }
@@ -2132,6 +2278,7 @@
     renderTrackRows(res.tracks || [], $("libraryTrackList"), false);
   }
 
+
   // --- Global Search System ---
   const searchSourceButtons = document.querySelectorAll("[data-search-src]");
   searchSourceButtons.forEach(btn => {
@@ -2139,7 +2286,21 @@
       searchSourceButtons.forEach(b => b.setAttribute("aria-current", "false"));
       btn.setAttribute("aria-current", "true");
       currentSearchSource = btn.dataset.searchSrc;
-      executeGlobalSearch();
+      const isAi = currentSearchSource === "ai";
+      if ($("aiInspirationChips")) {
+        $("aiInspirationChips").hidden = !isAi;
+        if (isAi) renderAiMoodRadioChips("aiMoodRadioChipsSearch");
+      }
+      if ($("searchKindTabs")) {
+        $("searchKindTabs").hidden = false;
+        const playlistBtn = document.querySelector('[data-search-kind="PLAYLIST"]');
+        if (playlistBtn) playlistBtn.hidden = isAi;
+      }
+      updateAiNowPlayingSeed();
+      updateSearchPlaceholder();
+      if (!isAi || $("globalSearchInput").value.trim()) {
+        executeGlobalSearch();
+      }
     });
   });
 
@@ -2150,12 +2311,30 @@
   const KIND_NAMES = { TRACK: "歌曲", ALBUM: "专辑", PLAYLIST: "歌单", ARTIST: "艺人" };
   const SOURCE_NAMES = { tidal: "TIDAL", netease: "网易云", local: "本地" };
 
+  function updateSearchPlaceholder() {
+    const input = $("globalSearchInput");
+    if (!input) return;
+    const isAi = currentSearchSource === "ai";
+    if (isAi) {
+      if (currentSearchKind === "TRACK") {
+        input.placeholder = "AI 寻歌（单曲）：用自然语言描述曲风、情绪或高光声学细节（如：大提琴松香泛音、低频瞬态试音单曲）…";
+      } else if (currentSearchKind === "ARTIST") {
+        input.placeholder = "AI 寻艺人：描述大师风范、演奏乐器或艺术流派（如：类似久石让的现代配乐大师、清冷北欧小号手）…";
+      } else {
+        input.placeholder = "AI 寻唱片（专辑）：描述母带录音、编曲风格或听音场景（如：ECM空间感爵士名盘、80年代模拟磁带录音）…";
+      }
+    } else {
+      input.placeholder = `搜索${KIND_NAMES[currentSearchKind] || "音乐"}…`;
+    }
+  }
+
   const searchKindButtons = document.querySelectorAll("[data-search-kind]");
   searchKindButtons.forEach(btn => {
     btn.addEventListener("click", () => {
       searchKindButtons.forEach(b => b.setAttribute("aria-current", "false"));
       btn.setAttribute("aria-current", "true");
       currentSearchKind = btn.dataset.searchKind;
+      updateSearchPlaceholder();
       executeGlobalSearch();
     });
   });
@@ -2188,6 +2367,11 @@
     $("searchCardsGrid").replaceChildren();
     $("searchTrackList").hidden = false;
     $("searchTrackList").replaceChildren();
+    if ($("aiCuratorBanner")) $("aiCuratorBanner").hidden = true;
+    if ($("aiTurnBadge")) $("aiTurnBadge").hidden = true;
+    if ($("btnAiResetTuning")) $("btnAiResetTuning").hidden = true;
+    selectedAiCardIds.clear();
+    updateAiSelectedCount();
   }
 
   // Albums, artists and local playlists of the local library that match the search.
@@ -2220,6 +2404,12 @@
     const rev = ++searchRevision;
     searchDetail = null;
     resetSearchLayout();
+
+    if (currentSearchSource === "ai") {
+      await executeAiSearch(q, rev);
+      return;
+    }
+
     searchMessage("正在全网检索…");
     const kind = currentSearchKind;
     const failures = [];
@@ -2261,6 +2451,7 @@
     const rev = ++searchRevision;
     searchDetail = { item, kind };
     resetSearchLayout();
+    if ($("searchAlbumAiCuratorCard")) $("searchAlbumAiCuratorCard").hidden = true;
     $("searchDetailTitle").textContent = `${KIND_NAMES[kind]} · ${item.title || item.name || ""}`;
     // Whole albums download through the device's TIDAL login, as in the app.
     $("btnSearchDownloadAlbum").hidden = !(kind === "ALBUM" && item.source === "tidal");
@@ -2294,12 +2485,18 @@
         $("searchTracksTitle").hidden = false;
       }
       if (tracks.length || !albums.length) renderTrackRows(tracks, $("searchTrackList"), false);
+      if (kind === "ALBUM" && typeof renderAlbumDetailCurator === "function") {
+        renderAlbumDetailCurator(item, tracks, "searchAlbum");
+      }
     } catch (err) {
       if (rev === searchRevision) searchMessage(err.message, true);
     }
   }
 
-  $("btnSearchBack").addEventListener("click", () => executeGlobalSearch());
+  $("btnSearchBack").addEventListener("click", () => {
+    if ($("searchAlbumAiCuratorCard")) $("searchAlbumAiCuratorCard").hidden = true;
+    executeGlobalSearch();
+  });
 
   $("btnSearchDownloadAlbum").addEventListener("click", async () => {
     if (!searchDetail) return;
@@ -2313,6 +2510,7 @@
       toast(`下载失败：${err.message}`, "i-trash");
     }
   });
+
 
   // --- Lyrics: fill in .lrc files for local songs, or pick one by hand ---
   let lyricsMissingOnly = false;
@@ -2476,6 +2674,7 @@
     $("btnLyricsMissing").setAttribute("aria-pressed", String(lyricsMissingOnly));
     loadLibrary();
   });
+
 
   // --- Downloads (the device's download tasks) ---
   const DL_ACTIVE = new Set(["queued", "preparing", "transferring", "waiting"]);
@@ -3164,6 +3363,7 @@
     }
   });
 
+
   // --- Folder-based Files Explorer System ---
   let fileRoots = [];
   let fileCurrentRoot = null;
@@ -3527,7 +3727,7 @@
     if (!fileCurrentTracks.length) return;
     try {
       const trackIds = fileCurrentTracks.map(t => ({ id: t.id }));
-      await call("play-list", { tracks: trackIds });
+      await call("library", { action: "play-list", tracks: trackIds });
       toast(`开始播放文件夹：${trackIds.length} 首音乐`, "i-play");
     } catch (err) {
       toast(`播放失败：${err.message}`, "i-trash");
@@ -4095,12 +4295,14 @@
 
   $("btnRefreshFiles").addEventListener("click", loadCurrentDirectory);
 
+
   // --- Polling & Connection Loop ---
   async function pollState() {
     if (pollActive) return;
     pollActive = true;
     try {
-      const res = await fetchJson("/api/state", {}, 8000);
+      const suffix = central && device ? "?device=" + encodeURIComponent(device) : "";
+      const res = await fetchJson("/api/state" + suffix, {}, 8000);
       renderPlayback(res);
       $("pairPanel").hidden = true;
     } catch (err) {
@@ -4114,6 +4316,2545 @@
       pollActive = false;
       setTimeout(pollState, 1800);
     }
+  }
+
+  function escapeHtml(str) {
+    if (!str) return "";
+    return String(str)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
+
+  // =========================================================================
+  // AI 底座：服务端代理调用、可用性探测、场景预算、本地缓存与请求去重
+  // 密钥只保存在手机（局域网模式）或中转服务器（多端模式），浏览器只发送对话内容。
+  // =========================================================================
+
+  const AI_NOTES_PREFIX = "tidal_ai_notes_";
+  const AI_GENRES_KEY = "tidal_ai_genres";
+  const AI_CACHE_PREFIX = "tidal_ai_c1_";
+  const AI_BUDGET_KEY = "tidal_ai_budget";
+  // 每个场景每小时最多调用次数，防止自动触发的功能失控消耗额度。
+  const AI_BUDGETS = { autodj: 10, bubble: 20, notes: 30, album: 30, search: 20, mood: 20, genre: 80, dlrec: 10, profile: 6, test: 10, default: 30 };
+
+  const PROVIDER_PRESETS = {
+    ark: { endpoint: "https://ark.cn-beijing.volces.com/api/v3", model: "deepseek-v4-1-flash-261017" },
+    deepseek: { endpoint: "https://api.deepseek.com", model: "deepseek-chat" },
+    openai: { endpoint: "https://api.openai.com/v1", model: "gpt-4o-mini" },
+    ollama: { endpoint: "", model: "qwen2.5:latest", hint: "http://电脑局域网IP:11434/v1" },
+    custom: { endpoint: "", model: "" }
+  };
+
+  // 旧版把密钥存在浏览器里，这里清掉。
+  try { localStorage.removeItem("tidal_ai_config"); } catch {}
+
+  class AiUnavailableError extends Error {
+    constructor(message) {
+      super(message);
+      this.name = "AiUnavailableError";
+    }
+  }
+
+  let aiStatus = { loaded: false, configured: false, managed: central, model: "" };
+  let aiStatusAt = 0;
+  let aiStatusPromise = null;
+
+  async function refreshAiStatus(force = false) {
+    if (!force && aiStatus.loaded && Date.now() - aiStatusAt < 60000) return aiStatus;
+    if (aiStatusPromise) return aiStatusPromise;
+    aiStatusPromise = fetchJson("/api/ai/config", {}, 8000)
+      .then(res => {
+        aiStatus = { ...res, loaded: true };
+        aiStatusAt = Date.now();
+        return aiStatus;
+      })
+      .catch(() => aiStatus)
+      .finally(() => { aiStatusPromise = null; });
+    return aiStatusPromise;
+  }
+
+  // 手机离线（online === false）时，AI 增强功能静默隐藏，不等待超时。
+  function aiReady() {
+    return aiStatus.loaded && aiStatus.configured && aiStatus.online !== false;
+  }
+
+  function aiBudgetTake(scene) {
+    const limit = AI_BUDGETS[scene] ?? AI_BUDGETS.default;
+    const now = Date.now();
+    let book = {};
+    try { book = JSON.parse(localStorage.getItem(AI_BUDGET_KEY) || "{}") || {}; } catch {}
+    const recent = (Array.isArray(book[scene]) ? book[scene] : []).filter(t => now - t < 3600000);
+    if (recent.length >= limit) return false;
+    recent.push(now);
+    book[scene] = recent;
+    try { localStorage.setItem(AI_BUDGET_KEY, JSON.stringify(book)); } catch {}
+    return true;
+  }
+
+  function extractJson(text) {
+    if (!text) return null;
+    try { return JSON.parse(text); } catch {}
+    const match = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+    if (match) {
+      try { return JSON.parse(match[1]); } catch {}
+    }
+    const start = text.indexOf("{");
+    const end = text.lastIndexOf("}");
+    if (start !== -1 && end > start) {
+      try { return JSON.parse(text.slice(start, end + 1)); } catch {}
+    }
+    return null;
+  }
+
+  /**
+   * 调用 AI。interactive=true 表示用户主动发起：未配置时打开设置面板；
+   * 自动触发的功能传 interactive=false，未配置时静默抛出 AiUnavailableError。
+   */
+  async function callAiChat({ messages, temperature = 0.7, timeout = 50000, scene = "default", interactive = true, maxTokens }) {
+    await refreshAiStatus();
+    if (!aiReady()) {
+      if (aiStatus.configured && aiStatus.online === false) throw new AiUnavailableError("播放器当前未联网，AI 功能暂不可用");
+      if (interactive && !aiStatus.managed) openAiSettingsModal();
+      throw new AiUnavailableError(aiStatus.managed ? "服务器未配置 AI 服务" : "请先在「AI 音乐助理设置」中配置服务");
+    }
+    if (!aiBudgetTake(scene)) throw new AiUnavailableError("AI 调用过于频繁，请稍后再试");
+    const body = { messages, temperature };
+    if (maxTokens) body.max_tokens = maxTokens;
+    try {
+      const res = await fetchJson("/api/ai", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      }, timeout);
+      const content = typeof res.content === "string" ? res.content.trim() : "";
+      if (!content) throw new Error(res.finish === "length" ? "生成达到长度限制" : "AI 返回内容为空");
+      return content;
+    } catch (err) {
+      if (err.name === "AbortError") throw new Error("AI 请求超时，请稍后重试");
+      if (err.status === 503) {
+        aiStatus = { ...aiStatus, configured: false };
+        throw new AiUnavailableError(err.message);
+      }
+      throw err;
+    }
+  }
+
+  function aiCacheGet(cacheKey) {
+    try {
+      const raw = localStorage.getItem(AI_CACHE_PREFIX + cacheKey);
+      if (!raw) return undefined;
+      const entry = JSON.parse(raw);
+      if (entry.e && entry.e < Date.now()) {
+        localStorage.removeItem(AI_CACHE_PREFIX + cacheKey);
+        return undefined;
+      }
+      return entry.d;
+    } catch {
+      return undefined;
+    }
+  }
+
+  function aiCacheEvict() {
+    const entries = [];
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (!k || !k.startsWith(AI_CACHE_PREFIX)) continue;
+        let t = 0;
+        try { t = JSON.parse(localStorage.getItem(k)).t || 0; } catch {}
+        entries.push([k, t]);
+      }
+      entries.sort((a, b) => a[1] - b[1]);
+      entries.slice(0, Math.max(1, Math.ceil(entries.length / 2))).forEach(([k]) => localStorage.removeItem(k));
+    } catch {}
+  }
+
+  function aiCacheSet(cacheKey, data, ttlDays = 180) {
+    const now = Date.now();
+    const raw = JSON.stringify({ t: now, e: ttlDays ? now + ttlDays * 86400000 : 0, d: data });
+    try {
+      localStorage.setItem(AI_CACHE_PREFIX + cacheKey, raw);
+    } catch {
+      aiCacheEvict();
+      try { localStorage.setItem(AI_CACHE_PREFIX + cacheKey, raw); } catch {}
+    }
+  }
+
+  function aiCacheKey(...parts) {
+    return parts.map(p => String(p || "").trim().toLowerCase()).join("|").slice(0, 200);
+  }
+
+  const aiInflight = new Map();
+
+  /** 缓存优先：命中缓存直接返回；同一 key 并发只发一次请求；parse 返回 null 视为失败且不缓存。 */
+  function aiCached({ cacheKey, ttlDays = 180, parse, refresh = false, ...chat }) {
+    if (!refresh) {
+      const hit = aiCacheGet(cacheKey);
+      if (hit !== undefined) return Promise.resolve(hit);
+    }
+    if (aiInflight.has(cacheKey)) return aiInflight.get(cacheKey);
+    const job = callAiChat(chat)
+      .then(text => {
+        const data = parse ? parse(text) : text;
+        if (data == null) throw new Error("AI 返回格式无效");
+        aiCacheSet(cacheKey, data, ttlDays);
+        return data;
+      })
+      .finally(() => aiInflight.delete(cacheKey));
+    aiInflight.set(cacheKey, job);
+    return job;
+  }
+
+  // --- Modal: AI Settings ---
+  const aiSettingInputs = ["aiProviderSelect", "aiEndpointInput", "aiApiKeyInput", "aiModelInput"];
+
+  async function openAiSettingsModal() {
+    $("aiSettingsModal")?.classList.add("active");
+    if ($("aiTestResult")) $("aiTestResult").hidden = true;
+    const status = await refreshAiStatus(true);
+    const managed = !!status.managed;
+    aiSettingInputs.forEach(id => { if ($(id)) $(id).disabled = managed; });
+    if ($("btnAiSave")) $("btnAiSave").hidden = managed;
+    if ($("btnAiToggleKey")) $("btnAiToggleKey").hidden = managed;
+    const lead = $("aiSettingsLead");
+    if (lead) {
+      lead.textContent = managed
+        ? (status.configured ? `AI 服务由中转服务器统一提供（模型：${status.model}），无需在此配置。` : "中转服务器尚未配置 AI 服务，请联系服务器管理员。")
+        : "配置大模型服务。密钥只保存在播放器手机上，不会回传到浏览器。";
+    }
+    if (managed) return;
+    if ($("aiProviderSelect")) $("aiProviderSelect").value = status.provider || "ark";
+    if ($("aiEndpointInput")) $("aiEndpointInput").value = status.endpoint || PROVIDER_PRESETS.ark.endpoint;
+    if ($("aiModelInput")) $("aiModelInput").value = status.model || PROVIDER_PRESETS.ark.model;
+    if ($("aiApiKeyInput")) {
+      $("aiApiKeyInput").value = "";
+      $("aiApiKeyInput").placeholder = status.hasKey ? "已保存密钥（留空保持不变）" : "sk-...";
+    }
+  }
+
+  function closeAiSettingsModal() {
+    $("aiSettingsModal")?.classList.remove("active");
+  }
+
+  async function saveAiSettings() {
+    const res = await fetchJson("/api/ai/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provider: $("aiProviderSelect")?.value || "custom",
+        endpoint: $("aiEndpointInput")?.value.trim() || "",
+        apiKey: $("aiApiKeyInput")?.value.trim() || "",
+        model: $("aiModelInput")?.value.trim() || ""
+      })
+    }, 8000);
+    aiStatus = { ...res, loaded: true };
+    aiStatusAt = Date.now();
+    if ($("aiApiKeyInput")) {
+      $("aiApiKeyInput").value = "";
+      $("aiApiKeyInput").placeholder = res.hasKey ? "已保存密钥（留空保持不变）" : "sk-...";
+    }
+    return res;
+  }
+
+  $("btnAiSettings")?.addEventListener("click", openAiSettingsModal);
+  $("btnAiSettingsClose")?.addEventListener("click", closeAiSettingsModal);
+  $("btnAiCancel")?.addEventListener("click", closeAiSettingsModal);
+  $("aiSettingsModal")?.addEventListener("click", e => {
+    if (e.target === $("aiSettingsModal")) closeAiSettingsModal();
+  });
+
+  $("aiProviderSelect")?.addEventListener("change", e => {
+    const p = PROVIDER_PRESETS[e.target.value];
+    if (p && e.target.value !== "custom") {
+      $("aiEndpointInput").value = p.endpoint;
+      $("aiEndpointInput").placeholder = p.hint || "https://...";
+      $("aiModelInput").value = p.model;
+    }
+  });
+
+  $("btnAiToggleKey")?.addEventListener("click", () => {
+    const inp = $("aiApiKeyInput");
+    if (!inp) return;
+    const isPw = inp.type === "password";
+    inp.type = isPw ? "text" : "password";
+    $("btnAiToggleKey").textContent = isPw ? "隐藏" : "显示";
+  });
+
+  $("btnAiSave")?.addEventListener("click", async () => {
+    try {
+      await saveAiSettings();
+      toast("AI 音乐助理设置已保存到播放器");
+      closeAiSettingsModal();
+    } catch (err) {
+      toast(`保存失败：${err.message}`, "i-trash");
+    }
+  });
+
+  $("btnAiTest")?.addEventListener("click", async () => {
+    const btn = $("btnAiTest");
+    const resEl = $("aiTestResult");
+    if (!btn || !resEl) return;
+    resEl.hidden = false;
+    resEl.style.color = "var(--muted)";
+    resEl.textContent = "正在连接并测试 API…";
+    btn.disabled = true;
+    try {
+      if (!aiStatus.managed) await saveAiSettings();
+      const start = Date.now();
+      const reply = await callAiChat({
+        messages: [{ role: "user", content: "请用不超过10个字回答：连接成功" }],
+        timeout: 20000,
+        scene: "test",
+        interactive: false
+      });
+      resEl.style.color = "var(--accent)";
+      resEl.textContent = `✓ 连接成功 (${Date.now() - start}ms): ${reply.slice(0, 30)}`;
+    } catch (err) {
+      resEl.style.color = "var(--danger)";
+      resEl.textContent = `✕ 测试失败: ${err.message}`;
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  // --- Feature 2: 深度唱片手札与发烧乐评（严格遵循“点击开启”+ 本地持久化缓存）---
+  function getNoteCacheKey(track) {
+    if (!track) return null;
+    const album = (track.album || track.title || "").trim();
+    const artist = (track.artist || "").trim();
+    return `${AI_NOTES_PREFIX}${artist}_${album}`.toLowerCase();
+  }
+
+  // 手札随播放自动更新：手札面板可见时，切到新专辑就加载（有缓存秒开，无缓存且 AI 可用则自动生成）。
+  let notesRenderedKey = null;
+  const notesInflight = new Map();
+
+  function maybeRefreshSideNotes(state) {
+    const pane = $("sideNotesContent");
+    if (!pane || pane.hidden) return;
+    const key = getNoteCacheKey(state?.queue?.[state.index]);
+    if (key !== notesRenderedKey) renderSideNotes();
+  }
+
+  async function renderSideNotes() {
+    const container = $("sideNotesContainer");
+    if (!container) return;
+    const track = lastState?.queue?.[lastState.index];
+    notesRenderedKey = getNoteCacheKey(track);
+
+    if (!track) {
+      container.innerHTML = `
+        <div class="notes-empty-card">
+          <svg class="icon" style="width:36px; height:36px; color:var(--muted); margin-bottom:10px;"><use href="#i-sparkles"/></svg>
+          <div style="font-weight:600; margin-bottom:6px;">尚未播放唱片</div>
+          <p style="font-size:12.5px; color:var(--muted);">请先在曲库或搜索中点播一张唱片。</p>
+        </div>`;
+      return;
+    }
+
+    const key = notesRenderedKey;
+    let cached = null;
+    try { cached = localStorage.getItem(key); } catch {}
+
+    if (cached) {
+      renderCachedNote(track, cached);
+      return;
+    }
+    await refreshAiStatus();
+    if (notesRenderedKey !== key) return;
+    if (aiReady()) generateNotesForTrack(track, false);
+    else renderNotePromptCard(track);
+  }
+
+  function renderNotePromptCard(track) {
+    const container = $("sideNotesContainer");
+    const albumName = track.album || track.title;
+    const qualityTag = track.audioQuality || (track.lossless ? "Hi-Res" : "无损");
+
+    container.innerHTML = `
+      <div class="notes-empty-card">
+        <svg class="icon" style="width:34px; height:34px; color:var(--gold); margin-bottom:12px;"><use href="#i-sparkles"/></svg>
+        <div style="font-size:16px; font-weight:700; margin-bottom:4px; color:var(--ink);">${escapeHtml(albumName)}</div>
+        <div style="font-size:13px; color:var(--muted); margin-bottom:12px;">${escapeHtml(track.artist || "未知艺人")}</div>
+        <div class="notes-meta-badges" style="justify-content:center; margin-bottom:16px;">
+          <span class="notes-badge gold">${escapeHtml(qualityTag)}</span>
+          <span class="notes-badge">唱片手札待生成</span>
+        </div>
+        <p style="font-size:12.5px; color:var(--muted); max-width:320px; margin:0 auto 18px; line-height:1.6;">
+          点击下方按钮开启 AI 发烧顾问，深度解析母带录音、声场动态与音乐背景。
+        </p>
+        <button type="button" id="btnTriggerGenerateNotes" class="primary" style="display:inline-flex; align-items:center; gap:6px; margin:0 auto;">
+          <svg class="icon"><use href="#i-sparkles"/></svg> 开启 AI 深度解读
+        </button>
+      </div>`;
+
+    $("btnTriggerGenerateNotes")?.addEventListener("click", () => generateNotesForTrack(track, true));
+  }
+
+  async function generateNotesForTrack(track, interactive = true, refresh = false) {
+    const container = $("sideNotesContainer");
+    const key = getNoteCacheKey(track);
+    const albumName = track.album || track.title;
+    container.innerHTML = `
+      <div class="notes-empty-card" style="padding:48px 20px;">
+        <div class="ai-thinking-indicator">
+          <svg class="icon" style="width:24px; height:24px;"><use href="#i-sparkles"/></svg>
+          <span>AI 发烧顾问正在深度剖析母带录音与乐评…</span>
+        </div>
+        <div style="font-size:12px; color:var(--muted); margin-top:10px;">《${escapeHtml(albumName)}》</div>
+      </div>`;
+
+    const prompt = `你是一位精通高保真音响工程、母带制作与唱片艺术的高级音乐鉴赏家。
+请为专辑《${albumName}》（艺人：${track.artist || "群星"}，当前参考曲目：${track.title || ""}）撰写一份专业的高保真唱片手札。
+必须包含以下三部分（条理清晰，使用 Markdown 格式）：
+### 📀 唱片档案与制作脉络
+- 时代与流派渊源（精准定位其二级发烧流派）
+- 录音室与母带制作看点
+
+### 🎧 发烧听音指南与声场表现
+- 声场宽度、纵深与空间残响表现
+- 三频结像（低频下潜、人声厚度、高频泛音）
+- 动态对比度与器乐分离度建议
+
+### 🎵 亮点曲目与鉴赏要点
+- 精选 2-3 首高光曲目在 Hi-Fi 设备上的重点品味细节
+
+请以沉稳、专业、富有洞见的行文风格撰写，适合发烧友阅读，避免空洞废话。`;
+
+    try {
+      if (refresh || !notesInflight.has(key)) {
+        notesInflight.set(key, callAiChat({
+          messages: [{ role: "user", content: prompt }],
+          temperature: 0.65,
+          scene: "notes",
+          interactive
+        }).finally(() => notesInflight.delete(key)));
+      }
+      const markdown = await notesInflight.get(key);
+      try { localStorage.setItem(key, markdown); } catch {}
+      // 生成期间已经切到别的专辑，就只缓存不渲染。
+      if (notesRenderedKey !== key) return;
+      renderCachedNote(track, markdown);
+    } catch (err) {
+      if (notesRenderedKey !== key) return;
+      if (err instanceof AiUnavailableError) {
+        renderNotePromptCard(track);
+        return;
+      }
+      container.innerHTML = `
+        <div class="notes-empty-card">
+          <div style="color:var(--danger); font-weight:600; margin-bottom:8px;">手札生成失败</div>
+          <div style="font-size:12.5px; color:var(--muted); margin-bottom:16px;">${escapeHtml(err.message)}</div>
+          <button type="button" id="btnRetryNotes" class="ghost">重试</button>
+        </div>`;
+      $("btnRetryNotes")?.addEventListener("click", () => generateNotesForTrack(track, true));
+    }
+  }
+
+  function renderCachedNote(track, markdown) {
+    const container = $("sideNotesContainer");
+    const albumName = track.album || track.title;
+    const qualityTag = track.audioQuality || (track.lossless ? "Hi-Res" : "无损");
+
+    // AI 输出可能复述带 HTML 的曲目元数据：先转义再套格式。
+    const formattedHtml = escapeHtml(markdown)
+      .replace(/###\s*(.+)/g, '<div class="notes-section-title">$1</div>')
+      .replace(/\*\*(.+?)\*\*/g, '<strong style="color:var(--ink);">$1</strong>')
+      .replace(/^-\s+(.+)/gm, '<div style="margin-left:12px; margin-bottom:6px; color:var(--ink); position:relative; padding-left:12px;"><span style="position:absolute; left:0; color:var(--accent);">•</span>$1</div>')
+      .replace(/\n\n/g, '<div style="height:12px;"></div>');
+
+    container.innerHTML = `
+      <div class="notes-content-box">
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:12px; gap:10px;">
+          <div>
+            <h3 style="font-size:16px; font-weight:750; margin:0 0 4px; color:var(--ink);">${escapeHtml(albumName)}</h3>
+            <div style="font-size:13px; color:var(--gold);">${escapeHtml(track.artist || "未知艺人")}</div>
+          </div>
+          <div style="display:flex; gap:6px;">
+            <button type="button" id="btnCopyNote" class="ghost" style="padding:4px 8px; font-size:11.5px;" title="复制文本">复制</button>
+            <button type="button" id="btnRegenNote" class="ghost" style="padding:4px 8px; font-size:11.5px;" title="重新生成">重新生成</button>
+          </div>
+        </div>
+
+        <div class="notes-meta-badges">
+          <span class="notes-badge gold">${escapeHtml(qualityTag)}</span>
+          <span class="notes-badge accent">✓ AI 发烧手札已缓存</span>
+        </div>
+
+        <div style="line-height:1.75; font-size:13px; color:rgba(240,246,244,0.92);">
+          ${formattedHtml}
+        </div>
+      </div>`;
+
+    $("btnCopyNote")?.addEventListener("click", () => {
+      navigator.clipboard?.writeText(markdown).then(() => toast("手札文本已复制到剪贴板"));
+    });
+    $("btnRegenNote")?.addEventListener("click", () => {
+      openConfirmModal("重新生成唱片手札", "确定要重新向 AI 请求生成本张唱片的手札吗？", () => {
+        generateNotesForTrack(track, true, true);
+      });
+    });
+  }
+
+  // --- 专辑详情页 AI 发烧导赏与声学手札 ---
+  function getAlbumCuratorCacheKey(album) {
+    if (!album) return null;
+    const alb = (album.title || album.name || "").trim().toLowerCase();
+    const art = (album.artist || album.detail || "").trim().toLowerCase();
+    return `ai_curator_album_${art}_${alb}`.replace(/[^a-z0-9_\u4e00-\u9fa5]/g, "");
+  }
+
+  async function renderAlbumDetailCurator(album, tracks, prefix = "album") {
+    const card = $(`${prefix}AiCuratorCard`);
+    if (!card || !album || !album.title) return;
+
+    const albTitle = album.title || album.name || "";
+    const artName = album.artist || album.detail || "";
+    const cacheKey = getAlbumCuratorCacheKey(album);
+    const cachedRaw = cacheKey ? localStorage.getItem(cacheKey) : null;
+
+    const tagEl = $(`${prefix}CuratorAcousticTag`);
+    const textEl = $(`${prefix}CuratorText`);
+    const gearBox = $(`${prefix}CuratorGearBox`);
+    const gearText = $(`${prefix}CuratorGearText`);
+    const keyTracksEl = $(`${prefix}CuratorKeyTracks`);
+    const refreshBtn = $(`btnRefresh${prefix.charAt(0).toUpperCase() + prefix.slice(1)}Curator`);
+
+    const applyCuratorData = (data) => {
+      card.hidden = false;
+      if (tagEl) tagEl.textContent = data.acoustic_highlight || data.genre || "发烧推荐";
+      if (textEl) textEl.textContent = data.review || data.audiophile_review || data.summary || "";
+      if (gearBox && gearText) {
+        if (data.gear_tip || data.gearTip) {
+          gearText.textContent = data.gear_tip || data.gearTip;
+          gearBox.hidden = false;
+        } else {
+          gearBox.hidden = true;
+        }
+      }
+      if (keyTracksEl) {
+        keyTracksEl.replaceChildren();
+        const keyList = data.key_tracks || data.keyTracks || [];
+        if (Array.isArray(keyList) && keyList.length > 0) {
+          const lbl = document.createElement("span");
+          lbl.style.fontSize = "11.5px";
+          lbl.style.color = "var(--muted)";
+          lbl.textContent = "高光必听：";
+          keyTracksEl.appendChild(lbl);
+
+          keyList.forEach(trkTit => {
+            const pill = document.createElement("button");
+            pill.type = "button";
+            pill.className = "ai-curator-key-track-pill";
+            pill.innerHTML = `<svg class="icon" style="width:11px;height:11px;"><use href="#i-play"/></svg> <span>${escapeHtml(trkTit)}</span>`;
+            pill.addEventListener("click", e => {
+              e.stopPropagation();
+              const match = tracks?.find(t => t.title && (t.title.includes(trkTit) || trkTit.includes(t.title)));
+              if (match) {
+                playTracks([match]);
+              } else {
+                toast(`正在全网检索播放「${artName} - ${trkTit}」…`);
+                call("library", { action: "tidal-search", query: `${artName} ${trkTit}` }).then(r => {
+                  if (r.tracks?.length) playTracks(r.tracks);
+                });
+              }
+            });
+            keyTracksEl.appendChild(pill);
+          });
+        }
+      }
+    };
+
+    if (cachedRaw) {
+      try {
+        const parsed = JSON.parse(cachedRaw);
+        applyCuratorData(parsed);
+      } catch {
+        localStorage.removeItem(cacheKey);
+      }
+    } else {
+      await refreshAiStatus();
+      if (!aiReady()) {
+        card.hidden = true;
+        return;
+      }
+      card.hidden = false;
+      if (tagEl) tagEl.textContent = "研判中…";
+      if (textEl) textEl.innerHTML = `<span style="color:var(--muted);"><svg class="icon" style="width:14px;height:14px;vertical-align:-2px;"><use href="#i-sparkles"/></svg> AI 音乐总监正在研判本张唱片的录音动态、编曲器乐与发烧要点…</span>`;
+      if (gearBox) gearBox.hidden = true;
+      if (keyTracksEl) keyTracksEl.replaceChildren();
+
+      generateAndCacheAlbumCurator(album, tracks, cacheKey).then(data => {
+        if (data) applyCuratorData(data);
+      }).catch(err => {
+        // AI 未配置或预算用尽时静默隐藏，不打扰浏览。
+        if (err instanceof AiUnavailableError) card.hidden = true;
+        else if (textEl) textEl.textContent = `导赏生成暂不可用: ${err.message}`;
+      });
+    }
+
+    if (refreshBtn) {
+      refreshBtn.onclick = (e) => {
+        e.stopPropagation();
+        card.hidden = false;
+        if (tagEl) tagEl.textContent = "重新分析…";
+        if (textEl) textEl.innerHTML = `<span style="color:var(--muted);"><svg class="icon" style="width:14px;height:14px;vertical-align:-2px;"><use href="#i-sparkles"/></svg> 正在重新深度剖析母带与声学表现…</span>`;
+        if (gearBox) gearBox.hidden = true;
+        if (keyTracksEl) keyTracksEl.replaceChildren();
+
+        generateAndCacheAlbumCurator(album, tracks, cacheKey).then(data => {
+          if (data) applyCuratorData(data);
+          toast("发烧导赏已更新！");
+        }).catch(err => {
+          if (textEl) textEl.textContent = `生成失败: ${err.message}`;
+        });
+      };
+    }
+  }
+
+  async function generateAndCacheAlbumCurator(album, tracks, cacheKey) {
+    const albTitle = album.title || album.name || "";
+    const artName = album.artist || album.detail || "未知艺人";
+    const trackNames = (tracks || []).slice(0, 10).map(t => t.title).filter(Boolean).join("、");
+
+    const prompt = `你是一位享誉业界的顶级发烧唱片策展人与母带声学工程师。
+请为专辑《${albTitle}》（艺人：${artName}${trackNames ? `，收录代表曲目：${trackNames}` : ""}）撰写一份精练、深度且极富发烧品味的【唱片声学鉴赏导读】。
+
+请以纯 JSON 格式输出，严格符合以下字段：
+{
+  "genre": "细分发烧流派标签（如：室内融合爵士 / 模拟母带人声 / 德奥交响）",
+  "acoustic_highlight": "声学亮点精炼标签（如：大提琴松香感、30Hz极低频下潜、极高频空气感）",
+  "review": "发烧深度点评（约 80-140 字，点评录音质感、母带声场纵深、器乐结像层次与情感张力）",
+  "gear_tip": "回放器材建议（约 20-35 字，如：适合高阻动圈驱动以展现饱满中频，或平板耳机以还原极致细节）",
+  "key_tracks": ["真实收录于该专辑中的最具代表性的高光单曲1", "高光单曲2"]
+}`;
+
+    const reply = await callAiChat({
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.6,
+      scene: "album",
+      interactive: false
+    });
+
+    const parsed = extractJson(reply);
+    if (!parsed || !parsed.review) {
+      throw new Error("未能生成有效导读数据");
+    }
+
+    if (cacheKey) {
+      try {
+        localStorage.setItem(cacheKey, JSON.stringify(parsed));
+      } catch {}
+    }
+    return parsed;
+  }
+
+
+  // --- Feature 1: AI 发烧心境电台（深度唤醒机内曲库，免打字沉浸秒播） ---
+  const AI_MOOD_PRESETS = [
+    {
+      id: "strings",
+      title: "🎻 室内乐·松香泛音",
+      icon: "🎻",
+      query: "极具松香摩擦质感与高频空气感的小提琴、大提琴室内乐与弦乐协奏曲名盘",
+      keywords: ["violin", "concerto", "mozart", "paganini", "chua", "chloe", "小提琴", "协奏曲", "室内乐", "弦乐", "提琴", "大提琴", "bach", "brahms"],
+      quickGuide: "着重品味弦乐擦弦的松香泛音细节与空气感，琴体木质共鸣醇厚自然，考验耳机的极高频延展与微动态响应。"
+    },
+    {
+      id: "piano",
+      title: "🎹 肖邦夜曲·琴键微光",
+      icon: "🎹",
+      query: "琴键颗粒感通透、深夜静谧空间残响与微弱触键泛音的古典钢琴名盘",
+      keywords: ["chopin", "nocturne", "piano", "hicks", "肖邦", "夜曲", "钢琴", "独奏", "键盘", "rubinstein", "pires", "argerich"],
+      quickGuide: "静心感受琴槌轻触钢丝的呢喃与踏板延音泛音，声场残响宁静开阔，极度适合深夜独处聆听。"
+    },
+    {
+      id: "oriental",
+      title: "🏮 东方意境·梁祝民乐",
+      icon: "🏮",
+      query: "东方婉转旋律、民族管弦乐与梁祝小提琴交响协奏曲高保真发烧唱片",
+      keywords: ["butterfly lovers", "梁祝", "阿嬷", "陈佳", "东方", "中国", "民乐", "情书", "古筝", "二胡", "琵琶", "雨果"],
+      quickGuide: "东方式写意抒情与管弦乐团磅礴气势交融，高胡与小提琴如泣如诉，线条极度顺滑耐听。"
+    },
+    {
+      id: "live_vocal",
+      title: "🎙️ 现场原声·毒性人声",
+      icon: "🎙️",
+      query: "现场舞台Live沉浸感、人声口型结像极其清晰温润的发烧民谣与女声",
+      keywords: ["live", "tour", "doudou", "春夏秋冬", "现场", "民谣", "陈佳", "情书", "原声", "蔡琴", "邓丽君", "vocal"],
+      quickGuide: "人声口型结像高度凝聚靠前，呼吸气声与现场舞台混响空间感触手可及，中频饱满温润有肉感。"
+    },
+    {
+      id: "deep_jazz",
+      title: "☕ 深夜微醺·慢调爵士",
+      icon: "☕",
+      query: "具有ECM或Blue Note标志性清冷声场、低音大提琴拨弦肉感与沙哑萨克斯的慢调爵士名盘",
+      keywords: ["jazz", "sax", "trio", "ecm", "爵士", "萨克斯", "夜曲", "miles", "coltrane", "bill evans", "jarrett"],
+      quickGuide: "低音提琴拨弦弹性十足，鼓刷拂过铜钹的沙沙声清晰逼真，萨克斯管壁金属共振如在耳畔。"
+    },
+    {
+      id: "dynamic_orchestra",
+      title: "💥 大动态爆棚·交响试金",
+      icon: "💥",
+      query: "具有极深声场纵深、定音鼓捶击瞬态爆发力与管弦齐鸣大动态的顶级交响试音天碟",
+      keywords: ["symphony", "orchestra", "concerto", "交响", "管弦", "合奏", "动态", "telarc", "mahler", "tchaikovsky"],
+      quickGuide: "大编制交响乐队齐奏时层次井然，考验播放器材的推力储备与声场下盘控制力，动态大起大落极具震撼力。"
+    },
+    {
+      id: "ambient_nordic",
+      title: "❄️ 冷冽极简·北欧声场",
+      icon: "❄️",
+      query: "具有Sigur Rós、Ólafur Arnalds风格的冰岛清冷空灵氛围后摇与新古典极简声场",
+      keywords: ["ambient", "post-rock", "minimal", "nordic", "后摇", "氛围", "新古典", "冰岛", "极简", "olafur", "sigur"],
+      quickGuide: "声场如同极地冰原般空旷通透，微妙的合成器微光与真实弦乐交织，带给人纯净的心灵洗涤。"
+    },
+    {
+      id: "soundtrack_peace",
+      title: "🌧️ 雨天独处·电影原声",
+      icon: "🌧️",
+      query: "具有深刻故事叙事感、管弦与钢琴交织的电影大师级电影原声配乐名作",
+      keywords: ["soundtrack", "ost", "score", "原声", "电影", "情书", "久石让", "坂本龙一", "morricone", "zimmer"],
+      quickGuide: "叙事氛围感与画面感极强，优美的器乐独奏缓缓流淌，陪伴每一个安静独处的阅读或思绪时刻。"
+    }
+  ];
+
+  let activeMoodRadioId = null;
+  let cachedLocalTracksForMood = null;
+
+  let cachedLocalTracksRevision = null;
+  let localTracksPromise = null;
+
+  // 整个本地曲库（分页拉全，最多 5000 首）；曲库文件变化后自动失效。
+  async function getLocalTracksCache() {
+    const revision = lastState?.filesRevision ?? null;
+    if (cachedLocalTracksForMood && cachedLocalTracksForMood.length > 0 && revision === cachedLocalTracksRevision) {
+      return cachedLocalTracksForMood;
+    }
+    if (localTracksPromise) return localTracksPromise;
+    localTracksPromise = (async () => {
+      const all = [];
+      let offset = 0;
+      try {
+        while (offset >= 0 && all.length < 5000) {
+          const res = await call("library", { action: "local", query: "", offset, limit: 500 });
+          if (!res || !Array.isArray(res.tracks)) break;
+          all.push(...res.tracks);
+          offset = typeof res.next === "number" ? res.next : -1;
+        }
+      } catch (e) {
+        console.warn("Fetch local tracks err", e);
+      }
+      if (all.length) {
+        cachedLocalTracksForMood = all;
+        cachedLocalTracksRevision = revision;
+      }
+      return all.length ? all : (cachedLocalTracksForMood || []);
+    })().finally(() => { localTracksPromise = null; });
+    return localTracksPromise;
+  }
+
+  // 时段感知：按当前时段的预设偏好 + 听众在这个时段实际点过的心境排序。
+  const MOOD_TIME_AFFINITY = {
+    morning: ["strings", "piano", "oriental", "live_vocal"],
+    afternoon: ["live_vocal", "oriental", "dynamic_orchestra", "strings"],
+    evening: ["deep_jazz", "soundtrack_peace", "live_vocal", "piano"],
+    night: ["deep_jazz", "ambient_nordic", "piano", "soundtrack_peace"]
+  };
+  const MOOD_HISTORY_KEY = "tidal_mood_hours";
+
+  function moodTimeBucket(hour = new Date().getHours()) {
+    if (hour >= 5 && hour < 11) return "morning";
+    if (hour >= 11 && hour < 17) return "afternoon";
+    if (hour >= 17 && hour < 22) return "evening";
+    return "night";
+  }
+
+  function moodHistory() {
+    try { return JSON.parse(localStorage.getItem(MOOD_HISTORY_KEY) || "{}") || {}; } catch { return {}; }
+  }
+
+  function recordMoodLaunch(moodId) {
+    const history = moodHistory();
+    const bucket = moodTimeBucket();
+    history[bucket] = history[bucket] || {};
+    history[bucket][moodId] = (history[bucket][moodId] || 0) + 1;
+    try { localStorage.setItem(MOOD_HISTORY_KEY, JSON.stringify(history)); } catch {}
+  }
+
+  function orderedMoodPresets() {
+    const bucket = moodTimeBucket();
+    const preferred = MOOD_TIME_AFFINITY[bucket] || [];
+    const learned = moodHistory()[bucket] || {};
+    return AI_MOOD_PRESETS
+      .map((mood, i) => {
+        const rank = preferred.indexOf(mood.id);
+        const score = (rank >= 0 ? (preferred.length - rank) * 2 : 0) + Math.min(6, (learned[mood.id] || 0) * 1.5) - i * 0.01;
+        return { mood, score };
+      })
+      .sort((a, b) => b.score - a.score)
+      .map(item => item.mood);
+  }
+
+  let moodChipsBucket = moodTimeBucket();
+  setInterval(() => {
+    if (moodTimeBucket() === moodChipsBucket) return;
+    moodChipsBucket = moodTimeBucket();
+    renderAiMoodRadioChips("aiMoodRadioChipsLib");
+    renderAiMoodRadioChips("aiMoodRadioChipsSearch");
+  }, 10 * 60 * 1000);
+
+  function renderAiMoodRadioChips(containerId) {
+    const container = $(containerId);
+    if (!container) return;
+    container.replaceChildren();
+    const frag = document.createDocumentFragment();
+
+    orderedMoodPresets().forEach(mood => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "ai-mood-chip";
+      btn.dataset.moodId = mood.id;
+      if (activeMoodRadioId === mood.id) btn.classList.add("active");
+      btn.innerHTML = `<span>${mood.icon}</span> <span>${escapeHtml(mood.title.split("·")[1] || mood.title)}</span>`;
+      btn.title = mood.quickGuide;
+      btn.addEventListener("click", () => {
+        launchAiMoodRadio(mood.id);
+      });
+      frag.appendChild(btn);
+    });
+
+    container.appendChild(frag);
+  }
+
+  async function launchAiMoodRadio(moodId) {
+    const mood = AI_MOOD_PRESETS.find(m => m.id === moodId);
+    if (!mood) return;
+
+    activeMoodRadioId = moodId;
+    recordMoodLaunch(moodId);
+    document.querySelectorAll(".ai-mood-chip").forEach(btn => {
+      btn.classList.toggle("active", btn.dataset.moodId === moodId);
+    });
+
+    // 1. 本地曲库毫秒级穿透与秒起播 (Zero-Latency Local Penetration)
+    const localTracks = await getLocalTracksCache();
+    let localMatches = [];
+    if (localTracks.length > 0) {
+      localMatches = localTracks.filter(t => {
+        const text = `${t.title || ""} ${t.artist || ""} ${t.album || ""} ${t.genre || ""}`.toLowerCase();
+        return mood.keywords.some(kw => text.includes(kw));
+      });
+    }
+
+    if (localMatches.length > 0) {
+      toast(`🎵 已唤醒本机 ${localMatches.length} 首【${mood.title}】无损音频，正在即刻起播！`);
+      playTracks(localMatches, false, 0);
+    } else {
+      toast(`正在启动【${mood.title}】并全网调度同频发烧母带…`);
+    }
+
+    // 2. 切换到 AI 寻歌看板展示发烧导赏与同频唱片
+    showView("search");
+    document.querySelectorAll("[data-nav]").forEach(b => b.setAttribute("aria-current", String(b.dataset.nav === "viewSearch")));
+    document.querySelectorAll("[data-search-src]").forEach(b => b.setAttribute("aria-current", String(b.dataset.searchSrc === "ai")));
+    currentSearchSource = "ai";
+    if ($("aiInspirationChips")) $("aiInspirationChips").hidden = false;
+    if ($("globalSearchInput")) $("globalSearchInput").value = mood.query;
+
+    const rev = ++searchRevision;
+    resetSearchLayout();
+
+    if ($("aiCuratorBanner")) {
+      if ($("aiCuratorTitle")) $("aiCuratorTitle").textContent = `✨ ${mood.title}`;
+      if ($("aiCuratorGuide")) $("aiCuratorGuide").textContent = mood.quickGuide;
+      if ($("aiCuratorGearFocus")) {
+        $("aiCuratorGearFocus").textContent = `🎧 正在沉浸播放本机 ${localMatches.length} 首高保真音频 · ${mood.quickGuide}`;
+        $("aiCuratorGearFocus").hidden = false;
+      }
+      $("aiCuratorBanner").hidden = false;
+    }
+
+    // 3. 后台智能补齐与云端 Hi-Res 唱片注入
+    searchMessage(`已唤醒机内 ${localMatches.length} 首音轨起播，正在检索全网同频顶级发烧名盘…`);
+
+    try {
+      const prompt = `你是一位精通各类音乐母带录音、编曲配器与高保真发烧音响鉴赏的顶级音乐顾问与唱片导赏家。
+当前用户正在山灵便携播放器上收听【${mood.title}】心境电台。
+心境声学诉求：'${mood.query}'。
+
+【重要专业红线】：
+1. 真实存在性：所有推荐必须是主流流媒体（TIDAL / 网易云）真实公开发行的标准真实唱片，绝对不允许虚构任何不存在的专辑名或曲目！
+2. 命题切合度：必须完全契合【${mood.title}】的艺术造诣与母带声学特质！
+3. 请精选推荐 3-5 张在艺术造诣、器乐编排、母带品质与动态细节上极其契合的高水准唱片（兼顾国际与华语优质制作）。
+
+输出必须严格为标准合法 JSON 格式，绝不允许任何 Markdown 外壳（如 \`\`\`json 标记）：
+{
+  "theme": "${mood.title}",
+  "listening_guide": "结合该心境的专业发烧听音导赏分析（约 100-180 字）...",
+  "recommended_gear_focus": "重点品味要点（约 30-60 字）",
+  "recommendations": [
+    {
+      "album": "准确的唱片原名（以流媒体收录名为准）",
+      "album_alt": "中文或英文常用别名",
+      "artist": "准确的艺人名字",
+      "artist_alt": "艺人英文或中文别名",
+      "key_track": "代表高光单曲名（真实收录于该唱片中）",
+      "genre": "细分发烧流派标签",
+      "release_year": "发行年份",
+      "acoustic_highlight": "发烧亮点标签",
+      "recommendation_reason": "深度推荐理由（约 60-120 字）"
+    }
+  ]
+}`;
+
+      const aiReply = await callAiChat({
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.65,
+        scene: "mood"
+      });
+      if (rev !== searchRevision) return;
+
+      const parsed = extractJson(aiReply);
+      const recs = parsed?.recommendations || [];
+
+      if (recs.length > 0) {
+        if ($("aiCuratorGuide")) $("aiCuratorGuide").textContent = parsed.listening_guide || mood.quickGuide;
+        if ($("aiCuratorGearFocus") && parsed.recommended_gear_focus) {
+          $("aiCuratorGearFocus").textContent = `🎧 重点品味要点：${parsed.recommended_gear_focus}（机内已起播 ${localMatches.length} 首）`;
+          $("aiCuratorGearFocus").hidden = false;
+        }
+
+        const matchedCards = await Promise.all(recs.map(resolveRecommendationItem));
+        if (rev !== searchRevision) return;
+
+        lastAiRecommendations = matchedCards;
+        const downloadableCards = matchedCards.filter(c => c.canDownload && c.rawAlbum);
+        selectedAiCardIds = new Set(downloadableCards.map(c => c.id));
+        updateAiSelectedCount();
+
+        $("searchCardsTitle").textContent = `云端同频发烧唱片推荐 (${matchedCards.length}) · 支持一键勾选下载至机身`;
+        $("searchCardsTitle").hidden = false;
+        $("searchCardsGrid").hidden = false;
+        $("searchTrackList").hidden = true;
+
+        renderAiRecommendationCards(matchedCards, $("searchCardsGrid"));
+
+        // 将云端匹配的高光单曲追加在播放队列后面，达成连绵不绝的沉浸听音
+        const cloudTracks = matchedCards.map(c => c.trackObj).filter(Boolean);
+        if (localMatches.length === 0 && cloudTracks.length > 0) {
+          playTracks(cloudTracks, false, 0);
+        }
+      }
+    } catch (err) {
+      console.warn("Mood background enrich err", err);
+      if (localMatches.length > 0) {
+        $("searchCardsTitle").textContent = `机内已唤醒无损音频 (${localMatches.length})`;
+        $("searchCardsTitle").hidden = false;
+      }
+    }
+  }
+  let lastAiRecommendations = [];
+  let selectedAiCardIds = new Set();
+
+  function updateAiSelectedCount() {
+    const downloadableCount = lastAiRecommendations.filter(c => c.canDownload && c.rawAlbum).length;
+    const count = selectedAiCardIds.size;
+    if ($("aiSelectedDlCount")) $("aiSelectedDlCount").textContent = String(count);
+    const btnDl = $("btnAiDownloadSelected");
+    if (btnDl) {
+      btnDl.style.opacity = count > 0 ? "1" : "0.5";
+      btnDl.style.pointerEvents = count > 0 ? "" : "none";
+    }
+    const selectBar = $("aiSelectionBar");
+    if (selectBar) {
+      selectBar.hidden = downloadableCount === 0;
+    }
+  }
+  let aiSearchSession = {
+    initialQuery: "",
+    turnCount: 0,
+    seenAlbums: new Set(),
+    initialSnapshot: null
+  };
+
+  function renderAiCategoryChips(cat) {
+    currentAiInspirationCat = cat;
+    const container = $("aiChipsList");
+    if (!container) return;
+    container.replaceChildren();
+    const list = AI_INSPIRATION_DATA[cat] || AI_INSPIRATION_DATA.instrument;
+    const frag = document.createDocumentFragment();
+    list.forEach(item => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "ai-chip";
+      btn.textContent = item.title;
+      btn.dataset.query = item.query;
+      btn.addEventListener("click", () => {
+        $("globalSearchInput").value = item.query;
+        document.querySelectorAll("[data-search-src]").forEach(b => {
+          b.setAttribute("aria-current", String(b.dataset.searchSrc === "ai"));
+        });
+        currentSearchSource = "ai";
+        if ($("aiInspirationChips")) $("aiInspirationChips").hidden = false;
+        if ($("searchKindTabs")) $("searchKindTabs").hidden = true;
+        updateAiNowPlayingSeed();
+        executeGlobalSearch();
+      });
+      frag.appendChild(btn);
+    });
+    container.appendChild(frag);
+
+    document.querySelectorAll("[data-ai-cat]").forEach(pill => {
+      pill.setAttribute("aria-current", String(pill.dataset.aiCat === cat));
+    });
+  }
+
+  function updateAiNowPlayingSeed() {
+    const pill = $("aiSeedNowPlaying");
+    const text = $("aiSeedNowPlayingText");
+    if (!pill || !text) return;
+    const isAi = currentSearchSource === "ai";
+    const cur = (lastState && lastState.queue && lastState.queue[lastState.index]) || null;
+    if (isAi && cur && cur.title) {
+      text.textContent = `🎵 正在播放：《${cur.title}》- ${cur.artist || "未知"} · 点击深度以歌寻歌`;
+      pill.hidden = false;
+    } else {
+      pill.hidden = true;
+    }
+  }
+
+
+  // --- Smart High-Fidelity Audiophile Match Engine (置信度打分与跨源精准匹配) ---
+  function cleanAiTitle(str) {
+    if (!str) return "";
+    return str
+      .replace(/\(.*?\)|\[.*?\]/g, "")
+      .replace(/[^\w\s\u4e00-\u9fa5\u3040-\u30ff]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase();
+  }
+
+  function computeStringSimilarity(s1, s2) {
+    const a = cleanAiTitle(s1);
+    const b = cleanAiTitle(s2);
+    if (!a || !b) return 0;
+    if (a === b) return 1.0;
+    if (a.includes(b) || b.includes(a)) {
+      return Math.min(a.length, b.length) / Math.max(a.length, b.length);
+    }
+    const bigrams = s => {
+      const set = new Set();
+      for (let i = 0; i < s.length - 1; i++) set.add(s.slice(i, i + 2));
+      return set;
+    };
+    const b1 = bigrams(a);
+    const b2 = bigrams(b);
+    if (!b1.size || !b2.size) return 0;
+    let intersect = 0;
+    b1.forEach(bg => { if (b2.has(bg)) intersect++; });
+    return intersect / (b1.size + b2.size - intersect);
+  }
+
+  function evaluateCandidateMatch(target, candidate) {
+    if (!candidate) return 0;
+    const candArt = candidate.artist || candidate.subtitle || "";
+    const candAlb = candidate.album || candidate.title || "";
+    const candTrk = candidate.title || "";
+
+    const targetArts = [target.artist, target.artist_alt].filter(Boolean);
+    let artScore = 0;
+    for (const tart of targetArts) {
+      artScore = Math.max(artScore, computeStringSimilarity(tart, candArt));
+    }
+    // 艺人相似度门禁：低于 0.4 直接归零，彻底杜绝张冠李戴！
+    if (artScore < 0.4) return 0;
+
+    const targetAlbs = [target.album, target.album_alt].filter(Boolean);
+    let albScore = 0;
+    for (const talb of targetAlbs) {
+      albScore = Math.max(albScore, computeStringSimilarity(talb, candAlb));
+    }
+
+    const targetTrks = [target.key_track, target.key_track_alt].filter(Boolean);
+    let trkScore = 0;
+    for (const ttrk of targetTrks) {
+      trkScore = Math.max(trkScore, computeStringSimilarity(ttrk, candTrk));
+    }
+
+    return artScore * 0.4 + Math.max(albScore, trkScore) * 0.6;
+  }
+
+  async function resolveRecommendationItem(item) {
+    // 1. 本地曲库优先高置信度匹配
+    try {
+      const resLocal = await call("library", { action: "local", query: item.artist }).catch(() => ({ tracks: [] }));
+      if (resLocal.tracks && resLocal.tracks.length > 0) {
+        let bestLocal = null;
+        let bestLocalScore = 0;
+        for (const t of resLocal.tracks) {
+          const sc = evaluateCandidateMatch(item, t);
+          if (sc > bestLocalScore) {
+            bestLocalScore = sc;
+            bestLocal = t;
+          }
+        }
+        if (bestLocalScore >= 0.68) {
+          return {
+            source: "local",
+            sourceBadge: "本地已收录 · 无损FLAC",
+            sourceColor: "var(--accent)",
+            id: bestLocal.id,
+            title: bestLocal.album || item.album,
+            artist: bestLocal.artist || item.artist,
+            year: bestLocal.year || item.release_year || "",
+            keyTrack: bestLocal.title || item.key_track,
+            coverUrl: `/api/artwork/${bestLocal.id}`,
+            trackObj: bestLocal,
+            rawAlbum: null,
+            canDownload: false,
+            isLocal: true,
+            item
+          };
+        }
+      }
+    } catch (err) {
+      console.warn("Local match err", err);
+    }
+
+    // 2. 并行跨源候选池（TIDAL 专辑、TIDAL 单曲、网易云单曲）
+    try {
+      const artClean = item.artist;
+      const albClean = item.album;
+      const trkClean = item.key_track || albClean;
+
+      const pTidalAlb = call("library", {
+        action: "tidal-collections",
+        kind: "ALBUM",
+        query: `${artClean} ${albClean}`
+      }).catch(() => ({ collections: [] }));
+
+      const pTidalTrk = call("library", {
+        action: "tidal-search",
+        query: `${artClean} ${trkClean}`
+      }).catch(() => ({ tracks: [] }));
+
+      const pNeteaseTrk = call("library", {
+        action: "netease-search",
+        query: `${artClean} ${trkClean}`
+      }).catch(() => ({ tracks: [] }));
+
+      const [resTidalAlb, resTidalTrk, resNeteaseTrk] = await Promise.all([pTidalAlb, pTidalTrk, pNeteaseTrk]);
+
+      // 打分评估
+      let bestTidalAlb = null, bestTidalAlbScore = 0;
+      for (const c of (resTidalAlb.collections || []).slice(0, 6)) {
+        const sc = evaluateCandidateMatch(item, c);
+        if (sc > bestTidalAlbScore) {
+          bestTidalAlbScore = sc;
+          bestTidalAlb = c;
+        }
+      }
+
+      let bestTidalTrk = null, bestTidalTrkScore = 0;
+      for (const t of (resTidalTrk.tracks || []).slice(0, 6)) {
+        const sc = evaluateCandidateMatch(item, t);
+        if (sc > bestTidalTrkScore) {
+          bestTidalTrkScore = sc;
+          bestTidalTrk = t;
+        }
+      }
+
+      let bestNetTrk = null, bestNetTrkScore = 0;
+      for (const t of (resNeteaseTrk.tracks || []).slice(0, 6)) {
+        const sc = evaluateCandidateMatch(item, t);
+        if (sc > bestNetTrkScore) {
+          bestNetTrkScore = sc;
+          bestNetTrk = t;
+        }
+      }
+
+      const maxTidalScore = Math.max(bestTidalAlbScore, bestTidalTrkScore);
+
+      // 规则 A: 网易云精准命中且得分显著高于 TIDAL（典型如华语经典试音碟、东方民族录音）
+      if (bestNetTrkScore >= 0.70 && bestNetTrkScore > maxTidalScore) {
+        return {
+          source: "netease",
+          sourceBadge: "网易云 · 无损",
+          sourceColor: "#e60026",
+          id: bestNetTrk.id,
+          title: bestNetTrk.album || item.album,
+          artist: bestNetTrk.artist || item.artist,
+          year: item.release_year || "",
+          keyTrack: bestNetTrk.title,
+          coverUrl: bestNetTrk.cover || "",
+          trackObj: bestNetTrk,
+          rawAlbum: null,
+          canDownload: false,
+          isLocal: false,
+          item
+        };
+      }
+
+      // 规则 B: TIDAL 专辑或单曲命中，提供 Hi-Res 母带
+      if (maxTidalScore >= 0.55) {
+        const cover = (bestTidalAlb && bestTidalAlb.coverUrl) || (bestTidalTrk && bestTidalTrk.cover) || "";
+        return {
+          source: "tidal",
+          sourceBadge: "TIDAL · Hi-Res",
+          sourceColor: "var(--gold)",
+          id: bestTidalAlb ? bestTidalAlb.id : (bestTidalTrk ? bestTidalTrk.id : `ai-${Date.now()}`),
+          title: bestTidalAlb ? bestTidalAlb.title : (bestTidalTrk?.album || item.album),
+          artist: bestTidalAlb ? (bestTidalAlb.subtitle || item.artist) : (bestTidalTrk?.artist || item.artist),
+          year: item.release_year || "",
+          keyTrack: bestTidalTrk ? bestTidalTrk.title : (item.key_track || item.album),
+          coverUrl: cover,
+          trackObj: bestTidalTrk,
+          rawAlbum: bestTidalAlb ? { ...bestTidalAlb, source: "tidal" } : null,
+          canDownload: !!bestTidalAlb,
+          isLocal: false,
+          item
+        };
+      }
+
+      // 规则 C: 网易云作为良好兜底
+      if (bestNetTrkScore >= 0.55) {
+        return {
+          source: "netease",
+          sourceBadge: "网易云 · 无损",
+          sourceColor: "#e60026",
+          id: bestNetTrk.id,
+          title: bestNetTrk.album || item.album,
+          artist: bestNetTrk.artist || item.artist,
+          year: item.release_year || "",
+          keyTrack: bestNetTrk.title,
+          coverUrl: bestNetTrk.cover || "",
+          trackObj: bestNetTrk,
+          rawAlbum: null,
+          canDownload: false,
+          isLocal: false,
+          item
+        };
+      }
+
+    } catch (err) {
+      console.warn("Multi-source smart match err", err);
+    }
+
+    // 4. 彻底未匹配（得分过低拒绝强行张冠李戴，诚实展示全网探索卡片）
+    return {
+      source: "unmatched",
+      sourceBadge: "全网探索",
+      sourceColor: "var(--muted)",
+      id: `ai-${Date.now()}-${Math.random()}`,
+      title: item.album,
+      artist: item.artist,
+      year: item.release_year || "",
+      keyTrack: item.key_track || item.album,
+      coverUrl: "",
+      trackObj: null,
+      rawAlbum: null,
+      canDownload: false,
+      isLocal: false,
+      item
+    };
+  }
+
+  async function executeAiSearch(query, rev) {
+    const kindLabel = currentSearchKind === "TRACK" ? "单曲" : currentSearchKind === "ARTIST" ? "艺人" : "唱片";
+    searchMessage(`✨ AI 发烧音乐顾问正在进行声学研判与【${kindLabel}】策展…`);
+
+    const contextInfo = [];
+    const cur = (lastState && lastState.queue && lastState.queue[lastState.index]) || null;
+    if (cur && cur.title) {
+      contextInfo.push(`当前正在播放曲目：《${cur.title}》- 艺人：${cur.artist}，所属唱片：《${cur.album || "未知"}》，流派标签：${cur.genre || "发烧音乐"}`);
+    }
+    const localGenres = getCachedAiGenres();
+    const genreKeys = Object.keys(localGenres).slice(0, 10);
+    if (genreKeys.length) {
+      contextInfo.push(`用户机内曲库涵盖的发烧细分流派示例：${genreKeys.join("、")}`);
+    }
+
+    let prompt;
+    if (currentSearchKind === "TRACK") {
+      prompt = `你是一位精通各类音乐母带录音、编曲配器与高保真发烧音响鉴赏的顶级音乐顾问。
+用户当前的寻歌诉求是查找【高光发烧单曲】：'${query}'。
+
+${contextInfo.length ? `【听音环境与上下文参考】\n${contextInfo.join("\n")}\n` : ""}
+
+【专业度与真实性绝对红线（严防幻觉与张冠李戴）】：
+1. 真实存在性：所有推荐单曲必须是主流流媒体（TIDAL / 网易云）真实公开发行的标准歌曲，必须严格真实收录在对应专辑中，严禁任何虚构！
+2. 命题切合度：必须严谨紧扣用户的声学描述（如大提琴、低频瞬态、毒性人声等）！
+3. 请同时提供标准歌曲名与中/英文常用译名、原版专辑名与艺人名。
+
+请精选推荐 6-8 首在器乐质感、母带动态与声学细节上极其卓越的高光曲目。
+输出必须严格为标准合法 JSON 格式，绝不允许任何 Markdown 外壳（如 \`\`\`json 标记）：
+{
+  "theme": "一段精炼的单曲策展主题概括（如：极低频瞬态与微动态试音名作）",
+  "listening_guide": "专业的发烧单曲听音导赏分析（约 100-180 字），重点解析这些单曲的编曲织体、声场结像与高光细节...",
+  "recommended_gear_focus": "重点品味要点（约 30-60 字）",
+  "recommendations": [
+    {
+      "key_track": "歌曲原名（必填，以流媒体收录名为准）",
+      "key_track_alt": "歌曲别名或英文译名（如无留空）",
+      "album": "所属原版唱片原名（必填）",
+      "album_alt": "唱片别名或英文名（如无留空）",
+      "artist": "准确的艺人名字",
+      "artist_alt": "艺人英文或中文别名（如无留空）",
+      "genre": "细分发烧流派标签",
+      "release_year": "发行年份",
+      "acoustic_highlight": "发烧亮点标签（如：大提琴松香感、30Hz极低频下潜）",
+      "recommendation_reason": "单曲深度推荐理由（约 60-120 字）"
+    }
+  ]
+}`;
+    } else if (currentSearchKind === "ARTIST") {
+      prompt = `你是一位精通全球音乐历史、母带录音与大师级演绎的高保真发烧音乐顾问。
+用户当前的寻歌诉求是查找【大师级音乐家/乐手】：'${query}'。
+
+${contextInfo.length ? `【听音环境与上下文参考】\n${contextInfo.join("\n")}\n` : ""}
+
+【专业度与真实性绝对红线】：
+1. 真实存在性：推荐的音乐家与代表专辑必须真实存在于主流流媒体（TIDAL / 网易云），严禁任何虚构！
+2. 命题切合度：必须完全契合用户所描述的乐器、学派或艺术风格！
+3. 必须列出该音乐家最负盛名的一张发烧代表专辑(representative_album)与高光名曲(key_track)。
+
+请精选推荐 4-6 位在此风格领域具备顶级艺术造诣的大师级音乐家。
+输出必须严格为标准合法 JSON 格式，绝不允许任何 Markdown 外壳（如 \`\`\`json 标记）：
+{
+  "theme": "一段精炼的大师音乐家策展概括",
+  "listening_guide": "音乐家流派谱系与艺术风格导赏分析（约 100-180 字）...",
+  "recommended_gear_focus": "重点品味要点（约 30-60 字）",
+  "recommendations": [
+    {
+      "artist": "音乐家准确名字",
+      "artist_alt": "英文或中文译名",
+      "album": "最核心的发烧代表唱片名",
+      "album_alt": "唱片别名或英文译名",
+      "key_track": "该唱片中最具代表性的高光单曲",
+      "key_track_alt": "单曲别名或英文名",
+      "genre": "主打发烧流派与主奏乐器",
+      "release_year": "代表作年份",
+      "acoustic_highlight": "演奏风格与录音辨识度标签",
+      "recommendation_reason": "艺术造诣与必听推荐理由（约 60-120 字）"
+    }
+  ]
+}`;
+    } else {
+      prompt = `你是一位精通各类音乐母带录音、编曲配器与高保真发烧音响鉴赏的顶级音乐顾问与唱片导赏家。
+用户当前的寻歌诉求是查找【发烧唱片专辑】：'${query}'。
+
+${contextInfo.length ? `【听音环境与上下文参考】\n${contextInfo.join("\n")}\n` : ""}
+
+【专业度与真实性绝对红线（严防幻觉与张冠李戴）】：
+1. 真实存在性：所有推荐必须是主流流媒体（TIDAL / 网易云）或发烧唱片厂牌（ECM, DG, Decca, Telarc, Chesky, Blue Note, Sony Classical 等）正式公开发行的标准真实唱片，绝对不允许虚构任何不存在的专辑名或曲目！
+2. 命题切合度：必须严谨审题！如果用户问人声，只推荐人声唱片，严禁推荐纯器乐；如果问纯器乐，严禁推荐带人声歌曲；如果问特定乐器（大提琴、萨克斯、吉他、钢琴），必须以该乐器为主奏录音！
+3. 真实收录名：请同时提供主流流媒体的标准名称以及中/英文常用别名（用于跨源精准索引），key_track 必须真实收录于该唱片中。
+
+请精选推荐 5-7 张在艺术造诣、器乐编排、母带品质与动态细节上极其契合的高水准唱片（包含经典名盘与冷门宝藏，兼顾国际与华语优质制作）。
+输出必须严格为标准合法 JSON 格式，绝不允许任何 Markdown 外壳（如 \`\`\`json 标记）：
+{
+  "theme": "一段精炼的策展主题概括（如：空灵极简的北欧声场探寻）",
+  "listening_guide": "专业的发烧听音导赏分析（约 100-180 字），解析编曲配器、空间声场、母带动态取向与为何契合诉求...",
+  "recommended_gear_focus": "重点品味要点（约 30-60 字，如：着重聆听大提琴松香泛音与低频瞬态）",
+  "recommendations": [
+    {
+      "album": "准确的唱片原名（以流媒体收录名为准，勿附带多余符号）",
+      "album_alt": "中文或英文常用别名（如无则留空）",
+      "artist": "准确的艺人名字",
+      "artist_alt": "艺人英文或中文别名（如：久石让 / Joe Hisaishi，蔡琴 / Tsai Chin，如无留空）",
+      "key_track": "代表高光单曲名（必填，真实收录于该唱片的代表作）",
+      "key_track_alt": "单曲别名或英文译名（如无留空）",
+      "genre": "细分发烧流派标签（如：氛围后摇 / 室内融合爵士 / 模拟录音人声）",
+      "release_year": "发行年份（如：2015）",
+      "acoustic_highlight": "发烧亮点标签（如：24bit/96kHz母带、极高频空气感、定音鼓强弱动态）",
+      "recommendation_reason": "深度推荐理由（约 60-120 字，分析器乐亮点与艺术水准）"
+    }
+  ]
+}`;
+    }
+
+    try {
+      const aiReply = await callAiChat({
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.65,
+        scene: "search"
+      });
+      if (rev !== searchRevision) return;
+
+      const parsed = extractJson(aiReply);
+      const recs = parsed?.recommendations || parsed?.items || [];
+      if (!recs.length) {
+        throw new Error("AI 未能识别出符合发烧标准的唱片列表，请尝试更换描述");
+      }
+
+      resetSearchLayout();
+
+      if ($("aiCuratorBanner")) {
+        if ($("aiCuratorTitle")) $("aiCuratorTitle").textContent = parsed.theme ? `✨ ${parsed.theme}` : "AI 发烧唱片策展与鉴赏";
+        if ($("aiCuratorGuide")) $("aiCuratorGuide").textContent = parsed.listening_guide || parsed.summary || "根据你的发烧品味精选推荐：";
+        if ($("aiCuratorGearFocus")) {
+          if (parsed.recommended_gear_focus) {
+            $("aiCuratorGearFocus").textContent = `🎧 重点品味要点：${parsed.recommended_gear_focus}`;
+            $("aiCuratorGearFocus").hidden = false;
+          } else {
+            $("aiCuratorGearFocus").hidden = true;
+          }
+        }
+        $("aiCuratorBanner").hidden = false;
+      }
+
+      searchMessage("正在全网（本地曲库 / TIDAL / 网易云）跨源精准匹配高保真音频…");
+
+      const matchedCards = await Promise.all(recs.map(resolveRecommendationItem));
+      if (rev !== searchRevision) return;
+
+      lastAiRecommendations = matchedCards;
+      const playableCount = matchedCards.filter(c => c.trackObj).length;
+      const downloadableCards = matchedCards.filter(c => c.canDownload && c.rawAlbum);
+
+      // 默认全选可下载的专辑
+      selectedAiCardIds = new Set(downloadableCards.map(c => c.id));
+      updateAiSelectedCount();
+
+      if ($("aiPlayAllCount")) $("aiPlayAllCount").textContent = String(playableCount);
+
+      const entityName = currentSearchKind === "TRACK" ? "发烧单曲" : currentSearchKind === "ARTIST" ? "大师音乐家与代表作" : "发烧唱片";
+      $("searchCardsTitle").textContent = `深度推荐${entityName} (${matchedCards.length})`;
+      $("searchCardsTitle").hidden = false;
+      $("searchCardsGrid").hidden = false;
+      $("searchTrackList").hidden = true;
+
+      renderAiRecommendationCards(matchedCards, $("searchCardsGrid"));
+
+      aiSearchSession = {
+        initialQuery: query,
+        turnCount: 0,
+        seenAlbums: new Set(recs.map(r => r.album).filter(Boolean)),
+        initialSnapshot: {
+          theme: parsed.theme,
+          guide: parsed.listening_guide || parsed.summary,
+          gearFocus: parsed.recommended_gear_focus || "",
+          cards: matchedCards,
+          playableCount,
+          downloadCount: downloadableCards.length
+        }
+      };
+
+      if ($("aiTurnBadge")) $("aiTurnBadge").hidden = true;
+      if ($("btnAiResetTuning")) $("btnAiResetTuning").hidden = true;
+      if ($("aiTuningInput")) $("aiTuningInput").value = "";
+
+    } catch (err) {
+      if (rev !== searchRevision) return;
+      resetSearchLayout();
+      searchMessage(`AI 寻歌失败：${err.message}`, true);
+    }
+  }
+
+  let isAiRefining = false;
+
+  async function executeAiRefinement(feedbackText) {
+    if (isAiRefining) return;
+    const baseQuery = aiSearchSession.initialQuery || $("globalSearchInput")?.value?.trim() || "";
+    if (!baseQuery) {
+      toast("请先进行基础寻歌策展后再进行微调", "i-info");
+      return;
+    }
+    const currentRev = searchRevision;
+    isAiRefining = true;
+
+    const submitBtn = $("btnAiTuneSubmit");
+    const originalBtnText = submitBtn ? submitBtn.innerHTML : "";
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.innerHTML = `<svg class="icon spinning" style="width:13px;height:13px;"><use href="#i-refresh"/></svg> 微调中…`;
+    }
+    document.querySelectorAll("#aiTuningChips .ai-tuning-chip").forEach(c => c.style.pointerEvents = "none");
+    toast(`正在根据「${feedbackText.length > 10 ? feedbackText.slice(0, 10) + "…" : feedbackText}」进行审美定向偏转…`);
+
+    const excludedList = Array.from(aiSearchSession.seenAlbums).slice(-25);
+    const cur = (lastState && lastState.queue && lastState.queue[lastState.index]) || null;
+    const contextPlaying = cur && cur.title ? `当前播放背景曲目：《${cur.title}》- ${cur.artist}（${cur.album || ""}）` : "";
+
+    const prompt = `你是一位精通各类音乐母带录音、编曲配器与高保真发烧音响鉴赏的顶级音乐顾问与唱片导赏家。
+这是我们针对发烧唱片策展的多轮交互对话。
+
+【用户最初始的寻歌审美基调】：'${baseQuery}'
+${contextPlaying ? `【当前听音环境】：${contextPlaying}\n` : ""}
+【用户最新反馈与声学定向偏转诉求】：'${feedbackText}'
+
+【重要约束条件与排除规则】：
+1. 真实存在性：所有推荐必须是主流流媒体（TIDAL / 网易云）真实公开发行的标准唱片，严禁任何虚构幻觉！
+2. 绝对排除项：绝对不要重复推荐以下已经展示过的唱片（必须严格排除以下所有专辑）：
+${excludedList.map(a => `• 《${a}》`).join("\n")}
+3. 保持整体高级发烧母带与高保真鉴赏标准，围绕用户的定向反馈诉求（'${feedbackText}'），精选推荐 5-7 张全新的高水准唱片（兼顾经典名盘与冷门宝藏，兼顾国际与华语优质制作）。
+4. 重新提炼本次微调后的策展主题(theme)、针对性发烧听音导赏分析(listening_guide)与重点品味要点(recommended_gear_focus)。
+5. 每张唱片必须明确指定一首最能体现该唱片发烧特质与风格精髓的【代表高光曲目(key_track)】，以便直接试听。
+
+输出必须严格为标准合法 JSON 格式，绝不允许任何 Markdown 外壳（如 \`\`\`json 标记）：
+{
+  "theme": "定向偏转后的新策展主题概括",
+  "listening_guide": "结合用户微调偏向的专业发烧导赏分析（约 100-180 字），重点说明声学取向与选盘变化...",
+  "recommended_gear_focus": "本次偏转后的重点品味要点（约 30-60 字）",
+  "recommendations": [
+    {
+      "album": "准确的唱片原名（以流媒体收录名为准，勿附带多余符号）",
+      "album_alt": "中文或英文常用别名（如无则留空）",
+      "artist": "准确的艺人名字",
+      "artist_alt": "艺人英文或中文别名（如：久石让 / Joe Hisaishi，蔡琴 / Tsai Chin，如无留空）",
+      "key_track": "代表高光单曲名（必填，真实收录于该唱片的代表作）",
+      "key_track_alt": "单曲别名或英文译名（如无留空）",
+      "genre": "细分发烧流派标签",
+      "release_year": "发行年份",
+      "acoustic_highlight": "针对本次偏转的发烧亮点标签",
+      "recommendation_reason": "针对本次偏转的推荐理由（约 60-120 字）"
+    }
+  ]
+}`;
+
+    try {
+      const aiReply = await callAiChat({
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.65,
+        scene: "search"
+      });
+      if (currentRev !== searchRevision) return;
+
+      const parsed = extractJson(aiReply);
+      const recs = parsed?.recommendations || parsed?.items || [];
+      if (!recs.length) {
+        throw new Error("未能生成微调唱片列表，请尝试更换微调方向");
+      }
+
+      recs.forEach(r => {
+        if (r.album) aiSearchSession.seenAlbums.add(r.album);
+      });
+      aiSearchSession.turnCount++;
+
+      const matchedCards = await Promise.all(recs.map(resolveRecommendationItem));
+      if (currentRev !== searchRevision) return;
+
+      lastAiRecommendations = matchedCards;
+      const playableCount = matchedCards.filter(c => c.trackObj).length;
+      const downloadCount = matchedCards.filter(c => c.canDownload && c.rawAlbum).length;
+
+      if ($("aiCuratorBanner")) {
+        if ($("aiCuratorTitle")) $("aiCuratorTitle").textContent = parsed.theme ? `✨ ${parsed.theme}` : "AI 发烧唱片策展与鉴赏";
+        if ($("aiCuratorGuide")) $("aiCuratorGuide").textContent = parsed.listening_guide || parsed.summary || "根据微调偏好更新的推荐：";
+        if ($("aiCuratorGearFocus")) {
+          if (parsed.recommended_gear_focus) {
+            $("aiCuratorGearFocus").textContent = `🎧 重点品味要点：${parsed.recommended_gear_focus}`;
+            $("aiCuratorGearFocus").hidden = false;
+          } else {
+            $("aiCuratorGearFocus").hidden = true;
+          }
+        }
+        $("aiCuratorBanner").hidden = false;
+      }
+
+      if ($("aiTurnBadge")) {
+        $("aiTurnBadge").textContent = `第 ${aiSearchSession.turnCount} 轮微调`;
+        $("aiTurnBadge").hidden = false;
+      }
+      if ($("btnAiResetTuning")) $("btnAiResetTuning").hidden = false;
+
+      if ($("aiPlayAllCount")) $("aiPlayAllCount").textContent = String(playableCount);
+      if ($("btnAiDownloadAll")) {
+        if ($("aiDownloadCount")) $("aiDownloadCount").textContent = String(downloadCount);
+        $("btnAiDownloadAll").hidden = downloadCount === 0;
+      }
+
+      $("searchCardsTitle").textContent = `深度推荐发烧唱片 (${matchedCards.length}) · 第 ${aiSearchSession.turnCount} 轮微调`;
+      renderAiRecommendationCards(matchedCards, $("searchCardsGrid"));
+
+      if ($("aiTuningInput")) $("aiTuningInput").value = "";
+      toast(`已完成声学微调（第 ${aiSearchSession.turnCount} 轮）！`);
+
+    } catch (err) {
+      if (currentRev === searchRevision) {
+        toast(`微调偏转失败：${err.message}`, "i-trash");
+      }
+    } finally {
+      isAiRefining = false;
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.innerHTML = originalBtnText;
+      }
+      document.querySelectorAll("#aiTuningChips .ai-tuning-chip").forEach(c => c.style.pointerEvents = "");
+    }
+  }
+
+  function resetAiToInitialSnapshot() {
+    if (!aiSearchSession.initialSnapshot) return;
+    const snap = aiSearchSession.initialSnapshot;
+    if ($("aiCuratorTitle")) $("aiCuratorTitle").textContent = snap.theme ? `✨ ${snap.theme}` : "AI 发烧唱片策展与鉴赏";
+    if ($("aiCuratorGuide")) $("aiCuratorGuide").textContent = snap.guide || "根据你的发烧品味精选推荐：";
+    if ($("aiCuratorGearFocus")) {
+      if (snap.gearFocus) {
+        $("aiCuratorGearFocus").textContent = `🎧 重点品味要点：${snap.gearFocus}`;
+        $("aiCuratorGearFocus").hidden = false;
+      } else {
+        $("aiCuratorGearFocus").hidden = true;
+      }
+    }
+    lastAiRecommendations = snap.cards;
+    if ($("aiPlayAllCount")) $("aiPlayAllCount").textContent = String(snap.playableCount);
+    if ($("btnAiDownloadAll")) {
+      if ($("aiDownloadCount")) $("aiDownloadCount").textContent = String(snap.downloadCount);
+      $("btnAiDownloadAll").hidden = snap.downloadCount === 0;
+    }
+    $("searchCardsTitle").textContent = `深度推荐发烧唱片 (${snap.cards.length})`;
+    renderAiRecommendationCards(snap.cards, $("searchCardsGrid"));
+
+    aiSearchSession.turnCount = 0;
+    if ($("aiTurnBadge")) $("aiTurnBadge").hidden = true;
+    if ($("btnAiResetTuning")) $("btnAiResetTuning").hidden = true;
+    if ($("aiTuningInput")) $("aiTuningInput").value = "";
+    toast("已恢复初始策展推荐");
+  }
+
+
+  // --- AI Recommendation Cards Rendering & Batch Operations ---
+  function renderAiRecommendationCards(items, container, clear = true) {
+    if (!container) return;
+    if (clear) container.replaceChildren();
+    if (!Array.isArray(items) || items.length === 0) return;
+
+    const frag = document.createDocumentFragment();
+
+    items.forEach(item => {
+      if (!item) return;
+      const card = document.createElement("div");
+      card.className = "card-item";
+      card.style.display = "flex";
+      card.style.flexDirection = "column";
+      card.dataset.cardId = item.id || `card-${Math.random()}`;
+
+      const canDl = !!(item.canDownload && item.rawAlbum);
+      const isSelected = !!(selectedAiCardIds && selectedAiCardIds.has(item.id));
+      if (isSelected) card.classList.add("selected");
+
+      const keyTrackName = item.keyTrack || (item.trackObj && item.trackObj.title) || item.title || "试听曲目";
+      const artistName = item.artist || item.subtitle || (item.rawAlbum && (item.rawAlbum.subtitle || item.rawAlbum.detail)) || "未知艺人";
+      const subtitleText = `${artistName}${item.year ? ` · ${item.year}` : ""}`;
+
+      const sourceBadge = item.sourceBadge || (item.source === "local" ? "本地已收录 · 无损FLAC" : item.source === "netease" ? "网易云 · 无损" : "TIDAL · Hi-Res");
+      const sourceColor = item.sourceColor || (item.source === "local" ? "var(--accent)" : item.source === "netease" ? "#e60026" : "var(--accent)");
+
+      // 防御性安全读取（兼容 item.item 包装或扁平结构）
+      const rawMeta = item.item || item;
+      const acousticHighlight = rawMeta.acoustic_highlight || rawMeta.genre || item.aiGenre || item.genre || "发烧鉴赏";
+      const recommendationReason = rawMeta.recommendation_reason || rawMeta.reason || item.aiReason || item.reason || "";
+
+      card.innerHTML = `
+        <div class="card-artwork">
+          <img alt="" loading="lazy" decoding="async">
+          <div class="ai-card-source-tag" style="color:${sourceColor}; border:1px solid ${sourceColor}55;">
+            ${escapeHtml(sourceBadge)}
+          </div>
+          ${canDl ? `
+          <div class="ai-card-checkbox-wrap" title="勾选多选下载此专辑">
+            <input type="checkbox" class="ai-card-checkbox" ${isSelected ? "checked" : ""}>
+            <span style="font-size:10.5px; font-weight:600;">选</span>
+          </div>` : ""}
+          <div class="card-play-overlay">
+            <button type="button" class="btn-card-play" title="播放整张唱片"><svg class="icon"><use href="#i-play"/></svg></button>
+          </div>
+        </div>
+        <div class="card-title" style="margin-top:8px;" title="${escapeHtml(item.title || "")}"></div>
+        <div class="card-subtitle" style="display:flex; justify-content:space-between; align-items:center;">
+          <span class="sub-artist"></span>
+          <span class="badge gold" style="font-size:10px; padding:1px 6px;">Hi-Res</span>
+        </div>
+        <div class="ai-key-track-box" title="高光代表作">
+          <div style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1;">
+            <span style="color:var(--muted); font-size:10.5px;">高光曲目</span>
+            <span style="font-weight:600; margin-left:4px;" class="key-track-title"></span>
+          </div>
+          <button type="button" class="btn-track-quick-play" title="试听该曲"><svg class="icon"><use href="#i-play"/></svg></button>
+        </div>
+        <div class="ai-reason-tag">
+          <span style="color:var(--accent); font-weight:600;">[${escapeHtml(acousticHighlight)}]</span>
+          ${escapeHtml(recommendationReason)}
+        </div>
+        <div style="margin-top:auto; padding-top:8px; display:flex; gap:6px;">
+          <button type="button" class="btn-card-listen-track primary" style="flex:1; padding:5px 8px; font-size:11.5px; justify-content:center; display:flex; align-items:center; gap:4px;">
+            <svg class="icon" style="width:12px;height:12px;"><use href="#i-play"/></svg> 试听
+          </button>
+          ${item.rawAlbum ? `
+          <button type="button" class="btn-card-view-album ghost" style="flex:1; padding:5px 8px; font-size:11.5px; justify-content:center; display:flex; align-items:center; gap:4px;">
+            <svg class="icon" style="width:12px;height:12px;"><use href="#i-disc"/></svg> 专辑
+          </button>` : ""}
+          <button type="button" class="btn-card-enqueue ghost" title="加入播放队列" style="padding:5px 8px; display:inline-flex; align-items:center; justify-content:center;">
+            <svg class="icon" style="width:12px;height:12px;"><use href="#i-add"/></svg>
+          </button>
+          ${canDl ? `
+          <button type="button" class="btn-card-dl ghost" title="下载整张专辑到手机" style="padding:5px 8px; display:inline-flex; align-items:center; justify-content:center;">
+            <svg class="icon" style="width:12px;height:12px;"><use href="#i-download"/></svg>
+          </button>` : ""}
+        </div>`;
+
+      card.querySelector(".card-title").textContent = item.title || "";
+      card.querySelector(".sub-artist").textContent = subtitleText;
+      card.querySelector(".key-track-title").textContent = keyTrackName;
+      applyArtwork(card.querySelector(".card-artwork"), card.querySelector(".card-artwork img"), item.coverUrl, item.title || "");
+
+      // Checkbox 多选事件绑定
+      const cbWrap = card.querySelector(".ai-card-checkbox-wrap");
+      const cb = card.querySelector(".ai-card-checkbox");
+      if (cbWrap && cb) {
+        const toggleCb = e => {
+          e.stopPropagation();
+          if (cb.checked) {
+            selectedAiCardIds.add(item.id);
+            card.classList.add("selected");
+          } else {
+            selectedAiCardIds.delete(item.id);
+            card.classList.remove("selected");
+          }
+          updateAiSelectedCount();
+        };
+        cb.addEventListener("change", toggleCb);
+        cbWrap.addEventListener("click", e => {
+          if (e.target !== cb) {
+            e.stopPropagation();
+            cb.checked = !cb.checked;
+            cb.dispatchEvent(new Event("change"));
+          }
+        });
+      }
+
+      // 1. Play Key Track Action
+      const playKeyTrack = async () => {
+        if (item.trackObj) {
+          playTracks([item.trackObj]);
+        } else if (item.rawAlbum) {
+          try {
+            const detail = await call("library", { action: "tidal-collection", kind: "ALBUM", collection: String(item.rawAlbum.id) });
+            if (detail.tracks?.length) playTracks(detail.tracks);
+          } catch {}
+        } else {
+          toast(`正在全网检索「${artistName} - ${keyTrackName}」…`);
+          call("library", { action: "tidal-search", query: `${artistName} ${keyTrackName}` }).then(r => {
+            if (r.tracks?.length) playTracks(r.tracks);
+          });
+        }
+      };
+
+      card.querySelector(".btn-track-quick-play")?.addEventListener("click", e => {
+        e.stopPropagation();
+        playKeyTrack();
+      });
+
+      card.querySelector(".btn-card-listen-track")?.addEventListener("click", e => {
+        e.stopPropagation();
+        playKeyTrack();
+      });
+
+      // 2. Play Entire Album Overlay
+      card.querySelector(".btn-card-play")?.addEventListener("click", async e => {
+        e.stopPropagation();
+        if (item.rawAlbum) {
+          const detail = await call("library", { action: "tidal-collection", kind: "ALBUM", collection: String(item.rawAlbum.id) });
+          if (detail.tracks?.length) playTracks(detail.tracks);
+        } else if (item.trackObj) {
+          playTracks([item.trackObj]);
+        }
+      });
+
+      // 3. View Album Details
+      card.querySelector(".btn-card-view-album")?.addEventListener("click", e => {
+        e.stopPropagation();
+        if (item.rawAlbum) {
+          openSearchCollection(item.rawAlbum, "ALBUM");
+        }
+      });
+
+      // 4. Click card body
+      card.addEventListener("click", e => {
+        if (e.target.closest("button") || e.target.closest(".ai-card-checkbox-wrap")) return;
+        if (item.rawAlbum) {
+          openSearchCollection(item.rawAlbum, "ALBUM");
+        } else {
+          playKeyTrack();
+        }
+      });
+
+      // 5. Enqueue Action
+      card.querySelector(".btn-card-enqueue")?.addEventListener("click", async e => {
+        e.stopPropagation();
+        if (item.trackObj) {
+          try {
+            await call("library", {
+              action: "song",
+              id: item.trackObj.id,
+              mode: "add",
+              track: { id: item.trackObj.id, title: item.trackObj.title, artist: item.trackObj.artist, album: item.trackObj.album, cover: item.trackObj.cover }
+            });
+            toast(`已添加《${keyTrackName}》至播放队列`);
+          } catch (err) {
+            toast(`添加队列失败：${err.message}`, "i-trash");
+          }
+        } else {
+          toast("该曲目暂无可直接入队的音源", "i-info");
+        }
+      });
+
+      // 6. Download Action
+      card.querySelector(".btn-card-dl")?.addEventListener("click", async e => {
+        e.stopPropagation();
+        if (item.rawAlbum && item.canDownload) {
+          try {
+            await call("downloads", { action: "add", kind: "ALBUM", id: item.rawAlbum.id });
+            toast(`已添加专辑「${item.title}」到下载队列`);
+          } catch (err) {
+            toast(`下载添加失败：${err.message}`, "i-trash");
+          }
+        }
+      });
+
+      frag.appendChild(card);
+    });
+
+    container.appendChild(frag);
+  }
+
+  // --- Session Action Bar Hooks ---
+  if ($("btnAiPlayAll")) {
+    $("btnAiPlayAll").addEventListener("click", () => {
+      const playable = lastAiRecommendations.map(c => c.trackObj).filter(Boolean);
+      if (!playable.length) {
+        toast("暂未匹配到可直接播放的音频", "i-trash");
+        return;
+      }
+      toast(`正在启动畅听 ${playable.length} 首 AI 推荐高光曲目…`);
+      playTracks(playable, false, 0);
+    });
+  }
+
+  if ($("btnAiEnqueueAll")) {
+    $("btnAiEnqueueAll").addEventListener("click", async () => {
+      const playable = lastAiRecommendations.map(c => c.trackObj).filter(Boolean);
+      if (!playable.length) {
+        toast("暂无可加入队列的曲目", "i-trash");
+        return;
+      }
+      let added = 0;
+      for (const t of playable) {
+        try {
+          await call("library", {
+            action: "song",
+            id: t.id,
+            mode: "add",
+            track: { id: t.id, title: t.title, artist: t.artist, album: t.album, cover: t.cover }
+          });
+          added++;
+        } catch {}
+      }
+      toast(`已将 ${added} 首推荐曲目追加至播放队列！`);
+    });
+  }
+
+  if ($("btnAiSelectAll")) {
+    $("btnAiSelectAll").addEventListener("click", () => {
+      const downloadable = lastAiRecommendations.filter(c => c.canDownload && c.rawAlbum);
+      if (!downloadable.length) {
+        toast("当前推荐列表中无可下载的唱片", "i-info");
+        return;
+      }
+      const allSelected = downloadable.every(c => selectedAiCardIds.has(c.id));
+      if (allSelected) {
+        selectedAiCardIds.clear();
+      } else {
+        downloadable.forEach(c => selectedAiCardIds.add(c.id));
+      }
+      document.querySelectorAll("#searchCardsGrid .card-item").forEach(cardEl => {
+        const id = cardEl.dataset.cardId;
+        const cb = cardEl.querySelector(".ai-card-checkbox");
+        const checked = selectedAiCardIds.has(id);
+        if (cb) cb.checked = checked;
+        cardEl.classList.toggle("selected", checked);
+      });
+      updateAiSelectedCount();
+    });
+  }
+
+  if ($("btnAiDownloadSelected")) {
+    $("btnAiDownloadSelected").addEventListener("click", async () => {
+      const toDownload = lastAiRecommendations.filter(c => selectedAiCardIds.has(c.id) && c.canDownload && c.rawAlbum);
+      if (!toDownload.length) {
+        toast("请先勾选需要下载的唱片（或点击全选）", "i-info");
+        return;
+      }
+      toast(`正在将选中的 ${toDownload.length} 张专辑添加至下载队列…`);
+      let count = 0;
+      for (const it of toDownload) {
+        try {
+          await call("downloads", { action: "add", kind: "ALBUM", id: it.rawAlbum.id });
+          count++;
+        } catch {}
+      }
+      toast(`已成功添加 ${count} 张所选发烧唱片至下载队列！`);
+    });
+  }
+
+  // --- Feature C: 多轮交互审美定向微调与重置事件绑定 ---
+  document.querySelectorAll("#aiTuningChips .ai-tuning-chip").forEach(chip => {
+    chip.addEventListener("click", () => {
+      const tune = chip.dataset.tune;
+      if (tune) executeAiRefinement(tune);
+    });
+  });
+
+  if ($("aiTuningForm")) {
+    $("aiTuningForm").addEventListener("submit", e => {
+      e.preventDefault();
+      const val = $("aiTuningInput")?.value?.trim();
+      if (!val) {
+        toast("请输入你想要的微调方向或偏好", "i-info");
+        return;
+      }
+      executeAiRefinement(val);
+    });
+  }
+
+  if ($("btnAiResetTuning")) {
+    $("btnAiResetTuning").addEventListener("click", () => {
+      resetAiToInitialSnapshot();
+    });
+  }
+
+  if ($("aiSeedNowPlaying")) {
+    $("aiSeedNowPlaying").addEventListener("click", () => {
+      const cur = (lastState && lastState.queue && lastState.queue[lastState.index]) || null;
+      if (!cur || !cur.title) return;
+      const q = `以当前正在播放的《${cur.title}》（艺人：${cur.artist || "未知"}，所属唱片：《${cur.album || "未知"}》，流派标签：${cur.genre || "发烧音乐"}）为发烧基准，深入寻找在编曲器乐、录音动态、艺术造诣与声学美感上高度契合的同频唱片`;
+      $("globalSearchInput").value = q;
+      executeGlobalSearch();
+    });
+  }
+
+  document.querySelectorAll("[data-ai-cat]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      renderAiCategoryChips(btn.dataset.aiCat);
+    });
+  });
+
+  // Initial chips & mood radio rendering
+  renderAiMoodRadioChips("aiMoodRadioChipsLib");
+  renderAiMoodRadioChips("aiMoodRadioChipsSearch");
+
+  // --- Feature 3: 本地曲库流派智能归类 & 猜你喜欢 ---
+  function getCachedAiGenres() {
+    try {
+      const raw = localStorage.getItem(AI_GENRES_KEY);
+      if (raw) return JSON.parse(raw);
+    } catch {}
+    return {};
+  }
+
+  function saveCachedAiGenres(genres) {
+    localStorage.setItem(AI_GENRES_KEY, JSON.stringify(genres));
+  }
+
+  function enrichGenreGroups(groups) {
+    // 若曲库已有除未知流派外的真实流派分类，优先使用设备曲库的原生流派
+    const validDeviceGroups = groups.filter(g => g.title && g.title !== "未知流派" && g.title !== "未知");
+    if (validDeviceGroups.length > 0) return groups;
+
+    const cached = getCachedAiGenres();
+    const cachedKeys = Object.keys(cached);
+    if (!cachedKeys.length) return groups;
+
+    const genreMap = new Map();
+    groups.forEach(g => {
+      if (g.title && g.title !== "未知流派" && g.title !== "未知") {
+        genreMap.set(g.title, { id: g.id || g.key, key: g.key || g.id, title: g.title, count: g.count, coverUrl: g.coverUrl });
+      }
+    });
+
+    cachedKeys.forEach(albumTitle => {
+      const info = cached[albumTitle];
+      const primary = info.primary || "其他";
+      const sub = info.sub || "";
+      const displayTitle = sub ? `${primary} · ${sub}` : primary;
+      if (!genreMap.has(displayTitle)) {
+        genreMap.set(displayTitle, {
+          key: `ai_genre_${primary}`,
+          title: displayTitle,
+          count: 1,
+          isAi: true
+        });
+      } else {
+        const item = genreMap.get(displayTitle);
+        item.count += 1;
+      }
+    });
+
+    return Array.from(genreMap.values());
+  }
+
+  async function openAiGenreModal() {
+    $("aiGenreModal")?.classList.add("active");
+    if ($("aiGenreProgressBox")) $("aiGenreProgressBox").hidden = true;
+    if ($("aiGenreLogList")) $("aiGenreLogList").innerHTML = `<div style="color:var(--dim); text-align:center; padding:20px;">正在扫描本地曲库…</div>`;
+
+    try {
+      const res = await call("library", { action: "local", category: 1, offset: 0 });
+      const albums = res.groups || [];
+      const cached = getCachedAiGenres();
+      const cachedKeys = Object.keys(cached);
+
+      if ($("aiGenreStats")) $("aiGenreStats").textContent = `${albums.length} 张专辑`;
+      if ($("aiGenreCachedCount")) $("aiGenreCachedCount").textContent = `${cachedKeys.length} 个已归类`;
+
+      const unmapped = albums.filter(a => !cached[a.title]);
+      if ($("aiGenreLogList")) {
+        $("aiGenreLogList").innerHTML = `
+          <div style="font-size:12.5px; color:var(--muted); line-height:1.6;">
+            本地共发现 <strong>${albums.length}</strong> 张专辑。<br>
+            已建档精准流派：<strong style="color:var(--accent);">${cachedKeys.length}</strong> 张。<br>
+            待整理流派：<strong style="color:var(--gold);">${unmapped.length}</strong> 张。<br><br>
+            点击下方「开始智能归类」，AI 将结合音乐史与发烧音响体系自动规范分类。
+          </div>`;
+      }
+    } catch (err) {
+      if ($("aiGenreLogList")) $("aiGenreLogList").innerHTML = `<div style="color:var(--danger); padding:20px;">读取曲库失败: ${escapeHtml(err.message)}</div>`;
+    }
+  }
+
+  let isClassifying = false;
+  async function runAiGenreBatch() {
+    if (isClassifying) return;
+    isClassifying = true;
+
+    if ($("btnStartAiGenre")) $("btnStartAiGenre").disabled = true;
+    if ($("aiGenreProgressBox")) $("aiGenreProgressBox").hidden = false;
+    const logList = $("aiGenreLogList");
+    logList.innerHTML = "";
+
+    try {
+      const res = await call("library", { action: "local", category: 1, offset: 0 });
+      const albums = res.groups || [];
+      const cached = getCachedAiGenres();
+      const unmapped = albums.filter(a => !cached[a.title]);
+
+      if (!unmapped.length) {
+        logList.innerHTML = `<div style="color:var(--accent); text-align:center; padding:20px;">所有本地专辑均已完成发烧流派归类！</div>`;
+        return;
+      }
+
+      const BATCH_SIZE = 12;
+      const total = unmapped.length;
+      let processed = 0;
+
+      for (let i = 0; i < unmapped.length; i += BATCH_SIZE) {
+        const batch = unmapped.slice(i, i + BATCH_SIZE);
+        const albumListStr = batch.map((a, idx) => `${idx + 1}. 《${a.title}》 艺人: ${a.detail || "未知"}`).join("\n");
+
+        const prompt = `请对以下音乐专辑进行严谨、专业的音乐发烧流派精准归类：
+${albumListStr}
+
+分类标准请参考发烧与专业乐坛体系，一级大类尽量统一规范为（如：古典音乐、爵士乐、流行、摇滚、民谣、原声带、电子、民乐、R&B/灵魂等），二级子流派需具体（如：室内乐、后摇、慢调爵士、巴洛克、模拟人声）。
+请以纯 JSON 格式输出，格式严格如下：
+{
+  "results": [
+    {
+      "album": "专辑原名",
+      "primary": "一级大流派（简练）",
+      "sub": "细分子流派或主导器乐"
+    }
+  ]
+}`;
+
+        try {
+          const aiReply = await callAiChat({
+            messages: [{ role: "user", content: prompt }],
+            temperature: 0.2,
+            scene: "genre"
+          });
+
+          const parsed = extractJson(aiReply);
+          if (parsed && Array.isArray(parsed.results)) {
+            parsed.results.forEach(item => {
+              if (item.album && item.primary) {
+                cached[item.album] = {
+                  primary: item.primary,
+                  sub: item.sub || ""
+                };
+                const itemDiv = document.createElement("div");
+                itemDiv.style.fontSize = "12px";
+                itemDiv.style.padding = "3px 0";
+                itemDiv.innerHTML = `✓ <strong>${escapeHtml(item.album)}</strong> → <span style="color:var(--accent); font-weight:600;">${escapeHtml(item.primary)}</span>${item.sub ? ` <span style="color:var(--muted); font-size:11px;">(${escapeHtml(item.sub)})</span>` : ""}`;
+                logList.prepend(itemDiv);
+              }
+            });
+            saveCachedAiGenres(cached);
+          }
+        } catch (err) {
+          const errDiv = document.createElement("div");
+          errDiv.style.color = "var(--danger)";
+          errDiv.style.fontSize = "12px";
+          errDiv.textContent = `批次处理异常: ${err.message}`;
+          logList.prepend(errDiv);
+        }
+
+        processed += batch.length;
+        const pct = Math.min(100, Math.round((processed / total) * 100));
+        if ($("aiGenreProgressBar")) $("aiGenreProgressBar").style.width = `${pct}%`;
+        if ($("aiGenreProgressText")) $("aiGenreProgressText").textContent = `进度: ${processed}/${total} (${pct}%)`;
+      }
+
+      toast("本地曲库流派智能归类已完成！");
+      if (activeView === "library") loadLibrary();
+
+    } catch (err) {
+      toast(`归类失败: ${err.message}`, "i-trash");
+    } finally {
+      isClassifying = false;
+      if ($("btnStartAiGenre")) $("btnStartAiGenre").disabled = false;
+    }
+  }
+
+  $("btnOpenAiGenreModal")?.addEventListener("click", openAiGenreModal);
+  $("btnCloseAiGenreModal")?.addEventListener("click", () => {
+    $("aiGenreModal")?.classList.remove("active");
+  });
+  $("btnStartAiGenre")?.addEventListener("click", runAiGenreBatch);
+
+  $("btnSyncAiGenreToLibrary")?.addEventListener("click", async () => {
+    const cached = getCachedAiGenres();
+    const genreUpdates = {};
+    Object.entries(cached).forEach(([album, info]) => {
+      const display = info.sub ? `${info.primary} · ${info.sub}` : (info.primary || "");
+      if (display) genreUpdates[album] = display;
+    });
+    const totalAlbums = Object.keys(genreUpdates).length;
+    if (!totalAlbums) {
+      toast("暂无已归类的流派缓存");
+      return;
+    }
+    toast(`正在将 ${totalAlbums} 张专辑流派同步至曲库…`);
+    try {
+      const res = await call("library", { action: "genre-update", genres: genreUpdates });
+      toast(`成功同步 ${res.updated || 0} 首歌曲流派到曲库`);
+      if (activeView === "library") loadLibrary();
+    } catch (err) {
+      toast(`同步失败: ${err.message}`, "i-trash");
+    }
+  });
+
+  // --- Feature 3 Part B: 猜你喜欢 (基于曲库的个性化推荐) ---
+  async function executeAiCuratedLibrary(rev) {
+    const container = $("libraryCardsView");
+    if (!container) return;
+    container.replaceChildren();
+    container.innerHTML = `
+      <div style="grid-column:1/-1; text-align:center; padding:60px 20px;">
+        <div class="ai-thinking-indicator">
+          <svg class="icon" style="width:26px; height:26px;"><use href="#i-sparkles"/></svg>
+          <span>AI 音乐总监正在研判你的本地听音品味画像…</span>
+        </div>
+      </div>`;
+
+    try {
+      const res = await call("library", { action: "local", category: 1, offset: 0 });
+      const albums = (res.groups || []).slice(0, 25);
+
+      if (!albums.length) {
+        container.innerHTML = `
+          <div style="grid-column:1/-1; text-align:center; padding:60px; color:var(--muted);">
+            本地曲库暂无足够的唱片来构建品味画像，请先下载或导入音乐。
+          </div>`;
+        return;
+      }
+
+      const sampleStr = albums.map(a => `《${a.title}》（艺人：${a.detail || "未知"}）`).join("、");
+      const prompt = `用户本地高保真音乐库中收藏有以下代表性唱片：
+${sampleStr}
+
+请作为顶级音乐策展人，完成两项任务：
+1. 撰写一份敏锐、精准的【听音品味画像】（约 100-150 字），概括用户的听觉审美风格与音响器材取向。
+2. 精选推荐 8-12 张在 TIDAL 上具有 Hi-Res 无损母带的高契合度宝藏唱片（未在上述列表中）。
+
+请以纯 JSON 格式输出，严格符合以下结构：
+{
+  "profile": "听音品味深度画像与审美分析...",
+  "recommendations": [
+    {
+      "album": "专辑原名",
+      "album_alt": "专辑英文名或原语种名（如无留空）",
+      "artist": "艺人原名",
+      "artist_alt": "艺人别名（如无留空）",
+      "key_track": "最具代表性的高光单曲名（必填）",
+      "genre": "细分发烧流派标签",
+      "release_year": "发行年份",
+      "acoustic_highlight": "发烧亮点标签（如：大提琴松香感、极低频下潜、模拟醇厚人声）",
+      "recommendation_reason": "为何契合你的品味与该唱片的高保真鉴赏要点（约 60-120 字）"
+    }
+  ]
+}`;
+
+      const aiReply = await callAiChat({ messages: [{ role: "user", content: prompt }], temperature: 0.7, scene: "search" });
+      if (rev !== libraryRevision) return;
+
+      const parsed = extractJson(aiReply);
+      const recs = parsed?.recommendations || [];
+      if (!recs.length) {
+        throw new Error("未能生成推荐唱片列表");
+      }
+
+      container.replaceChildren();
+
+      // 1. 深度画像横幅
+      const banner = document.createElement("div");
+      banner.className = "ai-curator-banner";
+      banner.style.gridColumn = "1 / -1";
+      banner.innerHTML = `
+        <svg class="icon" style="color:var(--gold); flex-shrink:0;"><use href="#i-sparkles"/></svg>
+        <div>
+          <div style="font-weight:750; color:var(--gold); font-size:15px; margin-bottom:4px;">🎧 你的听音品味深度画像</div>
+          <div style="font-size:13.5px; color:var(--ink); line-height:1.65;">${escapeHtml(parsed.profile || "")}</div>
+        </div>`;
+      container.appendChild(banner);
+
+      // 2. 跨源精准匹配并生成标准发烧卡片
+      const matchedCards = await Promise.all(recs.map(resolveRecommendationItem));
+      if (rev !== libraryRevision) return;
+
+      lastAiRecommendations = matchedCards;
+      const downloadableCards = matchedCards.filter(c => c.canDownload && c.rawAlbum);
+      selectedAiCardIds = new Set(downloadableCards.map(c => c.id));
+      updateAiSelectedCount();
+
+      // 渲染卡片，保留顶部画像横幅 (clear = false)
+      renderAiRecommendationCards(matchedCards, container, false);
+
+    } catch (err) {
+      if (rev !== libraryRevision) return;
+      container.innerHTML = `
+        <div style="grid-column:1/-1; text-align:center; padding:40px; color:var(--danger);">
+          生成个性化推荐失败: ${escapeHtml(err.message)}
+        </div>`;
+    }
+  }
+
+  // --- 同频候选：按艺人/流派/年代给本地曲库打分，再让 AI 从候选中挑选 ---
+  // 无尽续播本身已移到手机端（AutoDj.java），这里的工具留给网页上的推荐功能复用。
+  const AUTO_DJ_BATCH = 6;
+  const AUTO_DJ_POOL = 60;
+  const AUTO_DJ_MAX_EXTERNAL = 2;
+  const autoDjAdded = new Set();
+
+  function autoDjNorm(value) {
+    return String(value || "").trim().toLowerCase();
+  }
+
+  function autoDjGenre(track, aiGenres) {
+    return track.genre || aiGenres[track.album]?.primary || "";
+  }
+
+  function buildAutoDjPool(seeds, queue, library) {
+    const aiGenres = getCachedAiGenres();
+    const exclude = new Set(queue.map(t => String(t.id)));
+    autoDjAdded.forEach(id => exclude.add(id));
+    const seedArtists = new Set(seeds.flatMap(t => [autoDjNorm(t.artist), autoDjNorm(t.albumArtist)]).filter(Boolean));
+    const seedAlbums = new Set(seeds.map(t => autoDjNorm(t.album)).filter(Boolean));
+    const seedGenres = new Set(seeds.map(t => autoDjNorm(autoDjGenre(t, aiGenres))).filter(Boolean));
+    const seedYears = seeds.map(t => parseInt(t.year, 10)).filter(y => y > 1000);
+
+    const scored = [];
+    for (const t of library) {
+      if (!t || !t.title || exclude.has(String(t.id))) continue;
+      let score = Math.random() * 1.5;
+      if (seedArtists.has(autoDjNorm(t.artist)) || seedArtists.has(autoDjNorm(t.albumArtist))) score += 4;
+      if (seedAlbums.has(autoDjNorm(t.album))) score += 2;
+      const genre = autoDjNorm(autoDjGenre(t, aiGenres));
+      if (genre && seedGenres.has(genre)) score += 3;
+      const year = parseInt(t.year, 10);
+      if (year > 1000 && seedYears.some(y => Math.abs(y - year) <= 5)) score += 1;
+      if (t.lossless) score += 0.5;
+      scored.push({ score, track: t, genre: autoDjGenre(t, aiGenres) });
+    }
+    scored.sort((a, b) => b.score - a.score);
+
+    // 高分段每张专辑最多 3 首，再随机补一些远一点的曲目，给 AI 留出"拓展"空间。
+    const pool = [];
+    const taken = new Set();
+    const perAlbum = new Map();
+    for (const item of scored) {
+      if (pool.length >= AUTO_DJ_POOL - 15) break;
+      const albumKey = autoDjNorm(item.track.album) + "|" + autoDjNorm(item.track.albumArtist || item.track.artist);
+      const count = perAlbum.get(albumKey) || 0;
+      if (count >= 3) continue;
+      perAlbum.set(albumKey, count + 1);
+      pool.push(item);
+      taken.add(item);
+    }
+    const rest = scored.filter(item => !taken.has(item));
+    while (pool.length < AUTO_DJ_POOL && rest.length) {
+      pool.push(rest.splice(Math.floor(Math.random() * rest.length), 1)[0]);
+    }
+    return pool;
+  }
+
+  function autoDjHeuristicPicks(pool, count) {
+    const perArtist = new Map();
+    const picks = [];
+    for (const item of [...pool].sort((a, b) => b.score - a.score)) {
+      if (picks.length >= count) break;
+      const artist = autoDjNorm(item.track.artist);
+      if ((perArtist.get(artist) || 0) >= 2) continue;
+      perArtist.set(artist, (perArtist.get(artist) || 0) + 1);
+      picks.push(item.track);
+    }
+    return picks;
+  }
+
+  function autoDjLine(track, genre) {
+    const cut = v => String(v || "").replace(/[|\n]/g, " ").slice(0, 40);
+    return [cut(track.title), cut(track.artist), cut(track.album), cut(genre), cut(track.year)].join("|");
+  }
+
+  async function autoDjAiPicks(seeds, pool, count, { scene = "autodj", allowExternal = true } = {}) {
+    const aiGenres = getCachedAiGenres();
+    const seedText = seeds.map((t, i) => `${i + 1}. 《${t.title}》— ${t.artist || "未知"}（${[t.album, autoDjGenre(t, aiGenres), t.year].filter(Boolean).join("，")}）`).join("\n");
+    const candidates = pool.map((item, i) => `c${i + 1}|${autoDjLine(item.track, item.genre)}`).join("\n");
+    const externalMax = allowExternal ? Math.min(AUTO_DJ_MAX_EXTERNAL + Math.max(0, count - pool.length), count) : 0;
+
+    const prompt = `你是一位懂发烧录音的私人电台 DJ。听众正在连续聆听（最后一首是正在播放的）：
+${seedText}
+
+以下是听众本地曲库中的候选曲目（编号|曲名|艺人|专辑|流派|年份）：
+${candidates || "（无）"}
+
+请挑选 ${count} 首最适合接在后面播放的曲目：
+- 与正在播放的曲风、情绪、能量自然衔接，按播放顺序排列，整体起伏平滑
+- 同一艺人最多 2 首，不要连续两首出自同一张专辑
+- picks 只能填写上面候选中的编号，不得编造
+${externalMax ? `- 如果候选中合适的不足，可在 external 中补充最多 ${externalMax} 首曲库之外真实存在的曲目\n` : ""}
+仅输出 JSON：{"theme":"不超过12字的续播主题","picks":["c3","c17"],"external":[{"artist":"艺人","album":"专辑","key_track":"曲名"}]}`;
+
+    const reply = await callAiChat({
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.6,
+      scene,
+      interactive: false,
+      timeout: 30000,
+      maxTokens: 800
+    });
+    const parsed = extractJson(reply);
+    if (!parsed || !Array.isArray(parsed.picks)) throw new Error("续播结果格式无效");
+
+    // 模型不一定守规矩：在代码里强制同艺人最多 2 首、相邻两首不同专辑。
+    const seen = new Set();
+    const perArtist = new Map();
+    const local = [];
+    let prevAlbum = autoDjNorm(seeds[seeds.length - 1]?.album);
+    for (const code of parsed.picks) {
+      const index = parseInt(String(code).replace(/^c/i, ""), 10) - 1;
+      const item = pool[index];
+      if (!item || seen.has(index) || local.length >= count) continue;
+      const artist = autoDjNorm(item.track.artist);
+      const album = autoDjNorm(item.track.album);
+      if ((perArtist.get(artist) || 0) >= 2 || (album && album === prevAlbum)) continue;
+      seen.add(index);
+      perArtist.set(artist, (perArtist.get(artist) || 0) + 1);
+      prevAlbum = album;
+      local.push(item.track);
+    }
+    const external = (Array.isArray(parsed.external) ? parsed.external : [])
+      .filter(e => e && e.artist && (e.key_track || e.album))
+      .slice(0, Math.min(externalMax, count - local.length));
+    return { theme: String(parsed.theme || "").slice(0, 16), local, external };
+  }
+
+  // --- 曲库自然语言搜索 ---
+  // 输入像"适合深夜独处的慢歌""有大提琴的古典"这类描述时：普通筛选没有结果就自动交给 AI，
+  // 有结果则在顶部给出"用 AI 理解"入口。AI 只在本地曲库的专辑索引里挑选，结果都是机内文件。
+  const NL_HINT = /适合|类似|风格|氛围|感觉|心情|一点|有.{1,6}的|带.{1,6}的|安静|深夜|夜晚|清晨|早上|下雨|雨天|开车|学习|工作时|睡前|放松|伤感|治愈|欢快|激昂|慢歌|快歌|纯音乐|器乐|女声|男声|年代|老歌|想听|来点|听听/;
+  const LIB_AI_MAX_ALBUMS = 300;
+  const LIB_AI_MAX_CHARS = 36000;
+  const LIB_AI_MAX_TRACKS = 80;
+
+  function looksNaturalLanguage(query) {
+    const q = (query || "").trim();
+    if (q.length < 4) return false;
+    if (NL_HINT.test(q)) return true;
+    return /^[a-z\s',-]+$/i.test(q) && q.split(/\s+/).length >= 4;
+  }
+
+  function buildLibraryAlbumIndex(tracks) {
+    const aiGenres = getCachedAiGenres();
+    const albums = new Map();
+    for (const t of tracks) {
+      const key = autoDjNorm(t.album) + "|" + autoDjNorm(t.albumArtist || t.artist);
+      let entry = albums.get(key);
+      if (!entry) {
+        entry = { album: t.album || "未知专辑", artist: t.albumArtist || t.artist || "", genre: "", year: t.year || "", tracks: [] };
+        albums.set(key, entry);
+      }
+      entry.tracks.push(t);
+      if (!entry.genre) entry.genre = t.genre || aiGenres[t.album]?.primary || "";
+    }
+    const list = [...albums.values()];
+    list.forEach(a => a.tracks.sort((x, y) => (x.discNumber || 1) - (y.discNumber || 1) || (x.trackNumber || 0) - (y.trackNumber || 0)));
+    return list.slice(0, LIB_AI_MAX_ALBUMS);
+  }
+
+  function libraryAlbumLines(albums) {
+    const cut = (v, n) => String(v || "").replace(/[|\n]/g, " ").slice(0, n);
+    const lines = [];
+    let chars = 0;
+    for (let i = 0; i < albums.length; i++) {
+      const a = albums[i];
+      const sample = a.tracks.slice(0, 3).map(t => cut(t.title, 24)).join(" / ");
+      const line = `a${i + 1}|${cut(a.album, 40)}|${cut(a.artist, 30)}|${cut(a.genre, 16)}|${cut(a.year, 4)}|${a.tracks.length}首|${sample}`;
+      if (chars + line.length > LIB_AI_MAX_CHARS) break;
+      chars += line.length + 1;
+      lines.push(line);
+    }
+    return lines;
+  }
+
+  async function aiSearchLocalLibrary(query, interactive) {
+    const library = await getLocalTracksCache();
+    if (!library.length) return { intent: "", tracks: [] };
+    const albums = buildLibraryAlbumIndex(library);
+    const lines = libraryAlbumLines(albums);
+
+    const data = await aiCached({
+      cacheKey: aiCacheKey("libsearch", query, library.length),
+      ttlDays: 30,
+      scene: "search",
+      interactive,
+      temperature: 0.3,
+      timeout: 30000,
+      maxTokens: 900,
+      messages: [{
+        role: "user",
+        content: `听众想在自己的本地曲库里找：「${query}」
+
+曲库专辑清单（编号|专辑|艺人|流派|年份|曲目数|部分曲目）：
+${lines.join("\n")}
+
+请理解听众的意图（场景、情绪、乐器、人声、年代、流派等），结合你对这些专辑的了解，挑出最符合的专辑，最多 8 张，按匹配度排序。
+如果意图指向专辑中的具体曲目（如某件乐器的独奏、某首歌），在 titles 中写出该专辑里最符合的真实曲名；否则 titles 留空。
+只能使用清单中的编号。仅输出 JSON：{"intent":"不超过20字的意图理解","albums":[{"id":"a3","titles":["曲名"]}]}`
+      }],
+      parse: text => {
+        const parsed = extractJson(text);
+        if (!parsed || !Array.isArray(parsed.albums)) return null;
+        const ids = [];
+        for (const pick of parsed.albums.slice(0, 8)) {
+          const album = albums[parseInt(String(pick?.id || "").replace(/^a/i, ""), 10) - 1];
+          if (!album) continue;
+          const titles = Array.isArray(pick.titles) ? pick.titles.filter(t => typeof t === "string" && t.trim()) : [];
+          const chosen = titles.length
+            ? album.tracks.filter(t => titles.some(title => computeStringSimilarity(title, t.title) >= 0.6))
+            : [];
+          (chosen.length ? chosen : album.tracks).forEach(t => ids.push(String(t.id)));
+        }
+        return { intent: String(parsed.intent || "").slice(0, 30), ids: [...new Set(ids)].slice(0, LIB_AI_MAX_TRACKS) };
+      }
+    });
+
+    const byId = new Map(library.map(t => [String(t.id), t]));
+    return { intent: data.intent, tracks: data.ids.map(id => byId.get(id)).filter(Boolean) };
+  }
+
+  function libraryAiBanner() {
+    let banner = $("libraryAiBanner");
+    if (!banner) {
+      banner = document.createElement("div");
+      banner.id = "libraryAiBanner";
+      banner.hidden = true;
+      banner.style.cssText = "display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:0 0 12px; padding:10px 14px; border-radius:var(--radius-md); border:1px solid rgba(245,197,66,0.22); background:linear-gradient(135deg, rgba(45,226,171,0.06), rgba(245,197,66,0.06)); font-size:13px;";
+      $("libraryTrackList").before(banner);
+    }
+    return banner;
+  }
+
+  function hideLibraryAiBanner() {
+    const banner = $("libraryAiBanner");
+    if (banner) banner.hidden = true;
+  }
+
+  function setLibraryAiBanner(text, actions = []) {
+    const banner = libraryAiBanner();
+    banner.replaceChildren();
+    const icon = document.createElement("span");
+    icon.textContent = "✨";
+    const label = document.createElement("span");
+    label.style.cssText = "flex:1; min-width:0; color:var(--ink);";
+    label.textContent = text;
+    banner.append(icon, label);
+    actions.forEach(([caption, handler, primary]) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = primary ? "primary" : "ghost";
+      btn.style.cssText = "padding:4px 12px; font-size:12.5px;";
+      btn.textContent = caption;
+      btn.addEventListener("click", handler);
+      banner.appendChild(btn);
+    });
+    banner.hidden = false;
+  }
+
+  async function runLibraryAiSearch(query, rev, interactive) {
+    setLibraryAiBanner(`正在用 AI 理解「${query}」，在本地曲库里挑选…`);
+    try {
+      const result = await aiSearchLocalLibrary(query, interactive);
+      if (rev !== libraryRevision) return;
+      if (!result.tracks.length) {
+        setLibraryAiBanner(`AI 没有在本地曲库里找到符合「${query}」的曲目`);
+        return;
+      }
+      setLibraryAiBanner(`AI 理解为：${result.intent || query} · ${result.tracks.length} 首`, [
+        ["播放全部", () => playTracks(result.tracks), true],
+        ["随机播放", () => playTracks(result.tracks, true), false]
+      ]);
+      $("libraryCountText").textContent = `AI 语义匹配 ${result.tracks.length} 首`;
+      renderTrackRows(result.tracks, $("libraryTrackList"));
+      libraryNext = -1;
+      $("btnLibMore").hidden = true;
+    } catch (err) {
+      if (rev !== libraryRevision) return;
+      if (err instanceof AiUnavailableError && !interactive) hideLibraryAiBanner();
+      else setLibraryAiBanner(`AI 搜索失败：${err.message}`);
+    }
+  }
+
+  /** 本地"歌曲"列表加载完后调用：决定是否自动或可选地进行 AI 语义搜索。 */
+  async function updateLibraryAiSearch(query, total, rev) {
+    if (!looksNaturalLanguage(query)) {
+      hideLibraryAiBanner();
+      return;
+    }
+    await refreshAiStatus();
+    if (rev !== libraryRevision) return;
+    if (!aiReady()) {
+      hideLibraryAiBanner();
+      return;
+    }
+    if (total > 0) {
+      setLibraryAiBanner(`「${query}」像是一句描述，要让 AI 按意思在曲库里找吗？`, [
+        ["用 AI 理解", () => runLibraryAiSearch(query, libraryRevision, true), true]
+      ]);
+      return;
+    }
+    // 没有字面匹配：稍等片刻确认用户停止输入后再自动调用，避免逐字触发。
+    setTimeout(() => {
+      if (rev === libraryRevision && $("librarySearchInput").value.trim() === query) {
+        runLibraryAiSearch(query, rev, false);
+      }
+    }, 700);
   }
 
   // --- Init ---
@@ -4131,3 +6872,4 @@
   });
 
 })();
+

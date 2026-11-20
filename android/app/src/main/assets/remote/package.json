@@ -1,0 +1,13 @@
+{
+  "name": "tidal-web-remote",
+  "version": "1.0.0",
+  "description": "Modular web remote control for Shanling M7 and TIDAL audiophile player",
+  "scripts": {
+    "build": "node build.js",
+    "watch": "node build.js --watch",
+    "test": "node -c app.js"
+  },
+  "keywords": ["tidal", "audiophile", "music-player"],
+  "author": "",
+  "license": "ISC"
+}

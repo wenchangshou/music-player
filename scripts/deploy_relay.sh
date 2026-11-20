@@ -15,6 +15,9 @@ ASSETS=$DEST/assets
 echo "== 本地测试 =="
 (cd "$ROOT/backend" && python3 -m unittest -q test_server test_netease_gateway)
 
+echo "== 打包 Web Remote 模块 =="
+(cd "$ROOT/android/app/src/main/assets/remote" && node build.js)
+
 echo "== 检查服务器目录 =="
 ssh "$HOST" "test -f $DEST/server.py && test -f $DEST/accounts.py && test -f $DEST/netease_gateway.py && test -f $ASSETS/app.js && test -f $ASSETS/index.html" || {
   echo "!! 服务器上缺少 server.py、accounts.py、netease_gateway.py、assets/app.js 或 assets/index.html，请先按 backend/README.md 完成首次部署"

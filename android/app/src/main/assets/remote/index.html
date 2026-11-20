@@ -2455,6 +2455,434 @@ body:not([data-view]) #miniPlayer {
   .album-hero-actions button { flex: 1; min-width: 110px; padding: 7px 10px; font-size: 13px; }
   .cards-grid { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 12px; }
 }
+
+/* AI Auxiliary Styles */
+.ai-glow-btn {
+  background: linear-gradient(135deg, rgba(45, 226, 171, 0.15), rgba(245, 197, 66, 0.15)) !important;
+  border: 1px solid rgba(45, 226, 171, 0.35) !important;
+  color: var(--accent) !important;
+  font-weight: 600 !important;
+  transition: all 0.2s ease;
+}
+.ai-glow-btn:hover {
+  background: linear-gradient(135deg, rgba(45, 226, 171, 0.25), rgba(245, 197, 66, 0.25)) !important;
+  box-shadow: 0 0 12px rgba(45, 226, 171, 0.25);
+  border-color: var(--accent) !important;
+}
+.ai-pill {
+  border-color: rgba(45, 226, 171, 0.4) !important;
+  color: var(--accent) !important;
+}
+
+/* Album Notes View (唱片手札) */
+.notes-container {
+  padding: 14px;
+  overflow-y: auto;
+  max-height: 100%;
+}
+.notes-empty-card {
+  text-align: center;
+  padding: 32px 18px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md);
+  margin-top: 6px;
+}
+.notes-content-box {
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 18px;
+  line-height: 1.7;
+  font-size: 13.5px;
+  color: var(--ink);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+}
+.notes-section {
+  margin-bottom: 18px;
+}
+.notes-section:last-child {
+  margin-bottom: 0;
+}
+.notes-section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--gold);
+  margin-bottom: 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid rgba(245, 197, 66, 0.2);
+}
+.notes-meta-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0 14px;
+}
+.notes-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--muted);
+}
+.notes-badge.accent {
+  background: rgba(45, 226, 171, 0.15);
+  color: var(--accent);
+}
+.notes-badge.gold {
+  background: var(--gold-bg);
+  color: var(--gold);
+}
+
+/* AI Inspiration Chips in Search */
+.ai-inspiration-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 0 4px;
+}
+.ai-chip {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  padding: 5px 12px;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.ai-chip:hover {
+  background: var(--surface-hover);
+  color: var(--ink);
+  border-color: var(--accent);
+}
+
+/* AI Recommendation Banner */
+.ai-curator-banner {
+  background: linear-gradient(135deg, rgba(45, 226, 171, 0.08), rgba(245, 197, 66, 0.08));
+  border: 1px solid rgba(45, 226, 171, 0.25);
+  border-radius: var(--radius-md);
+  padding: 16px 18px;
+  margin-bottom: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ai-curator-banner .icon {
+  width: 22px;
+  height: 22px;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+.ai-now-playing-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: linear-gradient(135deg, rgba(45, 226, 171, 0.12), rgba(245, 197, 66, 0.12));
+  border: 1px solid rgba(45, 226, 171, 0.35);
+  border-radius: var(--radius-full);
+  padding: 6px 14px;
+  font-size: 12.5px;
+  color: var(--ink);
+  cursor: pointer;
+  margin-bottom: 12px;
+  transition: all 0.2s ease;
+  user-select: none;
+}
+.ai-now-playing-pill:hover {
+  background: linear-gradient(135deg, rgba(45, 226, 171, 0.22), rgba(245, 197, 66, 0.22));
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+
+/* AI Album Curator Card */
+.album-ai-curator-card {
+  background: linear-gradient(135deg, rgba(245, 197, 66, 0.06), rgba(45, 226, 171, 0.06));
+  border: 1px solid rgba(245, 197, 66, 0.28);
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  margin-bottom: 16px;
+  backdrop-filter: blur(8px);
+  transition: all 0.2s ease;
+}
+.album-ai-curator-card:hover {
+  border-color: rgba(245, 197, 66, 0.45);
+}
+.ai-curator-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.ai-curator-badge-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.ai-curator-review-text {
+  font-size: 13px;
+  color: var(--ink);
+  line-height: 1.7;
+  margin-bottom: 10px;
+}
+.ai-curator-gear-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  background: rgba(0, 0, 0, 0.25);
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  margin-bottom: 10px;
+  border-left: 3px solid var(--gold);
+}
+.ai-curator-key-tracks {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.ai-curator-key-track-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(45, 226, 171, 0.12);
+  border: 1px solid rgba(45, 226, 171, 0.3);
+  border-radius: var(--radius-full);
+  padding: 3px 10px;
+  font-size: 11.5px;
+  color: var(--ink);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.ai-curator-key-track-pill:hover {
+  background: rgba(45, 226, 171, 0.25);
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+
+/* Auto-DJ Infinite Queue Toggle */
+.auto-dj-toggle-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border-radius: var(--radius-full);
+  font-size: 11.5px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--muted);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  user-select: none;
+}
+.auto-dj-toggle-pill.active {
+  background: rgba(45, 226, 171, 0.15);
+  border-color: rgba(45, 226, 171, 0.45);
+  color: var(--accent);
+}
+.auto-dj-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition: all 0.2s ease;
+}
+.auto-dj-toggle-pill.active .auto-dj-dot {
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+  animation: pulse 1.8s infinite;
+}
+.ai-category-tabs {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding: 2px 0 6px;
+  margin-bottom: 6px;
+}
+.ai-cat-pill {
+  padding: 4px 11px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border);
+  background: transparent;
+  font-size: 11.5px;
+  color: var(--muted);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+.ai-cat-pill[aria-current="true"] {
+  background: var(--surface-hover);
+  color: var(--gold);
+  border-color: var(--gold);
+  font-weight: 600;
+}
+.ai-tuning-chip {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: var(--radius-full);
+  padding: 4px 10px;
+  font-size: 11.5px;
+  color: var(--muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+.ai-tuning-chip:hover {
+  background: rgba(45, 226, 171, 0.12);
+  color: var(--ink);
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+.spinning {
+  animation: spin 1s linear infinite;
+}
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.ai-card-checkbox-wrap {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  z-index: 6;
+  background: rgba(0, 0, 0, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: var(--radius-sm);
+  padding: 3px 6px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+.ai-card-checkbox-wrap:hover {
+  border-color: var(--gold);
+  background: rgba(0, 0, 0, 0.9);
+}
+.card-item.selected {
+  outline: 2px solid var(--gold) !important;
+  background: rgba(245, 197, 66, 0.08) !important;
+}
+.card-item.selected .ai-card-checkbox-wrap {
+  background: var(--gold);
+  color: #000;
+  border-color: var(--gold);
+}
+.ai-card-checkbox-wrap input[type="checkbox"] {
+  cursor: pointer;
+  accent-color: var(--gold);
+  width: 13px;
+  height: 13px;
+  margin: 0;
+}
+.ai-mood-chip {
+  background: var(--surface);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: var(--radius-full);
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink);
+  cursor: pointer;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+.ai-mood-chip:hover {
+  background: rgba(245, 197, 66, 0.12);
+  border-color: var(--gold);
+  color: var(--gold);
+  transform: translateY(-1px);
+}
+.ai-mood-chip.active {
+  background: var(--gold) !important;
+  color: #000 !important;
+  border-color: var(--gold) !important;
+  font-weight: 700 !important;
+  box-shadow: 0 0 10px rgba(245, 197, 66, 0.35);
+}
+.ai-card-source-tag {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.78);
+  backdrop-filter: blur(4px);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.4);
+  z-index: 2;
+  letter-spacing: 0.2px;
+}
+.ai-key-track-box {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 6px;
+  padding: 6px 8px;
+  margin: 6px 0 4px;
+  font-size: 11.5px;
+  color: var(--ink);
+  border: 1px dashed rgba(255, 255, 255, 0.14);
+}
+.btn-track-quick-play {
+  background: var(--accent);
+  color: #000;
+  border: none;
+  border-radius: 50%;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: transform 0.15s ease;
+}
+.btn-track-quick-play:hover {
+  transform: scale(1.1);
+}
+.btn-track-quick-play svg {
+  width: 11px;
+  height: 11px;
+}
+.ai-reason-tag {
+  display: block;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+  background: rgba(0,0,0,0.3);
+  padding: 6px 9px;
+  border-radius: 6px;
+  margin-top: 6px;
+  border-left: 2px solid var(--accent);
+}
+.ai-thinking-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--accent);
+  font-weight: 600;
+  animation: pulseGlow 1.8s infinite ease-in-out;
+}
+@keyframes pulseGlow {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
 </style>
 </head>
 <body>
@@ -2483,6 +2911,7 @@ body:not([data-view]) #miniPlayer {
   </nav>
 
   <div class="top-actions">
+    <button type="button" id="btnAiSettings" class="icon-btn" title="AI 音乐助手设置"><svg class="icon"><use href="#i-sparkles"/></svg></button>
     <button type="button" id="btnDevices" class="icon-btn" title="设备与连接"><svg class="icon"><use href="#i-devices"/></svg></button>
   </div>
 </header>
@@ -2570,6 +2999,7 @@ body:not([data-view]) #miniPlayer {
 
         <div class="stage-actions">
           <button type="button" id="btnOpenLyrics" class="ghost"><svg class="icon"><use href="#i-lyrics"/></svg> 动态歌词</button>
+          <button type="button" id="btnOpenNotes" class="ghost"><svg class="icon"><use href="#i-sparkles"/></svg> 唱片手札</button>
           <button type="button" id="btnStageQueueMobile" class="ghost stage-mobile-only"><svg class="icon"><use href="#i-queue"/></svg> 播放队列</button>
           <button type="button" id="btnOpenRadio" class="ghost" disabled><svg class="icon"><use href="#i-radio"/></svg> 歌曲电台</button>
           <select id="qualitySelect">
@@ -2584,9 +3014,23 @@ body:not([data-view]) #miniPlayer {
       <!-- Right: Queue & Side Search -->
       <div class="card side-card">
         <div class="side-header-tabs">
-          <button type="button" id="tabSideQueue" aria-current="true"><svg class="icon"><use href="#i-queue"/></svg> 播放队列 (<span id="queueCountNum">0</span>)</button>
-          <button type="button" id="tabSideLyrics"><svg class="icon"><use href="#i-lyrics"/></svg> 动态歌词</button>
-          <button type="button" id="tabSideSearch"><svg class="icon"><use href="#i-search"/></svg> 快速添加</button>
+          <button type="button" id="tabSideQueue" aria-current="true"><svg class="icon"><use href="#i-queue"/></svg> 队列 (<span id="queueCountNum">0</span>)</button>
+          <button type="button" id="tabSideLyrics"><svg class="icon"><use href="#i-lyrics"/></svg> 歌词</button>
+          <button type="button" id="tabSideNotes"><svg class="icon"><use href="#i-sparkles"/></svg> 唱片手札</button>
+          <button type="button" id="tabSideSearch"><svg class="icon"><use href="#i-search"/></svg> 快添</button>
+        </div>
+
+        <div class="side-content" id="sideNotesContent" hidden>
+          <div class="notes-container" id="sideNotesContainer">
+            <div class="notes-empty-card">
+              <svg class="icon" style="width:36px; height:36px; color:var(--muted); margin-bottom:10px;"><use href="#i-sparkles"/></svg>
+              <div style="font-weight:600; margin-bottom:6px;">尚未载入手札</div>
+              <p style="font-size:12.5px; color:var(--muted); margin-bottom:16px;">轻触下方按钮，即可开启当前唱片的 AI 发烧级深度手札。</p>
+              <button type="button" id="btnGenerateNotes" class="primary" style="display:inline-flex; align-items:center; gap:6px;">
+                <svg class="icon"><use href="#i-sparkles"/></svg> 开启 AI 深度解读
+              </button>
+            </div>
+          </div>
         </div>
 
         <div class="side-content" id="sideLyricsContent" hidden>
@@ -2596,9 +3040,15 @@ body:not([data-view]) #miniPlayer {
         </div>
 
         <div class="side-content" id="sideQueueContent">
-          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; gap:8px;">
             <small id="queueSummaryText">队列空闲</small>
-            <button type="button" id="btnClearQueue" class="ghost danger" style="padding:4px 8px; font-size:12px;">清空后续</button>
+            <div style="display:flex; gap:6px; align-items:center;">
+              <button type="button" id="btnToggleAutoDj" class="auto-dj-toggle-pill active" title="当播放列表即将播完时，AI 自动为你续播同频好歌">
+                <span class="auto-dj-dot"></span>
+                <span>智能续播</span>
+              </button>
+              <button type="button" id="btnClearQueue" class="ghost danger" style="padding:4px 8px; font-size:12px;">清空后续</button>
+            </div>
           </div>
           <ul class="track-list" id="queueList"></ul>
         </div>
@@ -2628,6 +3078,18 @@ body:not([data-view]) #miniPlayer {
 
       <!-- Right Main Content -->
       <div class="library-main">
+        <!-- AI 发烧心境电台：深度唤醒本机曲库，免打字沉浸秒播 -->
+        <div id="aiMoodRadioBanner" class="ai-mood-radio-banner" style="margin-bottom:14px; background:linear-gradient(135deg, rgba(45,226,171,0.06), rgba(245,197,66,0.06)); border:1px solid rgba(245,197,66,0.22); border-radius:var(--radius-md); padding:10px 14px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+            <div style="display:flex; align-items:center; gap:8px;">
+              <svg class="icon" style="color:var(--gold); width:16px; height:16px;"><use href="#i-sparkles"/></svg>
+              <span style="font-weight:700; font-size:13px; color:var(--ink);">发烧心境电台 · 沉浸秒播</span>
+              <span class="badge" style="font-size:10px; padding:1px 6px; background:rgba(45,226,171,0.12); color:var(--accent);">深度穿透本机曲库</span>
+            </div>
+            <span style="font-size:11px; color:var(--muted);">免打字 · 随心点播</span>
+          </div>
+          <div id="aiMoodRadioChipsLib" class="ai-mood-chips-scroll" style="display:flex; gap:8px; overflow-x:auto; padding-bottom:4px; -webkit-overflow-scrolling:touch;"></div>
+        </div>
         <div class="library-header">
           <div>
             <h2 id="libraryTitle">本地音乐</h2>
@@ -2650,6 +3112,8 @@ body:not([data-view]) #miniPlayer {
             <button type="button" data-local-cat="albums" aria-current="false">专辑</button>
             <button type="button" data-local-cat="artists" aria-current="false">艺人</button>
             <button type="button" data-local-cat="playlists" aria-current="false">歌单</button>
+            <button type="button" data-local-cat="5" aria-current="false">流派</button>
+            <button type="button" data-local-cat="ai-recommend" class="ai-pill" aria-current="false">✨ 猜你喜欢</button>
             <select id="localCategorySelect" style="padding:4px 8px; font-size:12.5px;">
               <option value="">更多分类…</option>
               <option value="4">专辑艺人</option>
@@ -2668,6 +3132,7 @@ body:not([data-view]) #miniPlayer {
             <button type="button" id="btnNewPlaylist" class="ghost" hidden><svg class="icon"><use href="#i-plus"/></svg> 新建歌单</button>
             <button type="button" id="btnLyricsMissing" class="ghost" aria-pressed="false"><svg class="icon"><use href="#i-lyrics"/></svg> 缺歌词</button>
             <button type="button" id="btnLyricsFill" class="ghost"><svg class="icon"><use href="#i-lyrics"/></svg> 补全歌词</button>
+            <button type="button" id="btnAiGenreTag" class="ghost"><svg class="icon"><use href="#i-sparkles"/></svg> AI 流派归类</button>
             <button type="button" id="btnDeletePlaylist" class="danger ghost" hidden><svg class="icon"><use href="#i-trash"/></svg> 删除歌单</button>
           </div>
           <div id="tidalControls" hidden style="display:flex; gap:8px;">
@@ -2699,6 +3164,27 @@ body:not([data-view]) #miniPlayer {
               </div>
             </div>
           </div>
+
+          <!-- AI Album Curator Card -->
+          <div id="albumAiCuratorCard" class="album-ai-curator-card" hidden>
+            <div class="ai-curator-card-header">
+              <div class="ai-curator-badge-row">
+                <span class="badge gold" style="display:inline-flex; align-items:center; gap:4px;">
+                  <svg class="icon" style="width:12px;height:12px;"><use href="#i-sparkles"/></svg> AI 发烧唱片导赏
+                </span>
+                <span id="albumCuratorAcousticTag" class="badge" style="background:var(--accent-glow); color:var(--accent);">发烧鉴赏</span>
+              </div>
+              <button type="button" id="btnRefreshAlbumCurator" class="ghost" style="padding:2px 8px; font-size:11px;" title="重新分析本张唱片">刷新</button>
+            </div>
+            <div id="albumCuratorBody" class="ai-curator-card-body">
+              <div id="albumCuratorText" class="ai-curator-review-text"></div>
+              <div id="albumCuratorGearBox" class="ai-curator-gear-box" hidden>
+                <span style="color:var(--gold); font-weight:600;">🎧 器材搭配建议：</span>
+                <span id="albumCuratorGearText"></span>
+              </div>
+              <div id="albumCuratorKeyTracks" class="ai-curator-key-tracks"></div>
+            </div>
+          </div>
           <div id="artistAlbumsSection" hidden>
             <h3 class="section-title">专辑</h3>
             <div id="artistAlbumsGrid" class="cards-grid"></div>
@@ -2720,6 +3206,10 @@ body:not([data-view]) #miniPlayer {
   <!-- VIEW 3: GLOBAL SEARCH -->
   <section id="viewSearch" hidden class="search-view">
     <div class="search-hero">
+      <div id="aiSeedNowPlaying" class="ai-now-playing-pill" hidden>
+        <svg class="icon" style="color:var(--accent); width:15px; height:15px;"><use href="#i-sparkles"/></svg>
+        <span id="aiSeedNowPlayingText">🎵 正在播放：... · 点击深度以歌寻歌</span>
+      </div>
       <form id="globalSearchForm">
         <div class="search-input-wrap">
           <svg class="icon" style="color:var(--muted);"><use href="#i-search"/></svg>
@@ -2727,13 +3217,24 @@ body:not([data-view]) #miniPlayer {
           <button type="submit" class="primary" style="padding:6px 14px;">搜索</button>
         </div>
       </form>
-      <div class="search-tabs">
-        <button type="button" data-search-src="all" aria-current="true">全部源</button>
-        <button type="button" data-search-src="local">本地音乐</button>
-        <button type="button" data-search-src="tidal">TIDAL</button>
-        <button type="button" data-search-src="netease">网易云音乐</button>
+      <div id="aiInspirationChips" class="ai-inspiration-chips" hidden>
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <svg class="icon" style="color:var(--gold); width:15px; height:15px;"><use href="#i-sparkles"/></svg>
+            <span style="font-weight:700; font-size:12.5px; color:var(--ink);">发烧心境电台 · 点击秒播本机无损</span>
+          </div>
+          <span style="font-size:11px; color:var(--muted);">免打字 · 即点即播</span>
+        </div>
+        <div id="aiMoodRadioChipsSearch" style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:6px;"></div>
       </div>
       <div class="search-tabs">
+        <button type="button" data-search-src="all" aria-current="true">全部源</button>
+        <button type="button" data-search-src="ai" class="ai-glow-btn"><svg class="icon"><use href="#i-sparkles"/></svg> AI 寻歌</button>
+        <button type="button" data-search-src="local">本地音乐</button>
+        <button type="button" data-search-src="tidal">TIDAL</button>
+        <button type="button" data-search-src="netease">网易云</button>
+      </div>
+      <div class="search-tabs" id="searchKindTabs">
         <button type="button" data-search-kind="TRACK" aria-current="true">歌曲</button>
         <button type="button" data-search-kind="ALBUM">专辑</button>
         <button type="button" data-search-kind="PLAYLIST">歌单</button>
@@ -2746,6 +3247,80 @@ body:not([data-view]) #miniPlayer {
         <h2 id="searchDetailTitle" style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"></h2>
       </div>
       <button type="button" id="btnSearchDownloadAlbum" class="primary" hidden><svg class="icon"><use href="#i-download"/></svg> 下载整张专辑到手机</button>
+    </div>
+
+    <!-- Search Album AI Curator Card -->
+    <div id="searchAlbumAiCuratorCard" class="album-ai-curator-card" hidden>
+      <div class="ai-curator-card-header">
+        <div class="ai-curator-badge-row">
+          <span class="badge gold" style="display:inline-flex; align-items:center; gap:4px;">
+            <svg class="icon" style="width:12px;height:12px;"><use href="#i-sparkles"/></svg> AI 发烧唱片导赏
+          </span>
+          <span id="searchAlbumCuratorAcousticTag" class="badge" style="background:var(--accent-glow); color:var(--accent);">发烧鉴赏</span>
+        </div>
+        <button type="button" id="btnRefreshSearchAlbumCurator" class="ghost" style="padding:2px 8px; font-size:11px;" title="重新分析本张唱片">刷新</button>
+      </div>
+      <div class="ai-curator-card-body">
+        <div id="searchAlbumCuratorText" class="ai-curator-review-text"></div>
+        <div id="searchAlbumCuratorGearBox" class="ai-curator-gear-box" hidden>
+          <span style="color:var(--gold); font-weight:600;">🎧 器材搭配建议：</span>
+          <span id="searchAlbumCuratorGearText"></span>
+        </div>
+        <div id="searchAlbumCuratorKeyTracks" class="ai-curator-key-tracks"></div>
+      </div>
+    </div>
+    <div id="aiCuratorBanner" class="ai-curator-banner" hidden>
+      <div class="ai-curator-header" style="display:flex; justify-content:space-between; align-items:center; width:100%;">
+        <div style="display:flex; align-items:center; gap:8px;">
+          <svg class="icon" style="color:var(--accent); width:20px; height:20px;"><use href="#i-sparkles"/></svg>
+          <span style="font-weight:700; color:var(--gold); font-size:15px;" id="aiCuratorTitle">AI 发烧唱片策展与鉴赏</span>
+        </div>
+        <span id="aiCuratorThemeBadge" class="badge gold" style="font-size:11px; padding:2px 8px;">深度发烧推荐</span>
+      </div>
+      <div id="aiCuratorGuide" style="font-size:13.5px; line-height:1.6; color:var(--ink); margin-top:4px;"></div>
+      <div id="aiCuratorGearFocus" style="font-size:12px; color:var(--gold); background:rgba(245,197,66,0.08); border-left:3px solid var(--gold); padding:6px 10px; border-radius:4px; margin-top:6px;" hidden></div>
+      <div id="aiCuratorActions" style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:10px;">
+        <button type="button" id="btnAiPlayAll" class="primary" style="padding:7px 14px; font-size:12.5px; display:inline-flex; align-items:center; gap:6px;">
+          <svg class="icon"><use href="#i-play"/></svg> 畅听全部 (<span id="aiPlayAllCount">0</span>首)
+        </button>
+        <button type="button" id="btnAiEnqueueAll" class="ghost" style="padding:7px 14px; font-size:12.5px; display:inline-flex; align-items:center; gap:6px;">
+          <svg class="icon"><use href="#i-add"/></svg> 全部加入队列
+        </button>
+        <div id="aiSelectionBar" style="display:inline-flex; align-items:center; gap:6px; margin-left:auto;">
+          <button type="button" id="btnAiSelectAll" class="ghost" style="padding:6px 11px; font-size:12px; display:inline-flex; align-items:center; gap:5px;" title="全选或反选当前推荐的唱片">
+            <svg class="icon" style="width:13px;height:13px;"><use href="#i-check"/></svg> 全选/反选
+          </button>
+          <button type="button" id="btnAiDownloadSelected" class="primary" style="padding:6px 14px; font-size:12px; display:inline-flex; align-items:center; gap:6px; background:var(--gold); color:#000; font-weight:600;" title="批量下载所有已勾选的唱片">
+            <svg class="icon" style="width:13px;height:13px;"><use href="#i-download"/></svg> 下载选中唱片 (<span id="aiSelectedDlCount">0</span>张)
+          </button>
+        </div>
+      </div>
+      <div id="aiTuningSection" class="ai-tuning-section" style="margin-top:14px; padding-top:12px; border-top:1px dashed var(--border);">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span style="font-size:12px; font-weight:600; color:var(--ink);">🎯 审美定向与偏转微调</span>
+            <span id="aiTurnBadge" class="badge" style="font-size:10.5px; padding:1px 6px; background:rgba(45,226,171,0.1); color:var(--accent); border:1px solid rgba(45,226,171,0.25);" hidden>第 1 轮微调</span>
+          </div>
+          <button type="button" id="btnAiResetTuning" class="ghost" style="padding:2px 8px; font-size:11px; display:inline-flex; align-items:center; gap:4px;" title="重置并回到初始推荐列表" hidden>
+            <svg class="icon" style="width:12px;height:12px;"><use href="#i-refresh"/></svg> 恢复初始策展
+          </button>
+        </div>
+        <div id="aiTuningChips" style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px;">
+          <button type="button" class="ai-tuning-chip" data-tune="纯器乐/去人声，重点突出乐器质感、泛音与声场编配">🎻 纯器乐/去人声</button>
+          <button type="button" class="ai-tuning-chip" data-tune="加大低频下潜与瞬态响应，考验低频控制力与低音动态">💥 加重低频/大动态</button>
+          <button type="button" class="ai-tuning-chip" data-tune="更偏向温润柔和、耐听慢节奏、避免高频刺激的模拟味调音">☕ 更柔和温润/慢节奏</button>
+          <button type="button" class="ai-tuning-chip" data-tune="凸显华丽或醇厚女声人声，中频凝聚靠前、结像清晰毒性">🎙️ 毒性人声/中频靠前</button>
+          <button type="button" class="ai-tuning-chip" data-tune="偏向华语母带与东方民族古典意境融合的高保真唱片">🏮 华语与东方美学</button>
+          <button type="button" class="ai-tuning-chip" data-tune="偏向冷冽北欧、极简纯净声场的新古典或氛围后摇名盘">❄️ 冷冽北欧/极简氛围</button>
+          <button type="button" class="ai-tuning-chip" data-tune="换一批不重复的同风格冷门高分宝藏名盘">🎲 换一批宝藏名盘</button>
+        </div>
+        <form id="aiTuningForm" style="display:flex; gap:8px;">
+          <input type="text" id="aiTuningInput" class="input" placeholder="输入微调方向（如：想要更多萨克斯即兴、更偏现场Live录音感…）" style="flex:1; font-size:12px; padding:6px 10px;" />
+          <button type="submit" id="btnAiTuneSubmit" class="primary" style="padding:6px 14px; font-size:12px; white-space:nowrap; display:inline-flex; align-items:center; gap:4px;">
+            <svg class="icon" style="width:13px;height:13px;"><use href="#i-sparkles"/></svg> 定向偏转
+          </button>
+        </form>
+      </div>
     </div>
     <h3 id="searchCardsTitle" style="margin:4px 0 12px;" hidden></h3>
     <div id="searchCardsGrid" class="cards-grid" style="margin-bottom:24px;" hidden></div>
@@ -3111,11 +3686,119 @@ body:not([data-view]) #miniPlayer {
   </div>
 </div>
 
+<!-- AI Settings Modal -->
+<div class="modal-overlay" id="aiSettingsModal">
+  <div class="modal-box" style="max-width:500px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+      <h3 class="modal-title" style="margin-bottom:0; display:flex; align-items:center; gap:8px;">
+        <svg class="icon" style="color:var(--accent);"><use href="#i-sparkles"/></svg> AI 音乐助理设置
+      </h3>
+      <button type="button" id="btnAiSettingsClose" class="ghost" style="padding:4px 8px;">✕</button>
+    </div>
+    <p class="modal-lead" id="aiSettingsLead" style="font-size:13px; margin-bottom:14px;">配置大模型服务。密钥只保存在播放器手机上，不会回传到浏览器。</p>
+
+    <div style="display:flex; flex-direction:column; gap:12px;">
+      <div>
+        <label style="font-size:12px; color:var(--muted); display:block; margin-bottom:4px;">服务商预设</label>
+        <select id="aiProviderSelect" style="width:100%; padding:8px 10px;">
+          <option value="ark">火山引擎方舟 (Ark / 豆包 / DeepSeek)</option>
+          <option value="deepseek">DeepSeek 官方 (api.deepseek.com)</option>
+          <option value="openai">OpenAI 官方 (api.openai.com)</option>
+          <option value="ollama">本地 Ollama (localhost:11434)</option>
+          <option value="custom">自定义 (OpenAI 兼容协议)</option>
+        </select>
+      </div>
+
+      <div>
+        <label style="font-size:12px; color:var(--muted); display:block; margin-bottom:4px;">API 接口地址 (Base URL)</label>
+        <input id="aiEndpointInput" type="url" placeholder="https://..." autocomplete="off" style="width:100%;">
+      </div>
+
+      <div>
+        <label style="font-size:12px; color:var(--muted); display:block; margin-bottom:4px;">API 密钥 (API Key)</label>
+        <div style="display:flex; gap:6px;">
+          <input id="aiApiKeyInput" type="password" placeholder="sk-..." autocomplete="new-password" style="flex:1;">
+          <button type="button" id="btnAiToggleKey" class="ghost" style="padding:4px 10px; font-size:12px;">显示</button>
+        </div>
+      </div>
+
+      <div>
+        <label style="font-size:12px; color:var(--muted); display:block; margin-bottom:4px;">模型名称 (Model Name)</label>
+        <input id="aiModelInput" type="text" placeholder="例如: deepseek-v4-1-flash-261017, deepseek-chat, gpt-4o-mini" style="width:100%;">
+      </div>
+
+      <div id="aiTestResult" style="font-size:12px; padding:8px 10px; border-radius:6px; background:rgba(255,255,255,0.04); color:var(--muted);" hidden></div>
+    </div>
+
+    <div class="modal-actions" style="margin-top:20px; display:flex; justify-content:space-between; align-items:center;">
+      <button type="button" id="btnAiTest" class="ghost" style="display:flex; align-items:center; gap:6px;">
+        <svg class="icon"><use href="#i-refresh"/></svg> 测试连接
+      </button>
+      <div style="display:flex; gap:8px;">
+        <button type="button" id="btnAiCancel" class="ghost">取消</button>
+        <button type="button" id="btnAiSave" class="primary">保存配置</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- AI Genre Organizer Modal -->
+<div class="modal-overlay" id="aiGenreModal">
+  <div class="modal-box" style="max-width:540px; max-height:85vh; display:flex; flex-direction:column;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+      <h3 class="modal-title" style="margin-bottom:0; display:flex; align-items:center; gap:8px;">
+        <svg class="icon" style="color:var(--accent);"><use href="#i-sparkles"/></svg> AI 流派智能归类中心
+      </h3>
+      <button type="button" id="btnAiGenreClose" class="ghost" style="padding:4px 8px;">✕</button>
+    </div>
+    <p class="modal-lead" style="font-size:13px; margin-bottom:12px;">智能识别本地曲库的艺人与专辑风格，重塑发烧级音乐流派体系。</p>
+
+    <div style="padding:10px 14px; background:rgba(255,255,255,0.04); border-radius:var(--radius-sm); margin-bottom:12px;">
+      <div style="display:flex; justify-content:space-between; font-size:13px; margin-bottom:4px;">
+        <span style="color:var(--muted);">待整理专辑/艺人：</span>
+        <span id="aiGenreStats" style="font-weight:600; color:var(--gold);">统计中…</span>
+      </div>
+      <div style="display:flex; justify-content:space-between; font-size:13px;">
+        <span style="color:var(--muted);">已建档流派映射：</span>
+        <span id="aiGenreCachedCount" style="color:var(--accent);">0 个项目</span>
+      </div>
+    </div>
+
+    <div id="aiGenreProgressBox" hidden style="margin-bottom:12px;">
+      <div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:4px;">
+        <span id="aiGenreProgressText" style="color:var(--accent);">正在智能分析中…</span>
+        <span id="aiGenreProgressPct" style="color:var(--muted);">0%</span>
+      </div>
+      <div style="height:6px; background:rgba(255,255,255,0.08); border-radius:3px; overflow:hidden;">
+        <div id="aiGenreProgressBar" style="height:100%; width:0%; background:var(--accent); transition:width 0.2s;"></div>
+      </div>
+    </div>
+
+    <div style="flex:1; overflow-y:auto; min-height:120px; max-height:220px; background:rgba(0,0,0,0.25); border-radius:var(--radius-sm); padding:10px; font-size:12px;" id="aiGenreLogList">
+      <div style="color:var(--dim); text-align:center; padding:20px;">点击下方按钮启动 AI 流派归类</div>
+    </div>
+
+    <div class="modal-actions" style="margin-top:16px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+      <button type="button" id="btnAiGenreClear" class="danger ghost" style="font-size:12px; padding:4px 8px;">清除映射缓存</button>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button type="button" id="btnAiGenreSync" class="ghost" style="display:flex; align-items:center; gap:6px;">
+          <svg class="icon"><use href="#i-refresh"/></svg> 同步缓存到曲库
+        </button>
+        <button type="button" id="btnAiGenreCancel" class="ghost">完成</button>
+        <button type="button" id="btnAiGenreStart" class="primary" style="display:flex; align-items:center; gap:6px;">
+          <svg class="icon"><use href="#i-sparkles"/></svg> 开始智能归类
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Floating Toast Container -->
 <div id="toastContainer"></div>
 
 <!-- SVG Icon Symbols Sprite -->
 <svg xmlns="http://www.w3.org/2000/svg" hidden>
+  <symbol id="i-sparkles" viewBox="0 0 24 24"><path d="M12 2l2.4 7.2L22 12l-7.6 2.8L12 22l-2.4-7.2L2 12l7.6-2.8zm7 13l1.2 3.6L24 20l-3.8 1.4L19 25l-1.2-3.6L14 20l3.8-1.4z" fill="currentColor"/></symbol>
   <symbol id="i-play" viewBox="0 0 24 24"><polygon points="6 3 20 12 6 21 6 3" fill="currentColor"/></symbol>
   <symbol id="i-pause" viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16" rx="1.5" fill="currentColor"/><rect x="14" y="4" width="4" height="16" rx="1.5" fill="currentColor"/></symbol>
   <symbol id="i-prev" viewBox="0 0 24 24"><polygon points="19 20 9 12 19 4 19 20" fill="currentColor"/><rect x="5" y="4" width="3" height="16" rx="1.5" fill="currentColor"/></symbol>
@@ -3142,8 +3825,9 @@ body:not([data-view]) #miniPlayer {
   <symbol id="i-music" viewBox="0 0 24 24"><circle cx="5.5" cy="17.5" r="2.5"/><circle cx="17.5" cy="15.5" r="2.5"/><path d="M8 17.5V6.5l12-2v11"/></symbol>
   <symbol id="i-cloud" viewBox="0 0 24 24"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></symbol>
   <symbol id="i-devices" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></symbol>
 </svg>
 
-<script src="/app.js" defer></script>
+<script src="/app.js?v=2026112003" defer></script>
 </body>
 </html>
