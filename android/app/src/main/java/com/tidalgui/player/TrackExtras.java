@@ -241,11 +241,13 @@ final class TrackExtras {
                 org.json.JSONObject data = track.isLocal()
                         ? LocalMusicFiles.lyrics(ui.getContentResolver(), library.latest(track)) : track.isNetease() ? netease.lyrics(track.id) : api.lyrics(track.id);
                 ui.runOnUiThread(() -> {
-                    if (ui.lyrics == view) view.display(data);
+                    if (ui.lyrics != view) return;
+                    boolean none = data.optString("subtitles").trim().isEmpty() && data.optString("lyrics").trim().isEmpty();
+                    if (!none || !showClassicalGuide(track, view)) view.display(data);
                 });
             } catch (Exception error) {
                 ui.runOnUiThread(() -> {
-                    if (ui.lyrics == view) {
+                    if (ui.lyrics == view && !showClassicalGuide(track, view)) {
                         if (track.isLocal()) {
                             view.unavailable(UiKit.readable(error), () -> downloadLyricsDialog(track));
                         } else {
@@ -257,4 +259,47 @@ final class TrackExtras {
         });
     }
 
+    /**
+     * Classical tracks without lyrics get the AI listening guide instead, synced like lyrics: cached
+     * guides show at once (offline too); otherwise one is written when AI is reachable. Returns
+     * false to fall back to the usual "no lyrics" view.
+     */
+    boolean showClassicalGuide(TidalClient.Track track, LyricsDialog view) {
+        if (!ClassicalGuide.isClassical(track)) return false;
+        String cached = ClassicalGuide.cached(ui, track);
+        if (cached != null) {
+            view.display(guideData(cached));
+            return true;
+        }
+        if (!AiProxy.available(ui)) return false;
+        long seconds = DownloadTasks.length(track);
+        if (seconds <= 0 && ui.playback != null && ui.playback.current() != null && ui.playback.current().id == track.id) {
+            seconds = Math.max(0, ui.playback.player.getDuration() / 1000);
+        }
+        long total = seconds;
+        view.unavailable("✨ AI 正在为这首作品编写聆听导览…");
+        ui.worker.submit(() -> {
+            String lrc = null;
+            try {
+                lrc = ClassicalGuide.generate(ui, track, total);
+            } catch (Exception error) {
+                android.util.Log.i("ClassicalGuide", "guide unavailable: " + error.getMessage());
+            }
+            String result = lrc;
+            ui.runOnUiThread(() -> {
+                if (ui.lyrics != view) return;
+                if (result != null) view.display(guideData(result));
+                else view.unavailable("此歌曲暂无歌词");
+            });
+        });
+        return true;
+    }
+
+    private static org.json.JSONObject guideData(String lrc) {
+        try {
+            return new org.json.JSONObject().put("subtitles", lrc);
+        } catch (org.json.JSONException impossible) {
+            throw new IllegalStateException(impossible);
+        }
+    }
 }
