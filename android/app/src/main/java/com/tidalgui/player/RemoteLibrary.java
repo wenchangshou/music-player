@@ -68,6 +68,12 @@ final class RemoteLibrary {
                         .put("total", tracks.size())
                         .put("playlists", new JSONArray(library.playlists()));
             }
+            case "genre-update": {
+                JSONObject albumGenres = input.optJSONObject("genres");
+                JSONObject trackGenres = input.optJSONObject("tracks");
+                int count = library.updateGenres(albumGenres, trackGenres);
+                return changed(player, main).put("updated", count);
+            }
             case "lyrics-status":
                 return LyricsFill.get(player).status();
             case "lyrics-fill": {
@@ -157,7 +163,7 @@ final class RemoteLibrary {
                 return main.run(() -> {
                     if ("play".equals(mode)) player.replaceQueue(Collections.singletonList(track), 0, false);
                     else player.enqueue(track, "next".equals(mode));
-                    return new JSONObject().put("ok", true);
+                    return player.remoteSnapshot();
                 });
             }
             case "play-list": {
@@ -179,9 +185,10 @@ final class RemoteLibrary {
                     }
                 }
                 if (tracks.isEmpty()) throw new IOException("未找到可播放曲目");
+                int start = Math.max(0, Math.min(tracks.size() - 1, input.optInt("index", input.optInt("start", 0))));
                 return main.run(() -> {
-                    player.replaceQueue(tracks, 0, input.optBoolean("shuffle"));
-                    return new JSONObject().put("ok", true);
+                    player.replaceQueue(tracks, start, input.optBoolean("shuffle"));
+                    return player.remoteSnapshot();
                 });
             }
             default:

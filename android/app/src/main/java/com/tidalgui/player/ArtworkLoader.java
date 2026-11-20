@@ -116,7 +116,7 @@ final class ArtworkLoader {
         boolean local = "content".equals(uri.getScheme());
         ExecutorService executor = local ? (size <= 160 ? localRows : localDetails) : network;
         executor.submit(() -> {
-            Bitmap bitmap = local ? localThumbnail(uri, size, key) : remoteArtwork(uri);
+            Bitmap bitmap = local ? localThumbnail(uri, size, key) : remoteArtwork(uri, size);
             main.post(() -> {
                 List<ImageView> targets = pending.remove(key);
                 if (targets == null) return;
@@ -257,20 +257,34 @@ final class ArtworkLoader {
         }
     }
 
-    private Bitmap remoteArtwork(Uri uri) {
+    private Bitmap remoteArtwork(Uri uri, int size) {
         HttpURLConnection connection = null;
         try {
             connection = (HttpURLConnection) new URL(uri.toString()).openConnection();
             connection.setConnectTimeout(8000);
             connection.setReadTimeout(10000);
             try (InputStream input = connection.getInputStream()) {
-                return BitmapFactory.decodeStream(input);
+                byte[] data = readLimited(input, 8 * 1024 * 1024);
+                return data == null ? null : thumbnail(data, Math.max(1, size));
             }
         } catch (Exception ignored) {
             return null;
         } finally {
             if (connection != null) connection.disconnect();
         }
+    }
+
+    private static byte[] readLimited(InputStream input, int limit) throws java.io.IOException {
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        byte[] buffer = new byte[8192];
+        int total = 0;
+        int read;
+        while ((read = input.read(buffer)) >= 0) {
+            total += read;
+            if (total > limit) return null;
+            out.write(buffer, 0, read);
+        }
+        return out.toByteArray();
     }
 
     void close() {

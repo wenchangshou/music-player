@@ -297,6 +297,12 @@ final class LocalLibrary {
                 }
                 try {
                     JSONObject data = new JSONObject((reusable ? old : inspect(context, uri, tree)).payload.toString());
+                    if (!reusable && old != null) {
+                        String oldGenre = old.payload.optString("genre");
+                        if (!oldGenre.isEmpty() && data.optString("genre").isEmpty()) {
+                            data.put("genre", oldGenre);
+                        }
+                    }
                     found.add(new TidalClient.Track(data.put("scan_size", entry.size)
                             .put("scan_modified", entry.modified).put("lrc_uri", lrc)));
                     if (reusable) result.reused++; else result.changed++;
@@ -747,6 +753,45 @@ final class LocalLibrary {
         if (lrc == null) track.payload.put("lyrics_missing", true);
         else track.payload.put("lrc_uri", lrc).remove("lyrics_missing");
         save();
+    }
+
+    /** Batch updates genre metadata for tracks matching albums or specific track IDs. */
+    synchronized int updateGenres(JSONObject albumGenres, JSONObject trackGenres) {
+        int updated = 0;
+        try {
+            if (albumGenres != null) {
+                java.util.Iterator<String> keys = albumGenres.keys();
+                while (keys.hasNext()) {
+                    String albumName = keys.next();
+                    String genre = albumGenres.optString(albumName, "").trim();
+                    if (genre.isEmpty()) continue;
+                    for (TidalClient.Track track : tracks.values()) {
+                        if (track.album != null && track.album.equalsIgnoreCase(albumName)) {
+                            track.payload.put("genre", genre);
+                            updated++;
+                        }
+                    }
+                }
+            }
+            if (trackGenres != null) {
+                java.util.Iterator<String> keys = trackGenres.keys();
+                while (keys.hasNext()) {
+                    String idStr = keys.next();
+                    try {
+                        long id = Long.parseLong(idStr);
+                        String genre = trackGenres.optString(idStr, "").trim();
+                        if (genre.isEmpty()) continue;
+                        TidalClient.Track track = tracks.get(id);
+                        if (track != null) {
+                            track.payload.put("genre", genre);
+                            updated++;
+                        }
+                    } catch (NumberFormatException ignored) {}
+                }
+            }
+        } catch (org.json.JSONException ignored) {}
+        if (updated > 0) save();
+        return updated;
     }
 
     private void save() {

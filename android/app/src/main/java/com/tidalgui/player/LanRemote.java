@@ -14,7 +14,11 @@ import org.json.JSONObject;
 import java.io.BufferedInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.EOFException;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -28,7 +32,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.FutureTask;
-import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
@@ -37,9 +41,15 @@ final class LanRemote implements AutoCloseable {
     private final PlaybackService playback;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ServerSocket server;
-    private final ThreadPoolExecutor workers = new ThreadPoolExecutor(0, 16, 30, TimeUnit.SECONDS,
-            new SynchronousQueue<>());
+    private final ThreadPoolExecutor workers;
     private static final SecureRandom RANDOM = new SecureRandom();
+    private static final android.util.LruCache<Long, byte[]> ARTWORK_CACHE =
+            new android.util.LruCache<Long, byte[]>(24 * 1024 * 1024) {
+                @Override protected int sizeOf(Long key, byte[] value) {
+                    return value.length;
+                }
+            };
+    private final File artworkDir;
     private final SharedPreferences settings;
     private final String key;
     private final String code;
@@ -59,6 +69,11 @@ final class LanRemote implements AutoCloseable {
     LanRemote(PlaybackService playback, SharedPreferences settings) throws IOException {
         this.playback = playback;
         this.settings = settings;
+        workers = new ThreadPoolExecutor(8, 24, 30, TimeUnit.SECONDS,
+                new LinkedBlockingQueue<>(256));
+        workers.allowCoreThreadTimeOut(true);
+        artworkDir = new File(playback.getCacheDir(), "lan-artwork-v1");
+        if (!artworkDir.isDirectory()) artworkDir.mkdirs();
         connectivity = playback.getSystemService(ConnectivityManager.class);
         InetAddress address = null;
         Network selected = null;
@@ -222,36 +237,71 @@ final class LanRemote implements AutoCloseable {
                 respond(connection, 403, "text/plain", bytes("Invalid origin"));
                 return;
             }
-            if ("GET".equals(request[0]) && "/".equals(request[1])) {
+            String rawPath = request[1];
+            int queryIdx = rawPath.indexOf('?');
+            String cleanPath = queryIdx >= 0 ? rawPath.substring(0, queryIdx) : rawPath;
+
+            if ("GET".equals(request[0]) && "/".equals(cleanPath)) {
                 respond(connection, 200, "text/html; charset=utf-8", page);
                 return;
             }
-            if ("GET".equals(request[0]) && "/room.webp".equals(request[1])) {
+            if ("GET".equals(request[0]) && "/room.webp".equals(cleanPath)) {
                 try (java.io.InputStream room = playback.getResources().openRawResource(R.drawable.listening_room)) {
                     java.io.ByteArrayOutputStream data = new java.io.ByteArrayOutputStream();
                     byte[] buffer = new byte[8192];
                     for (int count; (count = room.read(buffer)) != -1;) data.write(buffer, 0, count);
-                    respond(connection, 200, "image/webp", data.toByteArray());
+                    respondWithCache(connection, 200, "image/webp", data.toByteArray(), "public, max-age=86400");
                 }
                 return;
             }
-            if ("GET".equals(request[0]) && "/app.js".equals(request[1])) {
-                respond(connection, 200, "text/javascript; charset=utf-8", script);
+            if ("GET".equals(request[0]) && "/app.js".equals(cleanPath)) {
+                respondWithCache(connection, 200, "text/javascript; charset=utf-8", script, "no-cache");
                 return;
             }
             if ("GET".equals(request[0]) && request[1].startsWith("/api/artwork/")) {
                 try {
                     long id = Long.parseLong(request[1].substring("/api/artwork/".length()));
+                    byte[] cached = ARTWORK_CACHE.get(id);
+                    if (cached != null) {
+                        if (cached.length == 0) {
+                            respond(connection, 404, "text/plain", bytes("Not found"));
+                            return;
+                        }
+                        respondWithCache(connection, 200, "image/jpeg", cached, "public, max-age=604800, immutable");
+                        return;
+                    }
+                    File artFile = new File(artworkDir, id + ".jpg");
+                    if (artFile.isFile()) {
+                        long len = artFile.length();
+                        if (len == 0) {
+                            ARTWORK_CACHE.put(id, new byte[0]);
+                            respond(connection, 404, "text/plain", bytes("Not found"));
+                            return;
+                        }
+                        if (len <= 512 * 1024) {
+                            byte[] diskBytes = readFile(artFile);
+                            if (diskBytes != null && diskBytes.length > 0) {
+                                ARTWORK_CACHE.put(id, diskBytes);
+                                respondWithCache(connection, 200, "image/jpeg", diskBytes, "public, max-age=604800, immutable");
+                                return;
+                            }
+                        }
+                    }
                     TidalClient.Track track = onMain(() -> {
                         TidalClient.Track cur = playback.current();
                         if (cur != null && cur.id == id) return cur;
                         return playback.localLibrary.track(id);
                     });
                     if (track != null && track.isLocal()) {
-                        byte[] jpeg = ArtworkLoader.localJpeg(playback, track.localUri, 640, 300 * 1024);
+                        byte[] jpeg = ArtworkLoader.localJpeg(playback, track.localUri, 320, 120 * 1024);
                         if (jpeg != null && jpeg.length > 0) {
-                            respond(connection, 200, "image/jpeg", jpeg);
+                            ARTWORK_CACHE.put(id, jpeg);
+                            saveArtworkFile(artFile, jpeg);
+                            respondWithCache(connection, 200, "image/jpeg", jpeg, "public, max-age=604800, immutable");
                             return;
+                        } else {
+                            ARTWORK_CACHE.put(id, new byte[0]);
+                            saveArtworkFile(artFile, new byte[0]);
                         }
                     }
                 } catch (Exception ignored) {}
@@ -334,6 +384,12 @@ final class LanRemote implements AutoCloseable {
                     response = new JSONObject().put("name", saved).put("missing", parsed.missing);
                 } else if ("POST".equals(request[0]) && "/api/control".equals(request[1])) {
                     response = command(readBody(headers, in, deadline, 16 * 1024));
+                } else if ("GET".equals(request[0]) && "/api/ai/config".equals(request[1])) {
+                    response = AiProxy.status(playback);
+                } else if ("POST".equals(request[0]) && "/api/ai/config".equals(request[1])) {
+                    response = AiProxy.save(playback, readBody(headers, in, deadline, 4096));
+                } else if ("POST".equals(request[0]) && "/api/ai".equals(request[1])) {
+                    response = AiProxy.chat(playback, readBody(headers, in, deadline, 64 * 1024));
                 } else {
                     respond(connection, 404, "text/plain", bytes("Not found"));
                     return;
@@ -359,7 +415,8 @@ final class LanRemote implements AutoCloseable {
             throws Exception {
         String length = headers.get("content-length");
         int size = length == null ? 0 : Integer.parseInt(length);
-        if (size <= 0 || size > limit || !"application/json".equals(headers.get("content-type"))) {
+        String ct = headers.get("content-type");
+        if (size <= 0 || size > limit || ct == null || !ct.contains("application/json")) {
             throw new IOException("请求格式无效");
         }
         byte[] body = new byte[size];
@@ -375,6 +432,10 @@ final class LanRemote implements AutoCloseable {
 
     private JSONObject command(JSONObject input) throws Exception {
         String operation = input.getString("op");
+        if ("play-list".equals(operation)) {
+            input.put("action", "play-list");
+            return RemoteLibrary.execute(playback, this::onMain, input);
+        }
         if ("library".equals(operation)) return RemoteLibrary.execute(playback, this::onMain, input);
         if (RemoteTidal.handles(operation)) return RemoteTidal.execute(playback, this::onMain, input);
         if ("library-export".equals(operation)) {
@@ -408,24 +469,31 @@ final class LanRemote implements AutoCloseable {
                 return fileCommand(operation, input);
             }
         }
-        if ("search".equals(operation) || "add".equals(operation)) {
-            TidalClient account = onMain(() -> playback.client);
-            if (account == null) throw new IOException("请先登录 TIDAL");
-            if ("search".equals(operation)) {
-                String query = input.getString("query").trim();
-                if (query.isEmpty() || query.length() > 160) throw new IOException("请输入 1–160 个字符");
-                org.json.JSONArray results = new org.json.JSONArray();
-                for (TidalClient.Track track : account.search(query, 0)) {
-                    results.put(PlaybackService.remoteTrack(track));
-                }
-                return new JSONObject().put("tracks", results);
+        if ("add".equals(operation)) {
+            long id = input.getLong("id");
+            TidalClient.Track track;
+            if (id < 0) {
+                track = playback.localLibrary.track(id);
+            } else {
+                TidalClient account = onMain(() -> playback.client);
+                if (account == null) throw new IOException("请先登录 TIDAL");
+                track = account.track(id);
             }
-            TidalClient.Track track = account.track(input.getLong("id"));
             return onMain(() -> {
-                if (playback.client != account) throw new IOException("账号已切换，请重新搜索");
                 playback.enqueue(track, input.optBoolean("next"));
                 return playback.remoteSnapshot();
             });
+        }
+        if ("search".equals(operation)) {
+            TidalClient account = onMain(() -> playback.client);
+            if (account == null) throw new IOException("请先登录 TIDAL");
+            String query = input.getString("query").trim();
+            if (query.isEmpty() || query.length() > 160) throw new IOException("请输入 1–160 个字符");
+            org.json.JSONArray results = new org.json.JSONArray();
+            for (TidalClient.Track track : account.search(query, 0)) {
+                results.put(PlaybackService.remoteTrack(track));
+            }
+            return new JSONObject().put("tracks", results);
         }
         return onMain(() -> {
             playback.remoteControl(operation, input);
@@ -552,14 +620,45 @@ final class LanRemote implements AutoCloseable {
         return value.getBytes(StandardCharsets.UTF_8);
     }
 
+    private static byte[] readFile(File file) {
+        try (FileInputStream in = new FileInputStream(file)) {
+            ByteArrayOutputStream out = new ByteArrayOutputStream((int) Math.min(file.length(), 1024 * 1024));
+            byte[] buf = new byte[8192];
+            for (int r; (r = in.read(buf)) != -1;) out.write(buf, 0, r);
+            return out.toByteArray();
+        } catch (IOException ignored) {
+            return null;
+        }
+    }
+
+    private static void saveArtworkFile(File file, byte[] data) {
+        File tmp = null;
+        try {
+            File dir = file.getParentFile();
+            if (dir != null && !dir.isDirectory()) dir.mkdirs();
+            tmp = File.createTempFile("art-", ".tmp", dir);
+            try (FileOutputStream out = new FileOutputStream(tmp)) {
+                out.write(data);
+            }
+            tmp.renameTo(file);
+        } catch (IOException ignored) {
+        } finally {
+            if (tmp != null && tmp.exists()) tmp.delete();
+        }
+    }
+
     private static void respond(Socket socket, int status, String type, byte[] body) throws IOException {
+        respondWithCache(socket, status, type, body, "no-store");
+    }
+
+    private static void respondWithCache(Socket socket, int status, String type, byte[] body, String cache) throws IOException {
         String reason = status == 200 ? "OK" : status == 401 ? "Unauthorized" : status == 403 ? "Forbidden"
                 : status == 404 ? "Not Found" : "Bad Request";
         socket.getOutputStream().write(bytes("HTTP/1.1 " + status + " " + reason + "\r\n"
                 + "Content-Type: " + type + "\r\nContent-Length: " + body.length
-                + "\r\nConnection: close\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer"
+                + "\r\nConnection: close\r\nCache-Control: " + cache + "\r\nReferrer-Policy: no-referrer"
                 + "\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY"
-                + "\r\nContent-Security-Policy: default-src 'none'; script-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data: https: http:; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'\r\n\r\n"));
+                + "\r\nContent-Security-Policy: default-src 'none'; script-src 'self'; connect-src 'self'; img-src 'self' data: https: http:; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'\r\n\r\n"));
         socket.getOutputStream().write(body);
     }
 

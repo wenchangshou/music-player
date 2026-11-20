@@ -1,10 +1,10 @@
 <resources>
     <style name="ListeningRoom" parent="android:style/Theme.Material.NoActionBar">
-        <item name="android:windowBackground">#10161A</item>
-        <item name="android:colorAccent">#AAF0D8</item>
-        <item name="android:statusBarColor">#10161A</item>
-        <item name="android:navigationBarColor">#10161A</item>
-        <item name="android:colorBackgroundFloating">#182328</item>
+        <item name="android:windowBackground">#090C10</item>
+        <item name="android:colorAccent">#D4A359</item>
+        <item name="android:statusBarColor">#090C10</item>
+        <item name="android:navigationBarColor">#090C10</item>
+        <item name="android:colorBackgroundFloating">#12171F</item>
         <item name="android:windowLightStatusBar">false</item>
     </style>
 </resources>

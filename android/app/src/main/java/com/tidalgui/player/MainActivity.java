@@ -13,8 +13,11 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.text.TextUtils;
+import android.view.GestureDetector;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.WindowInsets;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
@@ -48,6 +51,8 @@ import java.util.concurrent.Future;
 
 import static com.tidalgui.player.ListeningRoomColors.ACCENT;
 import static com.tidalgui.player.ListeningRoomColors.BG;
+import static com.tidalgui.player.ListeningRoomColors.BORDER;
+import static com.tidalgui.player.ListeningRoomColors.GOLD;
 import static com.tidalgui.player.ListeningRoomColors.INK;
 import static com.tidalgui.player.ListeningRoomColors.MUTED;
 import static com.tidalgui.player.ListeningRoomColors.RAISED;
@@ -64,6 +69,7 @@ public final class MainActivity extends ComponentActivity {
     private static final int DOWNLOAD_DIRECTORY = 7;
     private static final int JOB_DOWNLOAD_DIRECTORY = 8;
     private interface DownloadChoice { void chosen(int quality, Uri directory); }
+    private interface RangeDrawer { void draw(int from, int to); }
     private DownloadChoice pendingDownloadChoice;
     private String pendingDownloadTitle;
     private int pendingDownloadQuality;
@@ -208,8 +214,19 @@ public final class MainActivity extends ComponentActivity {
     private static final String[] LIBRARY_TABS = {"歌曲", "专辑", "歌单", "艺人", "专辑艺人", "流派", "年份"};
     private static final String[] LIBRARY_SORTS = {"标题", "艺人", "专辑", "年份（新到旧）", "导入顺序"};
     private int localTab;
-    private int localPage;
-    private int queuePage;
+    /** Items already built for the list that grows as the user scrolls. */
+    private Runnable loadMore;
+    private boolean loadingMore;
+    private int[] grown;
+    private int growTotal;
+    private RangeDrawer growDrawer;
+    private final android.util.SparseArray<View> indexAnchors = new android.util.SparseArray<>();
+    private ScrollView listScroll;
+    private android.widget.FrameLayout listStage;
+    private android.widget.FrameLayout miniTrack;
+    private View miniProgress;
+    private static final java.util.regex.Pattern YEAR_KEY = java.util.regex.Pattern.compile("(19|20)\\d{2}");
+    private static Object nameLatin;
     private long visibleLocalRevision;
     private int generation;
     private int importGeneration;
@@ -254,6 +271,14 @@ public final class MainActivity extends ComponentActivity {
     private Button playerQuality;
     private Button playerLyrics;
     private Button playerComments;
+    private TextView playerSubHeading;
+    private TextView playerNextTrack;
+    private TextView playerSpecTag;
+    private TextView playerSpecFormat;
+    private TextView playerSpecBitrate;
+    private TextView playerSpecEngine;
+    private TextView playerSpecPort;
+    private Button playerQueueBtn;
     private SeekBar seek;
     private long visibleTrack = Long.MIN_VALUE;
     private int visibleQueueIndex = -2;
@@ -440,7 +465,6 @@ public final class MainActivity extends ComponentActivity {
                 else if (!remoteMode() && (localPlaylist != null || localGroup != null)) {
                     localPlaylist = null;
                     localGroup = null;
-                    localPage = 0;
                     render();
                 } else navigate(Page.HOME);
                 break;
@@ -502,7 +526,10 @@ public final class MainActivity extends ComponentActivity {
             selectingDownloads = false;
             selectedDownloads.clear();
         }
-        if (next == Page.QUEUE) { queueBack = page; queuePage = 0; }
+        if (next == Page.QUEUE) {
+            queueBack = page;
+            revealQueue = true;
+        }
         if (next == Page.DEVICES) devicesBack = page;
         navigate(next);
     }
@@ -515,7 +542,6 @@ public final class MainActivity extends ComponentActivity {
             if (catalogue != null) catalogue.cancel(true);
         }
         page = next;
-        localPage = 0;
         notice = "";
         if (refresh) load(false);
         else render();
@@ -534,6 +560,15 @@ public final class MainActivity extends ComponentActivity {
         checkUpdateButton = null;
         updateStatus = null;
         mini = null;
+        miniProgress = null;
+        miniTrack = null;
+        loadMore = null;
+        loadingMore = false;
+        grown = null;
+        growDrawer = null;
+        indexAnchors.clear();
+        listScroll = null;
+        listStage = null;
         seek = null;
         dragging = false;
         visibleTrack = Long.MIN_VALUE;
@@ -544,6 +579,14 @@ public final class MainActivity extends ComponentActivity {
         visibleAccount = tidalApi();
         lyrics = null;
         lyricsPane = null;
+        playerSubHeading = null;
+        playerNextTrack = null;
+        playerSpecTag = null;
+        playerSpecFormat = null;
+        playerSpecBitrate = null;
+        playerSpecEngine = null;
+        playerSpecPort = null;
+        playerQueueBtn = null;
         if (page == Page.PLAYER) {
             buildNowPlaying();
             updatePlayer();
@@ -552,14 +595,14 @@ public final class MainActivity extends ComponentActivity {
         }
 
         LinearLayout header = row();
-        header.setPadding(dp(20), dp(10), dp(16), dp(8));
-        header.setMinimumHeight(dp(72));
+        header.setPadding(dp(16), dp(6), dp(16), dp(6));
+        header.setMinimumHeight(dp(48));
         root.addView(header);
         boolean subpage = page == Page.OFFLINE || page == Page.NETEASE_PLAYLISTS || page == Page.NETEASE_SQUARE || page == Page.DOWNLOADS || page == Page.COLLECTION || page == Page.QUEUE || page == Page.SETTINGS
                 || page == Page.CONNECTIONS || page == Page.ACCOUNT || page == Page.LIBRARY || page == Page.DEVICES
                 || (page == Page.LOCAL && (remoteMode() ? remoteLibInside() : localPlaylist != null || localGroup != null));
         if (subpage) header.addView(iconButton("back", "返回", this::goBack));
-        TextView heading = text(pageTitle(), subpage ? 25 : 32, INK, true);
+        TextView heading = text(pageTitle(), subpage ? 18 : 22, INK, true);
         heading.setSingleLine();
         heading.setEllipsize(TextUtils.TruncateAt.END);
         header.addView(heading, new LinearLayout.LayoutParams(0, -2, 1));
@@ -576,29 +619,38 @@ public final class MainActivity extends ComponentActivity {
                 chip.setBackground(shape(ACCENT, 14));
                 chip.setTextColor(BG);
             }
-            LinearLayout.LayoutParams chipLayout = new LinearLayout.LayoutParams(-2, dp(36));
+            LinearLayout.LayoutParams chipLayout = new LinearLayout.LayoutParams(-2, dp(30));
             chipLayout.setMarginEnd(dp(4));
             header.addView(chip, chipLayout);
         }
         if (page == Page.HOME || page == Page.SOURCES) {
-            header.addView(glyph("download", INK, 23, "下载管理", () -> open(Page.DOWNLOADS)),
-                    new LinearLayout.LayoutParams(dp(46), dp(46)));
-            header.addView(glyph("settings", INK, 23, "设置", () -> open(Page.SETTINGS)),
-                    new LinearLayout.LayoutParams(dp(46), dp(46)));
+            header.addView(glyph("download", INK, 17, "下载管理", () -> open(Page.DOWNLOADS)),
+                    new LinearLayout.LayoutParams(dp(34), dp(34)));
+            header.addView(glyph("settings", INK, 17, "设置", () -> open(Page.SETTINGS)),
+                    new LinearLayout.LayoutParams(dp(34), dp(34)));
         }
         if (page == Page.LOCAL && !subpage && !remoteMode()) {
-            header.addView(glyph("plus", INK, 25, "导入本地音乐", this::importMenu),
-                    new LinearLayout.LayoutParams(dp(46), dp(46)));
+            header.addView(glyph("plus", INK, 18, "导入本地音乐", this::importMenu),
+                    new LinearLayout.LayoutParams(dp(40), dp(40)));
+            header.addView(glyph("more", INK, 18, "音乐库工具", this::libraryTools),
+                    new LinearLayout.LayoutParams(dp(40), dp(40)));
         }
         if (page == Page.SEARCH) buildSearch();
         if (remoteMode()) remoteBanner();
 
-        ScrollView scroll = new ScrollView(this);
-        scroll.setFillViewport(true);
-        root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
+        listScroll = new ScrollView(this);
+        listScroll.setFillViewport(true);
+        listScroll.setOnScrollChangeListener((view, scrollX, scrollY, oldX, oldY) -> {
+            if (loadMore == null) return;
+            View child = ((ScrollView) view).getChildAt(0);
+            if (child != null && scrollY + view.getHeight() >= child.getHeight() - dp(480)) loadMore.run();
+        });
+        listStage = new android.widget.FrameLayout(this);
+        listStage.addView(listScroll, new android.widget.FrameLayout.LayoutParams(-1, -1));
+        root.addView(listStage, new LinearLayout.LayoutParams(-1, 0, 1));
         content = column();
         content.setPadding(dp(20), dp(6), dp(20), dp(18));
-        scroll.addView(content);
+        listScroll.addView(content);
         switch (page) {
             case HOME:
                 buildHomeSources();
@@ -630,6 +682,16 @@ public final class MainActivity extends ComponentActivity {
         buildNav();
         root.requestApplyInsets();
         updatePlayer();
+        if (homeScrollRestore >= 0 && listScroll != null) {
+            int y = homeScrollRestore;
+            homeScrollRestore = -1;
+            if (y > 0) listScroll.post(() -> listScroll.scrollTo(0, y));
+        }
+        revealPlayingRow();
+        if (revealQueue) {
+            revealQueue = false;
+            revealTag(QUEUE_PLAYING);
+        }
     }
 
     private String pageTitle() {
@@ -660,13 +722,13 @@ public final class MainActivity extends ComponentActivity {
 
     private void buildSearch() {
         LinearLayout bar = row();
-        bar.setPadding(dp(20), 0, dp(20), dp(6));
+        bar.setPadding(dp(16), 0, dp(16), dp(6));
         EditText search = new EditText(this);
         search.setSingleLine(true);
         search.setTextColor(INK);
         search.setHintTextColor(MUTED);
         search.setHint(searchSource != SearchSource.LOCAL ? "搜索 " + searchSource.label : "搜索本地歌曲、专辑或艺人");
-        search.setBackground(shape(SURFACE, 14));
+        search.setBackground(shapeWithStroke(SURFACE, 0x1affffff, 1, 14));
         search.setPadding(dp(14), 0, dp(14), 0);
         search.setText(input);
         search.addTextChangedListener(new android.text.TextWatcher() {
@@ -678,7 +740,6 @@ public final class MainActivity extends ComponentActivity {
         Runnable submit = () -> {
             getSystemService(InputMethodManager.class).hideSoftInputFromWindow(search.getWindowToken(), 0);
             term = input.trim();
-            localPage = 0;
             if (searchSource != SearchSource.LOCAL) load(false);
             else render();
         };
@@ -690,6 +751,15 @@ public final class MainActivity extends ComponentActivity {
         bar.addView(search, new LinearLayout.LayoutParams(0, dp(48), 1));
         bar.addView(action("搜索", "提交搜索", submit));
         root.addView(bar);
+        if (focusSearch) {
+            focusSearch = false;
+            search.setSelection(search.getText().length());
+            search.requestFocus();
+            search.post(() -> {
+                InputMethodManager keyboard = getSystemService(InputMethodManager.class);
+                if (keyboard != null) keyboard.showSoftInput(search, InputMethodManager.SHOW_IMPLICIT);
+            });
+        }
         LinearLayout scopes = row();
         scopes.setPadding(dp(20), 0, dp(20), 0);
         for (SearchSource source : SearchSource.values()) {
@@ -711,16 +781,20 @@ public final class MainActivity extends ComponentActivity {
         filter = next.filter;
     }
 
+    private boolean focusSearch;
+
     private void openSearch(SearchSource source) {
         boolean changed = searchSource != source;
         switchSearchSource(source);
-        if (page != Page.SEARCH) open(Page.SEARCH);
-        else if (changed) {
+        if (page != Page.SEARCH) {
+            focusSearch = true;
+            open(Page.SEARCH);
+        } else if (changed) {
+            focusSearch = true;
             if (source != SearchSource.LOCAL) load(false);
             else {
                 generation++;
                 if (catalogue != null) catalogue.cancel(true);
-                localPage = 0;
                 render();
             }
         }
@@ -749,11 +823,11 @@ public final class MainActivity extends ComponentActivity {
 
     private void buildNav() {
         LinearLayout nav = row();
-        nav.setPadding(dp(9), dp(5), dp(9), dp(4));
+        nav.setPadding(dp(8), dp(2), dp(8), dp(2));
         nav.setBackgroundColor(BG);
         Page[] pages = {Page.HOME, Page.LOCAL, Page.SEARCH, Page.SOURCES};
-        String[] labels = {"首页", "音乐库", "搜索", "音源"};
-        String[] icons = {"home", "library", "search", "sources"};
+        String[] labels = {"首页", "曲库", "搜索", "服务"};
+        String[] icons = {"home", "library", "search", "settings"};
         for (int i = 0; i < pages.length; i++) {
             Page target = pages[i];
             boolean selected = page == target || (target == Page.SOURCES
@@ -767,19 +841,18 @@ public final class MainActivity extends ComponentActivity {
                 if (target == Page.LOCAL) {
                     localPlaylist = null;
                     localGroup = null;
-                    localPage = 0;
                 }
                 if (target == page) render();
                 else open(target);
             });
-            int color = selected ? ACCENT : MUTED;
+            int color = selected ? GOLD : MUTED;
             tab.setTextColor(color);
-            tab.setTextSize(11);
-            tab.setCompoundDrawablesWithIntrinsicBounds(null, new PlayerIcon(icons[i], color, dp(20)), null, null);
-            tab.setCompoundDrawablePadding(dp(3));
-            tab.setPadding(0, dp(8), 0, dp(5));
-            if (selected) tab.setBackground(shape(RAISED, 14));
-            nav.addView(tab, new LinearLayout.LayoutParams(0, dp(55), 1));
+            tab.setTextSize(10);
+            tab.setCompoundDrawablesWithIntrinsicBounds(null, new PlayerIcon(icons[i], color, dp(16)), null, null);
+            tab.setCompoundDrawablePadding(dp(2));
+            tab.setPadding(0, dp(4), 0, dp(2));
+            if (selected) tab.setBackground(shapeWithStroke(RAISED, 0x22d4a359, 1, 10));
+            nav.addView(tab, new LinearLayout.LayoutParams(0, dp(44), 1));
         }
         root.addView(nav);
     }
@@ -789,60 +862,28 @@ public final class MainActivity extends ComponentActivity {
             remoteHome();
             return;
         }
-        TidalClient.Track active = playback == null ? null : playback.current();
+        LocalLibrary library = playback == null ? null : playback.localLibrary;
         List<TidalClient.Track> recent = playback == null ? new ArrayList<>() : new ArrayList<>(playback.history);
-        TidalClient.Track feature = active != null ? active : recent.isEmpty() ? null : recent.get(0);
-        android.widget.FrameLayout hero = new android.widget.FrameLayout(this);
-        hero.setBackground(shape(RAISED, 22));
-        hero.setClipToOutline(true);
-        content.addView(hero, new LinearLayout.LayoutParams(-1, dp(244)));
-        ImageView photo = new ImageView(this);
-        photo.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        if (feature == null) photo.setImageResource(R.drawable.listening_room);
-        else artwork.loadPhoto(photo, feature, 640);
-        hero.addView(photo, new android.widget.FrameLayout.LayoutParams(-1, -1));
-        View shade = new View(this);
-        shade.setBackground(new GradientDrawable(GradientDrawable.Orientation.BOTTOM_TOP,
-                new int[]{0xff0b191d, 0xb817292c, 0x000c1a1f}));
-        hero.addView(shade, new android.widget.FrameLayout.LayoutParams(-1, -1));
-        LinearLayout copy = column();
-        copy.setPadding(dp(19), 0, dp(19), dp(17));
-        android.widget.FrameLayout.LayoutParams layout = new android.widget.FrameLayout.LayoutParams(
-                -1, -2, Gravity.BOTTOM);
-        hero.addView(copy, layout);
-        if (feature != null) copy.addView(text(active == null ? "上次聆听" : "继续聆听", 13, ACCENT, true));
-        TextView featureTitle = text(feature == null ? "音乐，从本地开始" : displayTitle(feature), 27, INK, true);
-        featureTitle.setMaxLines(2);
-        featureTitle.setEllipsize(TextUtils.TruncateAt.END);
-        copy.addView(featureTitle);
-        if (feature != null && !feature.artist.isEmpty()) copy.addView(single(feature.artist, 14, INK, false));
-        String button = feature == null ? "导入音乐" : active == null ? "继续播放" : "打开播放器";
-        Button action = primary(button, feature == null ? this::importMenu : () -> {
-            if (active == null) playList(recent, 0, false);
-            else if (!playback.player.getPlayWhenReady()) playback.toggle();
-            open(Page.PLAYER);
-        });
-        LinearLayout.LayoutParams actionLayout = new LinearLayout.LayoutParams(-2, dp(44));
-        actionLayout.topMargin = dp(11);
-        copy.addView(action, actionLayout);
+        int songs = library == null ? 0 : library.size();
+        int hour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY);
+        String greeting = hour < 6 ? "凌晨好" : hour < 12 ? "早上好" : hour < 18 ? "下午好" : "晚上好";
+        LinearLayout head = row();
+        head.setGravity(Gravity.CENTER_VERTICAL);
+        head.setPadding(0, 0, 0, dp(6));
+        head.addView(text(greeting, 25, INK, true), new LinearLayout.LayoutParams(0, -2, 1));
+        head.addView(action("搜索", "搜索本地音乐", () -> openSearch(SearchSource.LOCAL)));
+        content.addView(head);
+        if (songs == 0 && recent.isEmpty()) {
+            content.addView(primary("导入音乐", this::importMenu), new LinearLayout.LayoutParams(-2, dp(40)));
+        }
 
-        section("开始聆听");
-        LinearLayout shortcuts = row();
-        content.addView(shortcuts, new LinearLayout.LayoutParams(-1, -2));
-        int size = playback == null ? 0 : playback.localLibrary.size();
-        addShortcut(shortcuts, "本地音乐", size + " 首歌曲", "library", () -> open(Page.LOCAL));
-        addShortcut(shortcuts, "在线音源", "TIDAL 与网易云", "sources", () -> open(Page.SOURCES));
-
-        if (!recent.isEmpty()) {
-            section("最近播放");
-            for (int i = 0; i < Math.min(8, recent.size()); i++) {
-                int at = i;
-                TidalClient.Track track = recent.get(at);
-                content.addView(trackEntry(track, false, () -> playList(recent, at, false)));
-            }
+        trackShelf("最近播放", recent.isEmpty() ? null : "播放全部",
+                recent.isEmpty() ? null : () -> playList(recent, 0, false), recent);
+        if (library != null && songs > 0) {
+            groupShelf("专辑", () -> openLocalLibrary(1), localAlbums(library, recent));
+            groupShelf("歌单", () -> openLocalLibrary(2), localPlaylists(library));
         }
         if (!hasPlayerAccount()) {
-            section("多端同步");
             LinearLayout sync = row();
             sync.setPadding(dp(14), dp(12), dp(10), dp(12));
             sync.setBackground(shape(SURFACE, 15));
@@ -853,16 +894,112 @@ public final class MainActivity extends ComponentActivity {
             about.setPadding(dp(12), 0, dp(8), 0);
             sync.addView(about, new LinearLayout.LayoutParams(0, -2, 1));
             sync.addView(secondary("登录", this::playerAccountLogin), new LinearLayout.LayoutParams(-2, dp(38)));
-            content.addView(sync);
+            LinearLayout.LayoutParams gap = new LinearLayout.LayoutParams(-1, -2);
+            gap.topMargin = dp(12);
+            content.addView(sync, gap);
         }
+    }
+
+    private List<LocalLibrary.LocalGroup> localAlbums(LocalLibrary library, List<TidalClient.Track> recent) {
+        java.util.Map<String, LocalLibrary.LocalGroup> grouped = new java.util.LinkedHashMap<>();
+        for (TidalClient.Track track : recent) rememberAlbum(grouped, track);
+        if (grouped.size() < 12) {
+            for (TidalClient.Track track : library.search("", null)) {
+                rememberAlbum(grouped, track);
+                if (grouped.size() >= 12) break;
+            }
+        }
+        return new ArrayList<>(grouped.values());
+    }
+
+    private static LocalLibrary.LocalGroup rememberAlbum(java.util.Map<String, LocalLibrary.LocalGroup> grouped,
+                                                         TidalClient.Track track) {
+        if (track == null || !track.isLocal()) return null;
+        LocalLibrary.LocalGroup candidate = LocalLibrary.groupFor(track, 1);
+        LocalLibrary.LocalGroup group = grouped.get(candidate.key);
+        if (group == null) {
+            if (grouped.size() >= 12) return null;
+            group = candidate;
+            grouped.put(group.key, group);
+        }
+        if (group.members.size() < 40) group.members.add(track);
+        return group;
+    }
+
+    private List<LocalLibrary.LocalGroup> localPlaylists(LocalLibrary library) {
+        List<LocalLibrary.LocalGroup> groups = new ArrayList<>();
+        for (String name : library.playlists()) {
+            if (groups.size() >= 12) break;
+            List<TidalClient.Track> songs = library.search("", name);
+            LocalLibrary.LocalGroup group = new LocalLibrary.LocalGroup(name, name, songs.size() + " 首", 2);
+            group.members.addAll(songs);
+            groups.add(group);
+        }
+        return groups;
+    }
+
+    private void groupShelf(String heading, Runnable openMore, List<LocalLibrary.LocalGroup> groups) {
+        if (groups.isEmpty()) return;
+        sectionLink(heading, openMore == null ? null : "全部", openMore);
+        android.widget.HorizontalScrollView scroll = new android.widget.HorizontalScrollView(this);
+        scroll.setHorizontalScrollBarEnabled(false);
+        LinearLayout row = row();
+        row.setBaselineAligned(false);
+        row.setGravity(Gravity.TOP);
+        for (LocalLibrary.LocalGroup group : groups) {
+            LinearLayout card = column();
+            card.setContentDescription(group.label);
+            card.setOnClickListener(view -> {
+                if (group.category == 2) {
+                    localPlaylist = group.label;
+                    localGroup = null;
+                    localTab = 2;
+                    if (page == Page.LOCAL) render();
+                    else open(Page.LOCAL);
+                } else {
+                    openLocalGroup(group);
+                }
+            });
+            ImageView cover = art(124);
+            if (!group.members.isEmpty()) artwork.load(cover, group.members.get(0), 320);
+            card.addView(cover, new LinearLayout.LayoutParams(dp(124), dp(124)));
+            TextView name = single(group.label, 13, INK, true);
+            name.setPadding(0, dp(6), 0, 0);
+            card.addView(name);
+            String caption = group.detail.isEmpty() ? group.members.size() + " 首" : group.detail;
+            card.addView(single(caption, 11, MUTED, false));
+            LinearLayout.LayoutParams cardParams = new LinearLayout.LayoutParams(dp(124), -2);
+            cardParams.setMarginEnd(dp(10));
+            row.addView(card, cardParams);
+        }
+        scroll.addView(row, new android.widget.FrameLayout.LayoutParams(-2, -2));
+        content.addView(scroll);
+    }
+
+    private void openLocalLibrary(int tab) {
+        localTab = tab;
+        localPlaylist = null;
+        localGroup = null;
+        if (page == Page.LOCAL) render();
+        else open(Page.LOCAL);
     }
 
     private List<?> personalKey;
     private List<TidalClient.Track> personalTracks = java.util.Collections.emptyList();
+    private List<TidalClient.Track> personalLiked = java.util.Collections.emptyList();
     private List<TidalClient.Collection> personalPlaylists = java.util.Collections.emptyList();
+    private List<TidalClient.Collection> personalSquare = java.util.Collections.emptyList();
     private List<TidalClient.Collection> personalAlbums = java.util.Collections.emptyList();
+    private List<TidalClient.HomeShelf> personalDiscover = java.util.Collections.emptyList();
     private boolean personalPlaylistsForAccount;
     private boolean personalLoading;
+    /** Scroll position to keep when a home section arrives and the page is rebuilt. */
+    private int homeScrollRestore = -1;
+    /** Track to bring into view after opening its album or artist from Now Playing. */
+    private long revealTrackId = Long.MIN_VALUE;
+    /** Set when the queue page opens, so that render lands on the playing row. */
+    private boolean revealQueue;
+    private static final Object QUEUE_PLAYING = new Object();
 
     private void loadPersonalHome(SearchSource source, NeteaseClient netease,
                                   android.content.SharedPreferences prefs) {
@@ -873,42 +1010,95 @@ public final class MainActivity extends ComponentActivity {
         if (key.equals(personalKey)) return;
         personalKey = key;
         personalTracks = java.util.Collections.emptyList();
+        personalLiked = java.util.Collections.emptyList();
         personalPlaylists = java.util.Collections.emptyList();
+        personalSquare = java.util.Collections.emptyList();
         personalAlbums = java.util.Collections.emptyList();
+        personalDiscover = java.util.Collections.emptyList();
         personalPlaylistsForAccount = false;
         personalLoading = source == SearchSource.NETEASE || tidal != null;
         if (!personalLoading) return;
 
         worker.submit(() -> {
-            List<TidalClient.Track> picks = new ArrayList<>();
-            List<TidalClient.Collection> playlists = new ArrayList<>();
-            List<TidalClient.Collection> albums = new ArrayList<>();
-            boolean accountPlaylists = false;
             if (source == SearchSource.TIDAL) {
+                List<TidalClient.Track> picks = new ArrayList<>();
+                List<TidalClient.Collection> playlists = new ArrayList<>();
+                List<TidalClient.Collection> albums = new ArrayList<>();
+                List<TidalClient.HomeShelf> discover = new ArrayList<>();
                 addPersonalItems(picks, () -> tidal.favorites(0));
                 addPersonalItems(albums, () -> tidal.collections("", TidalClient.Collection.Kind.ALBUM, 0, false));
-                addPersonalItems(playlists, () -> tidal.collections("", TidalClient.Collection.Kind.PLAYLIST, 0, false));
+                addPersonalItems(playlists, () -> tidal.collections("", TidalClient.Collection.Kind.PLAYLIST, 0, true));
+                boolean ownPlaylists = !playlists.isEmpty();
                 if (playlists.isEmpty()) {
-                    addPersonalItems(playlists, () -> tidal.collections("", TidalClient.Collection.Kind.PLAYLIST, 0, true));
+                    addPersonalItems(playlists, () -> tidal.collections("", TidalClient.Collection.Kind.PLAYLIST, 0, false));
                 }
-            } else {
-                if (netease.signedIn()) {
-                    addPersonalItems(picks, netease::dailyTracks);
-                    addPersonalItems(playlists, () -> netease.recommendedPlaylists(true));
-                    accountPlaylists = !playlists.isEmpty();
+                try {
+                    discover.addAll(tidal.home());
+                } catch (Exception ignored) {
+                    // Favourite rows still render when the editorial home is unavailable.
                 }
-                if (playlists.isEmpty()) addPersonalItems(playlists, () -> netease.recommendedPlaylists(false));
+                runOnUiThread(() -> {
+                    if (isDestroyed() || personalKey != key) return;
+                    personalTracks = picks;
+                    personalPlaylists = playlists;
+                    personalAlbums = albums;
+                    personalDiscover = discover;
+                    personalPlaylistsForAccount = ownPlaylists;
+                    personalLoading = false;
+                    if (page == Page.HOME && homeSource == source) render();
+                });
+                return;
             }
-            boolean personal = accountPlaylists;
-            runOnUiThread(() -> {
-                if (isDestroyed() || personalKey != key) return;
-                personalTracks = picks;
-                personalPlaylists = playlists;
-                personalAlbums = albums;
-                personalPlaylistsForAccount = personal;
-                personalLoading = false;
-                if (page == Page.HOME && homeSource == source) render();
+            boolean signedIn = netease.signedIn();
+        java.util.concurrent.atomic.AtomicInteger pending = new java.util.concurrent.atomic.AtomicInteger(signedIn ? 4 : 2);
+        if (signedIn) {
+            worker.submit(() -> {
+                List<TidalClient.Track> rows = new ArrayList<>();
+                addPersonalItems(rows, netease::dailyTracks);
+                deliverHomeSection(key, source, pending, () -> personalTracks = rows);
             });
+            worker.submit(() -> {
+                List<TidalClient.Track> rows = new ArrayList<>();
+                addPersonalItems(rows, netease::likedTracks);
+                deliverHomeSection(key, source, pending, () -> personalLiked = rows);
+            });
+        }
+        worker.submit(() -> {
+            List<TidalClient.Collection> rows = new ArrayList<>();
+            boolean own = false;
+            if (signedIn) {
+                addPersonalItems(rows, () -> netease.recommendedPlaylists(true));
+                own = !rows.isEmpty();
+            }
+            if (rows.isEmpty()) addPersonalItems(rows, () -> netease.recommendedPlaylists(false));
+            boolean account = own;
+            deliverHomeSection(key, source, pending, () -> {
+                personalPlaylists = rows;
+                personalPlaylistsForAccount = account;
+            });
+        });
+        worker.submit(() -> {
+            List<TidalClient.Collection> rows = new ArrayList<>();
+            addPersonalItems(rows, () -> {
+                List<TidalClient.Collection> page = netease.playlistSquare("全部", 0).created;
+                return page.size() > 12 ? new ArrayList<>(page.subList(0, 12)) : page;
+            });
+            deliverHomeSection(key, source, pending, () -> personalSquare = rows);
+        });
+        });
+    }
+
+    /** Show one NetEase home section as soon as it arrives, without waiting for the others. */
+    private void deliverHomeSection(List<?> key, SearchSource source,
+                                    java.util.concurrent.atomic.AtomicInteger pending, Runnable apply) {
+        runOnUiThread(() -> {
+            if (isDestroyed() || personalKey != key) return;
+            apply.run();
+            if (pending.decrementAndGet() == 0) personalLoading = false;
+            if (page == Page.HOME && homeSource == source) {
+                homeScrollRestore = listScroll == null ? 0 : listScroll.getScrollY();
+                render();
+            }
         });
     }
 
@@ -922,7 +1112,156 @@ public final class MainActivity extends ComponentActivity {
         }
     }
 
+    private void neteaseHome() {
+        android.content.SharedPreferences prefs = getSharedPreferences("tidal", MODE_PRIVATE);
+        NeteaseClient netease = new NeteaseClient(prefs);
+        boolean signedIn = netease.signedIn();
+        loadPersonalHome(SearchSource.NETEASE, netease, prefs);
+
+        List<TidalClient.Track> recent = new ArrayList<>();
+        if (playback != null) {
+            for (TidalClient.Track track : playback.history) {
+                if (SearchSource.NETEASE.includes(track)) recent.add(track);
+            }
+        }
+        int hour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY);
+        String greeting = hour < 6 ? "凌晨好" : hour < 12 ? "早上好" : hour < 18 ? "下午好" : "晚上好";
+        LinearLayout head = row();
+        head.setGravity(Gravity.CENTER_VERTICAL);
+        head.setPadding(0, 0, 0, dp(6));
+        head.addView(text(greeting, 25, INK, true), new LinearLayout.LayoutParams(0, -2, 1));
+        head.addView(action("搜索", "搜索网易云", () -> openSearch(SearchSource.NETEASE)));
+        content.addView(head);
+        if (!signedIn && netease.usesDefaultBackend()) {
+            content.addView(primary("登录网易云", () -> showNeteaseLogin(netease)),
+                    new LinearLayout.LayoutParams(-2, dp(40)));
+        }
+        if (personalLoading && personalTracks.isEmpty() && personalLiked.isEmpty()
+                && personalPlaylists.isEmpty() && personalSquare.isEmpty()) {
+            TextView waiting = text("正在读取每日推荐和歌单…", 13, MUTED, false);
+            waiting.setPadding(0, dp(8), 0, dp(4));
+            content.addView(waiting);
+        }
+
+        List<TidalClient.Track> daily = personalTracks;
+        trackShelf("每日推荐", daily.isEmpty() ? null : "播放全部",
+                daily.isEmpty() ? null : () -> playList(daily, 0, false), daily);
+        if (!personalLoading && signedIn && daily.isEmpty()) homeNote("今天的每日推荐还没有返回");
+
+        List<TidalClient.Track> liked = personalLiked;
+        trackShelf("喜欢的歌", liked.isEmpty() ? null : "播放全部",
+                liked.isEmpty() ? null : () -> playList(liked, 0, false), liked);
+        if (!personalLoading && signedIn && liked.isEmpty()) homeNote("还没有红心歌曲，或喜欢列表暂时读不到");
+
+        linkedShelf(personalPlaylistsForAccount ? "专属歌单" : "推荐歌单",
+                () -> openNeteasePlaylists(Page.NETEASE_PLAYLISTS), personalPlaylists);
+        linkedShelf("歌单广场", () -> openNeteasePlaylists(Page.NETEASE_SQUARE), personalSquare);
+
+        if (!recent.isEmpty()) {
+            section("最近聆听");
+            for (int i = 0; i < Math.min(6, recent.size()); i++) {
+                int at = i;
+                content.addView(trackEntry(recent.get(at), false, () -> playList(recent, at, false)));
+            }
+        }
+    }
+
+    private void linkedShelf(String heading, Runnable openMore, List<TidalClient.Collection> items) {
+        if (items.isEmpty()) {
+            if (!personalLoading) sectionLink(heading, "全部", openMore);
+            return;
+        }
+        shelf(heading, "全部", openMore, items);
+    }
+
+    private void homeNote(String value) {
+        TextView line = text(value, 13, MUTED, false);
+        line.setPadding(dp(2), 0, 0, dp(8));
+        content.addView(line);
+    }
+
+    private void tidalHome() {
+        boolean signedIn = tidalApi() != null;
+        android.content.SharedPreferences prefs = getSharedPreferences("tidal", MODE_PRIVATE);
+        loadPersonalHome(SearchSource.TIDAL, new NeteaseClient(prefs), prefs);
+
+        List<TidalClient.Track> recent = new ArrayList<>();
+        if (playback != null) {
+            for (TidalClient.Track track : playback.history) {
+                if (SearchSource.TIDAL.includes(track)) recent.add(track);
+            }
+        }
+        int hour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY);
+        String greeting = hour < 6 ? "凌晨好" : hour < 12 ? "早上好" : hour < 18 ? "下午好" : "晚上好";
+        LinearLayout head = row();
+        head.setGravity(Gravity.CENTER_VERTICAL);
+        head.setPadding(0, 0, 0, dp(6));
+        head.addView(text(greeting, 25, INK, true), new LinearLayout.LayoutParams(0, -2, 1));
+        head.addView(action("搜索", "搜索 TIDAL", () -> openSearch(SearchSource.TIDAL)));
+        content.addView(head);
+        if (!signedIn) {
+            content.addView(primary("登录 TIDAL", this::login), new LinearLayout.LayoutParams(-2, dp(40)));
+        }
+        boolean nothing = personalDiscover.isEmpty() && personalTracks.isEmpty()
+                && personalAlbums.isEmpty() && personalPlaylists.isEmpty();
+        if (personalLoading && nothing) {
+            TextView waiting = text("正在读取推荐、混音和收藏…", 13, MUTED, false);
+            waiting.setPadding(0, dp(8), 0, dp(4));
+            content.addView(waiting);
+        }
+        for (TidalClient.HomeShelf shelf : personalDiscover) {
+            String title = tidalShelfTitle(shelf.title);
+            if (!shelf.tracks.isEmpty()) {
+                List<TidalClient.Track> tracks = shelf.tracks;
+                trackShelf(title, "播放全部", () -> playList(tracks, 0, false), tracks);
+            } else if (!shelf.collections.isEmpty()) {
+                shelf(title, shelf.collections);
+            }
+        }
+        if (signedIn) {
+            List<TidalClient.Track> liked = personalTracks;
+            trackShelf("收藏的歌", liked.isEmpty() ? null : "播放全部",
+                    liked.isEmpty() ? null : () -> playList(liked, 0, false), liked);
+            linkedShelf("收藏专辑", () -> openLibrary(1), personalAlbums);
+            linkedShelf(personalPlaylistsForAccount ? "自建歌单" : "收藏歌单",
+                    () -> openLibrary(personalPlaylistsForAccount ? 4 : 2), personalPlaylists);
+        }
+        if (!personalLoading && signedIn && nothing) homeNote("首页推荐和收藏暂时都没有返回");
+        if (!recent.isEmpty()) {
+            section("最近聆听");
+            for (int i = 0; i < Math.min(6, recent.size()); i++) {
+                int at = i;
+                content.addView(trackEntry(recent.get(at), false, () -> playList(recent, at, false)));
+            }
+        }
+    }
+
+    /** Common TIDAL home headings. Anything else stays in the language TIDAL returned. */
+    private static String tidalShelfTitle(String title) {
+        String key = title == null ? "" : title.trim().toLowerCase(java.util.Locale.ROOT).replaceAll("\\s+", " ");
+        if (key.equals("recently played")) return "最近播放";
+        if (key.equals("custom mixes")) return "专属混音";
+        if (key.startsWith("radio stations")) return "为你推荐的电台";
+        if (key.startsWith("suggested new albums")) return "新专辑推荐";
+        return title == null ? "" : title;
+    }
+
+    private void openLibrary(int filter) {
+        libraryFilter = filter;
+        if (page != Page.LIBRARY) page = Page.LIBRARY;
+        notice = "";
+        load(false);
+    }
+
     private void sourceHome(SearchSource source) {
+        if (source == SearchSource.NETEASE) {
+            neteaseHome();
+            return;
+        }
+        if (source == SearchSource.TIDAL) {
+            tidalHome();
+            return;
+        }
         boolean tidal = source == SearchSource.TIDAL;
         android.content.SharedPreferences prefs = getSharedPreferences("tidal", MODE_PRIVATE);
         NeteaseClient netease = new NeteaseClient(prefs);
@@ -1059,10 +1398,16 @@ public final class MainActivity extends ComponentActivity {
 
     /** Horizontally scrolling row of album / playlist covers. */
     private void shelf(String heading, List<TidalClient.Collection> items) {
-        section(heading);
+        shelf(heading, null, null, items);
+    }
+
+    private void shelf(String heading, String more, Runnable openMore, List<TidalClient.Collection> items) {
+        if (items.isEmpty()) return;
+        sectionLink(heading, more, openMore);
         android.widget.HorizontalScrollView scroll = new android.widget.HorizontalScrollView(this);
         scroll.setHorizontalScrollBarEnabled(false);
         LinearLayout row = row();
+        row.setBaselineAligned(false);
         row.setGravity(Gravity.TOP);
         for (int i = 0; i < Math.min(12, items.size()); i++) {
             TidalClient.Collection item = items.get(i);
@@ -1087,8 +1432,54 @@ public final class MainActivity extends ComponentActivity {
             cardParams.setMarginEnd(dp(12));
             row.addView(card, cardParams);
         }
-        scroll.addView(row);
+        scroll.addView(row, new android.widget.FrameLayout.LayoutParams(-2, -2));
         content.addView(scroll);
+    }
+
+    /** Horizontally scrolling row of songs, used by the NetEase home. */
+    private void trackShelf(String heading, String more, Runnable openMore, List<TidalClient.Track> tracks) {
+        if (tracks.isEmpty()) return;
+        sectionLink(heading, more, openMore);
+        android.widget.HorizontalScrollView scroll = new android.widget.HorizontalScrollView(this);
+        scroll.setHorizontalScrollBarEnabled(false);
+        LinearLayout row = row();
+        row.setBaselineAligned(false);
+        row.setGravity(Gravity.TOP);
+        for (int i = 0; i < Math.min(20, tracks.size()); i++) {
+            int index = i;
+            TidalClient.Track track = tracks.get(index);
+            LinearLayout card = column();
+            card.setContentDescription(displayTitle(track) + "，" + track.artist);
+            card.setOnClickListener(view -> playList(tracks, index, false));
+            ImageView cover = art(112);
+            artwork.load(cover, track, 320);
+            card.addView(cover, new LinearLayout.LayoutParams(dp(112), dp(112)));
+            TextView name = single(displayTitle(track), 13, INK, true);
+            name.setPadding(0, dp(6), 0, 0);
+            card.addView(name);
+            card.addView(single(track.artist, 11, MUTED, false));
+            LinearLayout.LayoutParams cardParams = new LinearLayout.LayoutParams(dp(112), -2);
+            cardParams.setMarginEnd(dp(10));
+            row.addView(card, cardParams);
+        }
+        scroll.addView(row, new android.widget.FrameLayout.LayoutParams(-2, -2));
+        content.addView(scroll);
+    }
+
+    private void sectionLink(String heading, String more, Runnable openMore) {
+        if (more == null || openMore == null) {
+            section(heading);
+            return;
+        }
+        LinearLayout line = row();
+        line.setGravity(Gravity.CENTER_VERTICAL);
+        line.setPadding(0, dp(10), 0, dp(6));
+        line.addView(text(heading, 16, INK, true), new LinearLayout.LayoutParams(0, -2, 1));
+        Button open = action(more, more + heading, openMore);
+        open.setTextSize(13);
+        open.setPadding(dp(8), 0, 0, 0);
+        line.addView(open);
+        content.addView(line);
     }
 
     private void openNeteasePlaylists(Page target) {
@@ -2347,47 +2738,35 @@ public final class MainActivity extends ComponentActivity {
                 if (selected.category == 1) sortAlbum(tracks);
                 else sortLocal(tracks);
             }
-            content.addView(text(tracks.size() + " 首歌曲", 14, MUTED, false));
             if (localPlaylist != null) {
                 content.addView(toolbar(secondary("导出 M3U", this::pickPlaylistDestination),
                         secondary("删除歌单", this::deleteLocalPlaylist)));
             }
-            if (tracks.isEmpty()) empty("暂无歌曲", localPlaylist != null ? "从本地歌曲的更多菜单加入曲目。" : "");
-            else showTracks(tracks, false);
+            if (tracks.isEmpty()) {
+                empty("暂无歌曲", localPlaylist != null ? "从本地歌曲的更多菜单加入曲目。" : "");
+            } else if (localGroup != null && localGroup.category == 1) {
+                renderAlbumDetailView(tracks, localGroup.label);
+            } else {
+                content.addView(text(tracks.size() + " 首歌曲", 13, MUTED, false));
+                showTracks(tracks, false);
+            }
             return;
         }
-        TextView info = text(library.size() + " 首歌曲  ·  " + library.folders().size() + " 个扫描目录", 14, MUTED, false);
-        info.setPadding(0, 0, 0, dp(8));
-        content.addView(info);
-        if (localBusy) content.addView(text("正在扫描音乐…", 14, ACCENT, false));
-        else if (!localScanSummary.isEmpty()) content.addView(text(localScanSummary, 13, MUTED, false));
-        Button downloaded = withIcon(secondary("已下载", () -> {
-            offlineAlbum = null;
-            open(Page.OFFLINE);
-        }), "download", ACCENT);
-        if (library.hasFolders()) {
-            Button rescan = withIcon(secondary("更新音乐库", () -> scanDirectories(library.folders())), "refresh", ACCENT);
-            rescan.setEnabled(!localBusy);
-            content.addView(toolbar(downloaded, rescan));
-        } else {
-            content.addView(toolbar(downloaded));
+
+        pinLibraryTabs();
+        LinearLayout meta = row();
+        meta.setGravity(Gravity.CENTER_VERTICAL);
+        meta.setPadding(0, 0, 0, dp(4));
+        TextView info = text(library.size() + " 首歌曲 · " + library.folders().size() + " 个目录", 13, MUTED, false);
+        meta.addView(info, new LinearLayout.LayoutParams(0, -2, 1));
+        if (localTab == 0 && !tracks.isEmpty()) {
+            Button sort = action("排序 · " + LIBRARY_SORTS[localSort], "歌曲排序", this::chooseLocalSort);
+            sort.setTextSize(12);
+            meta.addView(sort);
         }
-        android.widget.HorizontalScrollView categories = new android.widget.HorizontalScrollView(this);
-        categories.setHorizontalScrollBarEnabled(false);
-        LinearLayout tabs = row();
-        Button active = null;
-        for (int i = 0; i < LIBRARY_TABS.length; i++) {
-            int tab = i;
-            Button choice = pill(LIBRARY_TABS[i], localTab == i, () -> { localTab = tab; localPage = 0; render(); });
-            tabs.addView(choice);
-            if (localTab == i) active = choice;
-        }
-        categories.addView(tabs);
-        content.addView(categories);
-        if (active != null) {
-            Button selected = active;
-            categories.post(() -> categories.scrollTo(Math.max(0, selected.getLeft() - dp(52)), 0));
-        }
+        content.addView(meta);
+        if (localBusy) content.addView(text("正在扫描音乐…", 12, ACCENT, false));
+        else if (!localScanSummary.isEmpty()) content.addView(text(localScanSummary, 12, MUTED, false));
 
         if (localTab == 2) {
             content.addView(toolbar(withIcon(secondary("新建歌单", () -> newLocalPlaylist(null)), "plus", ACCENT),
@@ -2395,7 +2774,6 @@ public final class MainActivity extends ComponentActivity {
             for (String name : library.playlists()) {
                 content.addView(entry(name, library.search("", name).size() + " 首歌曲", "", () -> {
                     localPlaylist = name;
-                    localPage = 0;
                     render();
                 }));
             }
@@ -2404,9 +2782,6 @@ public final class MainActivity extends ComponentActivity {
             empty.addView(toolbar(withIcon(primary("扫描文件夹", this::pickFolder), "folder", BG),
                     secondary("选择音频文件", this::pickAudio)));
         } else if (localTab == 0) {
-            content.addView(toolbar(
-                    withIcon(secondary("排序 · " + LIBRARY_SORTS[localSort], this::chooseLocalSort), "sort", ACCENT),
-                    withIcon(secondary("查找", () -> openSearch(SearchSource.LOCAL)), "search", ACCENT)));
             sortLocal(tracks);
             showTracks(tracks, false);
         } else {
@@ -2430,22 +2805,308 @@ public final class MainActivity extends ComponentActivity {
                 int labelOrder = collator.compare(a.label, b.label);
                 return labelOrder != 0 ? labelOrder : collator.compare(a.detail, b.detail);
             });
-            content.addView(toolbar(withIcon(secondary("快速定位", () -> chooseGroup(groups)), "search", ACCENT)));
-            int first = pager(groups.size(), false);
-            for (int i = first; i < Math.min(groups.size(), first + LOCAL_PAGE_SIZE); i++) {
-                LocalGroup group = groups.get(i);
-                String detail = group.members.size() + " 首歌曲";
-                if (!group.detail.isEmpty()) detail = group.detail + " · " + detail;
-                LinearLayout card = entry(group.label, detail, "", () -> openGroup(group));
-                if (group.category == 1) artwork.load((ImageView) card.getChildAt(0), group.members.get(0), 320);
-                content.addView(card);
+            if (!groups.isEmpty()) {
+                Button locate = action("定位", "快速定位", () -> chooseGroup(groups));
+                locate.setTextSize(12);
+                meta.addView(locate);
             }
+            showGroups(groups);
+        }
+    }
+
+    /** Category labels stay put while the library list scrolls. */
+    private void pinLibraryTabs() {
+        android.widget.HorizontalScrollView categories = new android.widget.HorizontalScrollView(this);
+        categories.setHorizontalScrollBarEnabled(false);
+        categories.setBackgroundColor(BG);
+        LinearLayout tabs = row();
+        tabs.setBaselineAligned(false);
+        tabs.setPadding(dp(8), dp(2), dp(8), dp(4));
+        View selected = null;
+        for (int i = 0; i < LIBRARY_TABS.length; i++) {
+            int tab = i;
+            boolean on = localTab == i;
+            TextView label = text(LIBRARY_TABS[i], 15, on ? GOLD : MUTED, true);
+            label.setGravity(Gravity.CENTER);
+            label.setPadding(dp(12), dp(8), dp(12), dp(6));
+            label.setMinWidth(dp(48));
+            GradientDrawable mark = new GradientDrawable();
+            mark.setColor(on ? GOLD : 0x00000000);
+            mark.setSize(dp(18), dp(2));
+            label.setCompoundDrawablesRelativeWithIntrinsicBounds(null, null, null, mark);
+            label.setCompoundDrawablePadding(dp(4));
+            label.setContentDescription(LIBRARY_TABS[i]);
+            label.setOnClickListener(v -> {
+                if (localTab == tab) return;
+                localTab = tab;
+                render();
+            });
+            tabs.addView(label, new LinearLayout.LayoutParams(-2, -2));
+            if (on) selected = label;
+        }
+        categories.addView(tabs, new android.widget.FrameLayout.LayoutParams(-2, -2));
+        View anchor = listStage != null ? listStage : null;
+        int index = anchor == null ? -1 : root.indexOfChild(anchor);
+        LinearLayout.LayoutParams bar = new LinearLayout.LayoutParams(-1, -2);
+        if (index >= 0) root.addView(categories, index, bar);
+        else content.addView(categories, 0, bar);
+        if (selected != null) {
+            View shown = selected;
+            categories.post(() -> categories.scrollTo(Math.max(0, shown.getLeft() - dp(24)), 0));
+        }
+    }
+
+    private void libraryTools() {
+        LocalLibrary library = playback == null ? null : playback.localLibrary;
+        java.util.List<String> labels = new ArrayList<>();
+        labels.add("已下载");
+        if (library != null && library.hasFolders()) labels.add(localBusy ? "正在扫描…" : "更新音乐库");
+        labels.add("补全歌词");
+        new AlertDialog.Builder(this).setTitle("音乐库")
+                .setItems(labels.toArray(new String[0]), (dialog, which) -> {
+                    String choice = labels.get(which);
+                    if ("已下载".equals(choice)) {
+                        offlineAlbum = null;
+                        open(Page.OFFLINE);
+                    } else if ("更新音乐库".equals(choice) && library != null) {
+                        scanDirectories(library.folders());
+                    } else if (choice.startsWith("正在")) {
+                        toast("正在扫描音乐…");
+                    } else {
+                        showBatchLyricsFill();
+                    }
+                }).show();
+    }
+
+    /** Albums, artists and the other groupings, with a letter index once the list is long. */
+    private void showGroups(List<LocalGroup> groups) {
+        String[] keys = new String[groups.size()];
+        java.util.LinkedHashMap<String, Integer> index = new java.util.LinkedHashMap<>();
+        for (int i = 0; i < groups.size(); i++) {
+            keys[i] = sectionKey(groups.get(i).label);
+            if (!index.containsKey(keys[i])) index.put(keys[i], i);
+        }
+        int columns = localTab == 1 ? 2 : localTab == 3 ? 3 : 1;
+        showGrowing(groups.size(), (from, to) -> {
+            int cursor = from;
+            while (cursor < to) {
+                if (cursor == 0 || !keys[cursor].equals(keys[cursor - 1])) {
+                    TextView head = text(keys[cursor], 12, GOLD, true);
+                    head.setPadding(dp(4), dp(12), dp(36), dp(2));
+                    indexAnchors.put(cursor, head);
+                    content.addView(head);
+                }
+                if (columns == 1) {
+                    LocalGroup group = groups.get(cursor);
+                    String detail = group.members.size() + " 首歌曲";
+                    if (!group.detail.isEmpty()) detail = group.detail + " · " + detail;
+                    content.addView(entry(group.label, detail, "", () -> openGroup(group)));
+                    cursor++;
+                    continue;
+                }
+                LinearLayout gridRow = row();
+                gridRow.setPadding(0, 0, dp(20), dp(8));
+                String letter = keys[cursor];
+                int filled = 0;
+                while (filled < columns && cursor < to && keys[cursor].equals(letter)) {
+                    LocalGroup group = groups.get(cursor);
+                    LinearLayout.LayoutParams cell = new LinearLayout.LayoutParams(0, -2, 1);
+                    if (filled > 0) cell.leftMargin = dp(8);
+                    gridRow.addView(localTab == 1 ? albumCard(group) : artistCard(group), cell);
+                    filled++;
+                    cursor++;
+                }
+                while (filled < columns) {
+                    View spacer = new View(this);
+                    LinearLayout.LayoutParams cell = new LinearLayout.LayoutParams(0, -2, 1);
+                    cell.leftMargin = dp(8);
+                    gridRow.addView(spacer, cell);
+                    filled++;
+                }
+                content.addView(gridRow);
+            }
+        });
+        if (index.size() > 1) attachIndex(index);
+    }
+
+    private void attachIndex(java.util.LinkedHashMap<String, Integer> index) {
+        if (listStage == null) return;
+        boolean wide = false;
+        for (String key : index.keySet()) if (key.length() > 1) wide = true;
+        content.setPadding(content.getPaddingLeft(), content.getPaddingTop(), dp(wide ? 44 : 28), content.getPaddingBottom());
+        LinearLayout rail = column();
+        rail.setGravity(Gravity.CENTER_HORIZONTAL);
+        rail.setPadding(0, dp(4), dp(2), dp(4));
+        for (java.util.Map.Entry<String, Integer> entry : index.entrySet()) {
+            TextView tick = text(entry.getKey(), wide ? 8 : 10, MUTED, true);
+            tick.setGravity(Gravity.CENTER);
+            tick.setIncludeFontPadding(false);
+            tick.setContentDescription("定位到 " + entry.getKey());
+            int at = entry.getValue();
+            tick.setOnClickListener(v -> scrollToSection(at));
+            rail.addView(tick, new LinearLayout.LayoutParams(-2, 0, 1));
+        }
+        listStage.addView(rail, new android.widget.FrameLayout.LayoutParams(-2, -1, Gravity.END | Gravity.CENTER_VERTICAL));
+    }
+
+    private void scrollToSection(int index) {
+        fillTo(index);
+        View anchor = indexAnchors.get(index);
+        if (anchor == null || listScroll == null) return;
+        listScroll.post(() -> listScroll.smoothScrollTo(0, anchor.getTop()));
+    }
+
+    private String sectionKey(String label) {
+        if (localTab == 6) {
+            java.util.regex.Matcher year = YEAR_KEY.matcher(label == null ? "" : label);
+            return year.find() ? year.group() : "#";
+        }
+        return indexLetter(label);
+    }
+
+    /** First letter for the library index. Chinese names use pinyin on Android 10 and later. */
+    private static String indexLetter(String label) {
+        if (label == null) return "#";
+        String trimmed = label.trim();
+        if (trimmed.isEmpty()) return "#";
+        if (android.os.Build.VERSION.SDK_INT >= 29) {
+            try {
+                if (nameLatin == null) nameLatin = android.icu.text.Transliterator.getInstance("Any-Latin; Latin-ASCII; Upper");
+                String converted = ((android.icu.text.Transliterator) nameLatin).transliterate(trimmed);
+                if (!converted.isEmpty()) trimmed = converted;
+            } catch (Exception ignored) {}
+        }
+        int point = trimmed.codePointAt(0);
+        if (point >= 'a' && point <= 'z') return String.valueOf((char) (point - 32));
+        if (point >= 'A' && point <= 'Z') return String.valueOf((char) point);
+        return "#";
+    }
+
+    private LinearLayout albumCard(LocalGroup group) {
+        LinearLayout card = column();
+        card.setBackground(shape(SURFACE, 10));
+        card.setPadding(dp(6), dp(6), dp(6), dp(8));
+        card.setOnClickListener(v -> openGroup(group));
+
+        ImageView cover = art(0);
+        cover.setBackground(shape(RAISED, 8));
+        cover.setClipToOutline(true);
+        cover.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        LinearLayout.LayoutParams imgLp = new LinearLayout.LayoutParams(-1, dp(120));
+        card.addView(cover, imgLp);
+
+        if (!group.members.isEmpty()) {
+            artwork.load(cover, group.members.get(0), 320);
+        }
+
+        TextView title = single(group.label, 12, INK, true);
+        title.setPadding(0, dp(6), 0, dp(1));
+        card.addView(title);
+
+        String subtitle = group.detail;
+        if (subtitle.isEmpty() && !group.members.isEmpty()) {
+            subtitle = group.members.get(0).artist;
+        }
+        if (!group.members.isEmpty()) {
+            String year = group.members.get(0).payload.optString("year", "");
+            if (!year.isEmpty()) subtitle += (subtitle.isEmpty() ? "" : " · ") + year;
+        }
+        TextView sub = single(subtitle, 10, MUTED, false);
+        card.addView(sub);
+        return card;
+    }
+
+    private LinearLayout artistCard(LocalGroup group) {
+        LinearLayout card = column();
+        card.setGravity(Gravity.CENTER_HORIZONTAL);
+        card.setBackground(shape(SURFACE, 10));
+        card.setPadding(dp(6), dp(10), dp(6), dp(10));
+        card.setOnClickListener(v -> openGroup(group));
+
+        ImageView avatar = art(60);
+        avatar.setBackground(shape(RAISED, 30));
+        avatar.setClipToOutline(true);
+        avatar.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        if (!group.members.isEmpty()) {
+            artwork.loadPhoto(avatar, group.members.get(0), 160);
+        }
+        card.addView(avatar, new LinearLayout.LayoutParams(dp(60), dp(60)));
+
+        TextView name = single(group.label, 12, INK, true);
+        name.setGravity(Gravity.CENTER);
+        name.setPadding(0, dp(6), 0, dp(1));
+        card.addView(name);
+
+        TextView count = single(group.members.size() + " 首歌曲", 10, MUTED, false);
+        count.setGravity(Gravity.CENTER);
+        card.addView(count);
+        return card;
+    }
+
+    private void renderAlbumDetailView(List<TidalClient.Track> tracks, String albumName) {
+        if (tracks.isEmpty()) return;
+        TidalClient.Track sample = tracks.get(0);
+        LinearLayout banner = row();
+        banner.setPadding(dp(12), dp(10), dp(12), dp(10));
+        banner.setBackground(shape(SURFACE, 12));
+
+        ImageView coverView = art(84);
+        coverView.setBackground(shape(RAISED, 8));
+        artwork.load(coverView, sample, 320);
+        banner.addView(coverView);
+
+        LinearLayout meta = column();
+        meta.setPadding(dp(12), 0, 0, 0);
+
+        TextView aTitle = text(sample.album.isEmpty() ? albumName : sample.album, 16, INK, true);
+        aTitle.setMaxLines(2);
+        aTitle.setEllipsize(TextUtils.TruncateAt.END);
+        meta.addView(aTitle);
+
+        TextView aArtist = text(sample.artist, 12, ACCENT, false);
+        aArtist.setPadding(0, dp(2), 0, dp(4));
+        meta.addView(aArtist);
+
+        LinearLayout badges = row();
+        badges.setGravity(Gravity.CENTER_VERTICAL);
+        AudioBadge spec = audioSpecBadge(sample);
+        if (spec != null) {
+            TextView bView = text(spec.text, 8, spec.textColor, true);
+            bView.setPadding(dp(4), dp(1), dp(4), dp(1));
+            bView.setBackground(shapeWithStroke(spec.bgColor, spec.borderColor, 1, 3));
+            badges.addView(bView);
+        }
+        String year = sample.payload.optString("year", "");
+        String infoText = (year.isEmpty() ? "" : year + " · ") + tracks.size() + " 首歌曲";
+        TextView iView = text(infoText, 10, MUTED, false);
+        iView.setPadding(dp(6), 0, 0, 0);
+        badges.addView(iView);
+        meta.addView(badges);
+
+        banner.addView(meta, new LinearLayout.LayoutParams(0, -2, 1));
+        content.addView(banner);
+
+        Button all = withIcon(primary("播放全部", () -> playList(tracks, 0, false)), "play", BG);
+        Button random = withIcon(secondary("随机播放", () -> playList(tracks, 0, true)), "shuffle", ACCENT);
+        content.addView(toolbar(all, random));
+
+        int lastDisc = -1;
+        for (int i = 0; i < tracks.size(); i++) {
+            int index = i;
+            TidalClient.Track track = tracks.get(i);
+            int disc = track.payload.optInt("disc_number", 0);
+            if (disc > 0 && disc != lastDisc) {
+                lastDisc = disc;
+                TextView discHeader = text("Disc " + disc, 12, GOLD, true);
+                discHeader.setPadding(dp(4), dp(10), dp(4), dp(3));
+                content.addView(discHeader);
+            }
+            content.addView(albumTrackEntry(track, i + 1, () -> playList(tracks, index, false)));
         }
     }
 
     private void openGroup(LocalGroup group) {
         localGroup = group;
-        localPage = 0;
         render();
     }
 
@@ -2498,7 +3159,6 @@ public final class MainActivity extends ComponentActivity {
                 .setSingleChoiceItems(LIBRARY_SORTS, localSort, (dialog, index) -> {
                     localSort = index;
                     getPreferences(MODE_PRIVATE).edit().putInt("local_sort", index).apply();
-                    localPage = 0;
                     dialog.dismiss();
                     render();
                 }).setNegativeButton("取消", null).show();
@@ -2559,9 +3219,38 @@ public final class MainActivity extends ComponentActivity {
             empty("搜索本地音乐", "可以按歌曲、艺人、专辑、流派或年份查找。");
         } else if (playback != null) {
             List<TidalClient.Track> result = playback.localLibrary.search(query, null);
-            if (result.isEmpty()) empty("没有找到匹配的本地歌曲", "");
-            else { sortLocal(result); showTracks(result, false); }
+            List<LocalGroup> albums = localGroups(result, 1, query);
+            List<LocalGroup> artists = localGroups(result, 3, query);
+            if (result.isEmpty() && albums.isEmpty() && artists.isEmpty()) {
+                empty("没有找到匹配的本地音乐", "");
+                return;
+            }
+            groupShelf("专辑", null, albums);
+            groupShelf("艺人", null, artists);
+            if (!result.isEmpty()) {
+                section("歌曲");
+                sortLocal(result);
+                showTracks(result, false);
+            }
         }
+    }
+
+    /** Albums or artists whose name contains the query. */
+    private static List<LocalGroup> localGroups(List<TidalClient.Track> tracks, int category, String query) {
+        String needle = query.toLowerCase(java.util.Locale.ROOT);
+        java.util.Map<String, LocalGroup> grouped = new java.util.LinkedHashMap<>();
+        for (TidalClient.Track track : tracks) {
+            LocalGroup candidate = LocalLibrary.groupFor(track, category);
+            if (!candidate.label.toLowerCase(java.util.Locale.ROOT).contains(needle)) continue;
+            LocalGroup group = grouped.get(candidate.key);
+            if (group == null) {
+                if (grouped.size() >= 12) continue;
+                group = candidate;
+                grouped.put(group.key, group);
+            }
+            if (group.members.size() < 40) group.members.add(track);
+        }
+        return new ArrayList<>(grouped.values());
     }
 
     private void importMenu() {
@@ -2799,8 +3488,7 @@ public final class MainActivity extends ComponentActivity {
         header.addView(image, new LinearLayout.LayoutParams(dp(140), dp(140)));
         LinearLayout info = column();
         info.setPadding(dp(16), 0, 0, 0);
-        info.addView(text(artist ? "艺人" : item.kind == TidalClient.Collection.Kind.PLAYLIST ? "歌单" : "专辑",
-                12, ACCENT, true));
+        info.addView(text(collectionKind(item), 12, ACCENT, true));
         TextView name = text(item.title, 22, INK, true);
         name.setMaxLines(3);
         name.setEllipsize(TextUtils.TruncateAt.END);
@@ -2822,7 +3510,8 @@ public final class MainActivity extends ComponentActivity {
         content.addView(header);
         if (item.kind != TidalClient.Collection.Kind.ARTIST || item.isNetease()) {
             section(item.kind == TidalClient.Collection.Kind.ARTIST ? "热门歌曲"
-                    : item.kind == TidalClient.Collection.Kind.PLAYLIST ? "歌单曲目" : "专辑曲目");
+                    : item.kind == TidalClient.Collection.Kind.PLAYLIST ? "歌单曲目"
+                    : item.kind == TidalClient.Collection.Kind.MIX ? "混音曲目" : "专辑曲目");
         }
     }
 
@@ -2844,9 +3533,17 @@ public final class MainActivity extends ComponentActivity {
         }
     }
 
+    private static String collectionKind(TidalClient.Collection item) {
+        switch (item.kind) {
+            case ARTIST: return "艺人";
+            case PLAYLIST: return "歌单";
+            case MIX: return "混音";
+            default: return "专辑";
+        }
+    }
+
     private void collectionRow(TidalClient.Collection item) {
-        String type = item.kind == TidalClient.Collection.Kind.ARTIST ? "艺人"
-                : item.kind == TidalClient.Collection.Kind.PLAYLIST ? "歌单" : "专辑";
+        String type = collectionKind(item);
         String detail = item.subtitle.isEmpty() ? type : item.subtitle;
         LinearLayout row = entry(item.title, detail, item.cover, () -> openCollection(item));
         TextView subtitle = (TextView) ((LinearLayout) row.getChildAt(1)).getChildAt(1);
@@ -2887,37 +3584,63 @@ public final class MainActivity extends ComponentActivity {
                 ? toolbar(all, random, withIcon(secondary("多选下载", () -> selectTidalDownloads(downloadable)), "download", ACCENT))
                 : toolbar(all, random));
         boolean local = !source.isEmpty() && source.get(0).isLocal();
-        int first = local ? pager(source.size(), false) : 0;
-        int last = local ? Math.min(source.size(), first + LOCAL_PAGE_SIZE) : Math.min(source.size(), maximumVisible);
-        for (int i = first; i < last; i++) {
-            int index = i;
-            TidalClient.Track track = source.get(i);
-            content.addView(trackEntry(track, favoriteList, () -> playList(source, index, false)));
+        int limit = Math.min(source.size(), maximumVisible);
+        if (revealTrackId != Long.MIN_VALUE) {
+            for (int i = limit; i < source.size(); i++) {
+                if (source.get(i).id == revealTrackId) {
+                    limit = i + 1;
+                    break;
+                }
+            }
         }
+        RangeDrawer draw = (from, to) -> {
+            for (int i = from; i < to; i++) {
+                int index = i;
+                content.addView(trackEntry(source.get(index), favoriteList, () -> playList(source, index, false)));
+            }
+        };
+        if (local) {
+            showGrowing(limit, draw);
+            if (revealTrackId != Long.MIN_VALUE) {
+                for (int i = LOCAL_PAGE_SIZE; i < limit; i++) {
+                    if (source.get(i).id == revealTrackId) {
+                        fillTo(i);
+                        break;
+                    }
+                }
+            }
+        } else draw.draw(0, limit);
     }
 
-    private int pager(int total, boolean queue) {
-        int pages = Math.max(1, (total + LOCAL_PAGE_SIZE - 1) / LOCAL_PAGE_SIZE);
-        int current = Math.min(pages - 1, queue ? queuePage : localPage);
-        if (pages > 1) {
-            LinearLayout bar = row();
-            Button previous = action("上一页", "上一页", () -> changePage(queue, current - 1));
-            previous.setEnabled(current > 0);
-            bar.addView(previous);
-            TextView count = text((current + 1) + " / " + pages, 13, MUTED, false);
-            bar.addView(count);
-            Button next = action("下一页", "下一页", () -> changePage(queue, current + 1));
-            next.setEnabled(current + 1 < pages);
-            bar.addView(next);
-            content.addView(bar);
-        }
-        return current * LOCAL_PAGE_SIZE;
+    /** Draw the first page now, and the rest when the list scrolls near the bottom. */
+    private void showGrowing(int total, RangeDrawer drawer) {
+        growTotal = total;
+        growDrawer = drawer;
+        grown = new int[] {Math.min(total, LOCAL_PAGE_SIZE)};
+        if (grown[0] > 0) drawer.draw(0, grown[0]);
+        armGrow();
     }
 
-    private void changePage(boolean queue, int pageNumber) {
-        if (queue) queuePage = pageNumber;
-        else localPage = pageNumber;
-        render();
+    private void armGrow() {
+        if (grown == null || grown[0] >= growTotal) {
+            loadMore = null;
+            return;
+        }
+        loadMore = () -> fillTo(grown[0] + LOCAL_PAGE_SIZE - 1);
+    }
+
+    private void fillTo(int index) {
+        if (loadingMore || grown == null || growDrawer == null) return;
+        loadingMore = true;
+        int guard = 0;
+        while (grown[0] <= index && grown[0] < growTotal && guard++ < 80) {
+            int from = grown[0];
+            int to = Math.min(growTotal, Math.max(from + LOCAL_PAGE_SIZE, index + 1));
+            growDrawer.draw(from, to);
+            grown[0] = to;
+        }
+        loadingMore = false;
+        armGrow();
     }
 
     private void playList(List<TidalClient.Track> list, int index, boolean random) {
@@ -2931,20 +3654,122 @@ public final class MainActivity extends ComponentActivity {
     }
 
     private LinearLayout trackEntry(TidalClient.Track track, boolean favoriteList, Runnable playTrack) {
-        String detail = track.artist;
-        if (!track.album.isEmpty()) detail += (detail.isEmpty() ? "" : " · ") + track.album;
-        if (detail.isEmpty()) detail = track.isLocal() ? "本地音频" : track.isNetease() ? "网易云" : "TIDAL";
-        LinearLayout view = entry(displayTitle(track), detail, "", playTrack);
-        TextView subtitle = (TextView) ((LinearLayout) view.getChildAt(1)).getChildAt(1);
-        String plain = detail;
-        mark(() -> {
-            String saved = downloaded == null ? null : downloaded.label(track);
-            subtitle.setText(saved == null ? plain : saved + " · " + plain);
-            subtitle.setTextColor(saved == null ? MUTED : ACCENT);
-        });
-        artwork.load((ImageView) view.getChildAt(0), track, 160);
-        view.addView(iconButton("more", "更多 " + track.title, () -> trackMenu(track, favoriteList)));
-        return view;
+        LinearLayout row = row();
+        row.setTag(track.id);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(8), dp(4), dp(6), dp(4));
+        row.setBackground(shape(SURFACE, 8));
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, dp(48));
+        params.bottomMargin = dp(3);
+        row.setLayoutParams(params);
+
+        ImageView image = art(36);
+        image.setBackground(shape(RAISED, 6));
+        artwork.load(image, track, 160);
+        image.setOnClickListener(v -> playTrack.run());
+        row.addView(image);
+
+        LinearLayout info = column();
+        info.setPadding(dp(10), 0, dp(6), 0);
+
+        TextView titleView = single(displayTitle(track), 13, INK, true);
+        info.addView(titleView);
+
+        LinearLayout metaRow = row();
+        metaRow.setGravity(Gravity.CENTER_VERTICAL);
+
+        AudioBadge spec = audioSpecBadge(track);
+        if (spec != null) {
+            TextView bView = text(spec.text, 8, spec.textColor, true);
+            bView.setPadding(dp(3), dp(1), dp(3), dp(1));
+            bView.setBackground(shapeWithStroke(spec.bgColor, spec.borderColor, 1, 3));
+            LinearLayout.LayoutParams bLp = new LinearLayout.LayoutParams(-2, -2);
+            bLp.rightMargin = dp(4);
+            metaRow.addView(bView, bLp);
+        }
+
+        String sourceName = track.isLocal() ? "本地"
+                : track.isNetease() ? "网易云"
+                : track.isWebdav() ? "WebDAV"
+                : track.isSmb() ? "SMB" : "TIDAL";
+        TextView sView = text(sourceName, 8, MUTED, false);
+        sView.setPadding(dp(3), dp(1), dp(3), dp(1));
+        sView.setBackground(shape(0x18ffffff, 3));
+        LinearLayout.LayoutParams sLp = new LinearLayout.LayoutParams(-2, -2);
+        sLp.rightMargin = dp(5);
+        metaRow.addView(sView, sLp);
+
+        String byline = track.artist;
+        if (!track.album.isEmpty()) byline += (byline.isEmpty() ? "" : " · ") + track.album;
+        if (byline.isEmpty()) byline = sourceName;
+        TextView artistView = single(byline, 11, MUTED, false);
+        metaRow.addView(artistView, new LinearLayout.LayoutParams(0, -2, 1));
+
+        info.addView(metaRow);
+        info.setOnClickListener(v -> playTrack.run());
+        row.addView(info, new LinearLayout.LayoutParams(0, -2, 1));
+
+        long dur = DownloadTasks.length(track);
+        if (dur > 0) {
+            TextView durView = text(formatTime(dur * 1000), 10, MUTED, false);
+            durView.setPadding(0, 0, dp(4), 0);
+            row.addView(durView);
+        }
+
+        row.addView(iconButton("more", "更多 " + track.title, () -> trackMenu(track, favoriteList)),
+                new LinearLayout.LayoutParams(dp(28), dp(28)));
+        return row;
+    }
+
+    private LinearLayout albumTrackEntry(TidalClient.Track track, int trackNum, Runnable playTrack) {
+        LinearLayout row = row();
+        row.setTag(track.id);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(8), dp(4), dp(6), dp(4));
+        row.setBackground(shape(SURFACE, 8));
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, dp(44));
+        params.bottomMargin = dp(2);
+        row.setLayoutParams(params);
+
+        boolean isCurrent = playback != null && playback.current() != null && playback.current().id == track.id;
+
+        TextView numView = text(isCurrent ? "▶" : String.format(Locale.ROOT, "%02d", trackNum), 11, isCurrent ? GOLD : MUTED, isCurrent);
+        numView.setGravity(Gravity.CENTER);
+        row.addView(numView, new LinearLayout.LayoutParams(dp(28), -2));
+
+        LinearLayout info = column();
+        info.setPadding(dp(6), 0, dp(6), 0);
+
+        TextView titleView = single(displayTitle(track), 13, isCurrent ? GOLD : INK, isCurrent);
+        info.addView(titleView);
+
+        if (!track.artist.isEmpty()) {
+            TextView artistView = single(track.artist, 10, MUTED, false);
+            info.addView(artistView);
+        }
+        info.setOnClickListener(v -> playTrack.run());
+        row.addView(info, new LinearLayout.LayoutParams(0, -2, 1));
+
+        AudioBadge spec = audioSpecBadge(track);
+        if (spec != null) {
+            TextView bView = text(spec.text, 8, spec.textColor, true);
+            bView.setPadding(dp(3), dp(1), dp(3), dp(1));
+            bView.setBackground(shapeWithStroke(spec.bgColor, spec.borderColor, 1, 3));
+            LinearLayout.LayoutParams bLp = new LinearLayout.LayoutParams(-2, -2);
+            bLp.rightMargin = dp(6);
+            row.addView(bView, bLp);
+        }
+
+        long dur = DownloadTasks.length(track);
+        if (dur > 0) {
+            TextView durView = text(formatTime(dur * 1000), 10, MUTED, false);
+            durView.setPadding(0, 0, dp(4), 0);
+            row.addView(durView);
+        }
+
+        row.addView(iconButton("more", "更多 " + track.title, () -> trackMenu(track, false)),
+                new LinearLayout.LayoutParams(dp(28), dp(28)));
+        return row;
     }
 
     private void trackMenu(TidalClient.Track track, boolean favoriteList) {
@@ -3874,8 +4699,9 @@ public final class MainActivity extends ComponentActivity {
         if (playback == null) return;
         String playlist = page == Page.LOCAL ? localPlaylist : null;
         String remove = playlist == null ? "从音乐库移除" : "从歌单移除";
+        String[] options = {"下一首播放", "追加到队列", "加入本地歌单", "下载/匹配歌词", remove};
         new AlertDialog.Builder(this).setTitle(track.title)
-                .setItems(new String[]{"下一首播放", "追加到队列", "加入本地歌单", remove}, (dialog, choice) -> {
+                .setItems(options, (dialog, choice) -> {
                     if (playback == null) return;
                     if (choice == 0) playback.enqueue(track, true);
                     else if (choice == 1) playback.enqueue(track, false);
@@ -3892,6 +4718,8 @@ public final class MainActivity extends ComponentActivity {
                                         toast("已加入歌单");
                                     }
                                 }).show();
+                    } else if (choice == 3) {
+                        downloadLyricsDialog(track);
                     } else {
                         playback.localLibrary.remove(playlist, track.id);
                         if (playlist == null) playback.fileDeleted(track.id);
@@ -3901,6 +4729,106 @@ public final class MainActivity extends ComponentActivity {
                     }
                     if (choice < 2) toast(remoteMode() ? "已加入本机队列，本地歌曲只能在本机播放" : "已加入播放队列");
                 }).show();
+    }
+
+    private void downloadLyricsDialog(TidalClient.Track track) {
+        if (playback == null || track == null) return;
+        toast("正在检索歌词…");
+        worker.submit(() -> {
+            try {
+                LyricsFill fill = LyricsFill.get(playback);
+                List<LyricsFill.Candidate> candidates = fill.candidates(track);
+                runOnUiThread(() -> {
+                    if (isDestroyed()) return;
+                    if (candidates.isEmpty()) {
+                        new AlertDialog.Builder(this)
+                                .setTitle("未找到歌词")
+                                .setMessage("在 TIDAL 和网易云中未找到「" + track.title + " - " + track.artist + "」的歌词。\n\n请确认歌曲标题与艺人标签是否准确。")
+                                .setPositiveButton("确定", null)
+                                .show();
+                        return;
+                    }
+                    List<String> labels = new ArrayList<>();
+                    for (LyricsFill.Candidate c : candidates) {
+                        String durStr = "";
+                        long dur = DownloadTasks.length(c.track);
+                        if (dur > 0) durStr = " · " + formatTime(dur * 1000);
+                        String matchTag = c.match ? " ★精准匹配" : "";
+                        labels.add("[" + c.source + "] " + c.track.title + " - " + c.track.artist + durStr + matchTag);
+                    }
+                    new AlertDialog.Builder(this)
+                            .setTitle("选择要下载的歌词 (" + candidates.size() + ")")
+                            .setItems(labels.toArray(new String[0]), (dialog, which) -> {
+                                LyricsFill.Candidate picked = candidates.get(which);
+                                savePickedLyrics(track, picked);
+                            })
+                            .setNegativeButton("取消", null)
+                            .show();
+                });
+            } catch (Exception error) {
+                runOnUiThread(() -> {
+                    if (!isDestroyed()) toast("搜索歌词失败：" + readable(error));
+                });
+            }
+        });
+    }
+
+    private void savePickedLyrics(TidalClient.Track track, LyricsFill.Candidate picked) {
+        if (playback == null) return;
+        toast("正在下载歌词…");
+        worker.submit(() -> {
+            try {
+                LyricsFill fill = LyricsFill.get(playback);
+                JSONObject words = fill.fetch(picked.source, picked.track.id);
+                String synced = words.optString("synced");
+                String plain = words.optString("plain");
+                String lrc = !synced.isEmpty() ? synced : plain;
+                if (lrc.trim().isEmpty()) throw new IOException("该候选没有歌词文本");
+                fill.save(track, lrc);
+                runOnUiThread(() -> {
+                    if (isDestroyed()) return;
+                    toast("歌词已保存为同名 LRC 文件");
+                    if (playback != null && playback.current() != null && playback.current().id == track.id) {
+                        if (lyricsMode) showLyrics();
+                    }
+                    render();
+                });
+            } catch (Exception error) {
+                runOnUiThread(() -> {
+                    if (!isDestroyed()) toast("保存歌词失败：" + readable(error));
+                });
+            }
+        });
+    }
+
+    private void showBatchLyricsFill() {
+        if (playback == null) return;
+        int without = playback.localLibrary.withoutLyrics().size();
+        if (without == 0) {
+            toast("所有本地歌曲都已有歌词文件");
+            return;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("批量补全歌词")
+                .setMessage("当前共有 " + without + " 首本地歌曲缺少同名 .lrc 歌词文件。\n\n是否从 TIDAL 与网易云自动搜索并下载保存为同名 .lrc？")
+                .setPositiveButton("开始补全", (dialog, which) -> {
+                    try {
+                        LyricsFill.get(playback).start(null, false);
+                        toast("已启动后台歌词补全，匹配成功后自动落盘保存");
+                    } catch (IOException err) {
+                        toast(err.getMessage());
+                    }
+                })
+                .setNeutralButton("重试所有未找到", (dialog, which) -> {
+                    try {
+                        LyricsFill.get(playback).start(null, true);
+                        toast("已重新尝试补全所有无歌词歌曲");
+                    } catch (IOException err) {
+                        toast(err.getMessage());
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .show();
     }
 
     private void playRadio(TidalClient.Track track) {
@@ -3923,7 +4851,7 @@ public final class MainActivity extends ComponentActivity {
         });
     }
 
-    /** Switch the cover square of Now Playing between the cover and the lyrics. */
+    /** Switch the Now Playing stage between the cover and full-width lyrics. */
     private void toggleLyrics() {
         if (lyricsMode) {
             closeLyrics();
@@ -3994,7 +4922,13 @@ public final class MainActivity extends ComponentActivity {
                 });
             } catch (Exception error) {
                 runOnUiThread(() -> {
-                    if (lyrics == view) view.unavailable(readable(error));
+                    if (lyrics == view) {
+                        if (track.isLocal()) {
+                            view.unavailable(readable(error), () -> downloadLyricsDialog(track));
+                        } else {
+                            view.unavailable(readable(error));
+                        }
+                    }
                 });
             }
         });
@@ -4045,24 +4979,27 @@ public final class MainActivity extends ComponentActivity {
             return;
         }
         section(playback.queue.size() + " 首歌曲");
-        int first = pager(playback.queue.size(), true);
-        for (int i = first; i < Math.min(playback.queue.size(), first + LOCAL_PAGE_SIZE); i++) {
-            int at = i;
-            TidalClient.Track track = playback.queue.get(at);
-            boolean playingNow = i == playback.index;
-            LinearLayout entry = entry(displayTitle(track),
-                    playingNow ? "正在播放" + (track.artist.isEmpty() ? "" : " · " + track.artist) : track.artist,
-                    track.cover, () -> playback.playAt(at, 0, true));
-            artwork.load((ImageView) entry.getChildAt(0), track, 160);
-            if (playingNow) {
-                entry.setBackground(shape(RAISED, 12));
-                LinearLayout info = (LinearLayout) entry.getChildAt(1);
-                ((TextView) info.getChildAt(0)).setTextColor(ACCENT);
-                ((TextView) info.getChildAt(1)).setTextColor(ACCENT);
+        showGrowing(playback.queue.size(), (from, to) -> {
+            for (int i = from; i < to; i++) {
+                int at = i;
+                TidalClient.Track track = playback.queue.get(at);
+                boolean playingNow = i == playback.index;
+                LinearLayout entry = entry(displayTitle(track),
+                        playingNow ? "正在播放" + (track.artist.isEmpty() ? "" : " · " + track.artist) : track.artist,
+                        track.cover, () -> playback.playAt(at, 0, true));
+                artwork.load((ImageView) entry.getChildAt(0), track, 160);
+                if (playingNow) {
+                    entry.setTag(QUEUE_PLAYING);
+                    entry.setBackground(shape(RAISED, 12));
+                    LinearLayout info = (LinearLayout) entry.getChildAt(1);
+                    ((TextView) info.getChildAt(0)).setTextColor(ACCENT);
+                    ((TextView) info.getChildAt(1)).setTextColor(ACCENT);
+                }
+                entry.addView(iconButton("more", "调整队列 " + track.title, () -> editQueue(at, track)));
+                content.addView(entry);
             }
-            entry.addView(iconButton("more", "调整队列 " + track.title, () -> editQueue(at, track)));
-            content.addView(entry);
-        }
+        });
+        if (revealQueue && playback.index >= LOCAL_PAGE_SIZE) fillTo(playback.index);
     }
 
     // ───────────── remote control of this account's other devices ─────────────
@@ -4241,6 +5178,77 @@ public final class MainActivity extends ComponentActivity {
         if ("play".equals(mode)) toast("正在 " + devices.targetName() + " 播放：" + displayTitle(tidal.get(at)));
     }
 
+    /** After opening an album or artist from Now Playing, scroll that song into view. */
+    private void revealPlayingRow() {
+        if (revealTrackId == Long.MIN_VALUE || listScroll == null) return;
+        if (catalogueLoading && tracks.isEmpty() && collections.isEmpty()) return;
+        long id = revealTrackId;
+        ScrollView scroller = listScroll;
+        scroller.getViewTreeObserver().addOnGlobalLayoutListener(new android.view.ViewTreeObserver.OnGlobalLayoutListener() {
+            @Override public void onGlobalLayout() {
+                if (listScroll != scroller || revealTrackId != id) return;
+                android.view.ViewTreeObserver observer = scroller.getViewTreeObserver();
+                if (observer.isAlive()) observer.removeOnGlobalLayoutListener(this);
+                revealTrackId = Long.MIN_VALUE;
+                View row = findTagged(scroller, id);
+                if (row == null) return;
+                int y = 0;
+                View contentRoot = scroller.getChildAt(0);
+                for (View view = row; view != null && view != contentRoot; ) {
+                    y += view.getTop();
+                    view = view.getParent() instanceof View ? (View) view.getParent() : null;
+                }
+                if (y > dp(8)) scroller.scrollTo(0, y - dp(8));
+            }
+        });
+    }
+
+    /** Scroll a tagged row into view once the queue page has been laid out. */
+    private void revealTag(Object tag) {
+        if (listScroll == null) return;
+        ScrollView scroller = listScroll;
+        scroller.getViewTreeObserver().addOnGlobalLayoutListener(new android.view.ViewTreeObserver.OnGlobalLayoutListener() {
+            @Override public void onGlobalLayout() {
+                if (listScroll != scroller) return;
+                android.view.ViewTreeObserver observer = scroller.getViewTreeObserver();
+                if (observer.isAlive()) observer.removeOnGlobalLayoutListener(this);
+                View row = findTag(scroller, tag);
+                if (row == null) return;
+                int y = 0;
+                View contentRoot = scroller.getChildAt(0);
+                for (View view = row; view != null && view != contentRoot; ) {
+                    y += view.getTop();
+                    view = view.getParent() instanceof View ? (View) view.getParent() : null;
+                }
+                if (y > dp(8)) scroller.scrollTo(0, y - dp(8));
+            }
+        });
+    }
+
+    private static View findTag(View root, Object tag) {
+        if (tag.equals(root.getTag())) return root;
+        if (root instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) root;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                View found = findTag(group.getChildAt(i), tag);
+                if (found != null) return found;
+            }
+        }
+        return null;
+    }
+
+    private static View findTagged(View root, long id) {
+        if (root.getTag() instanceof Long && (Long) root.getTag() == id) return root;
+        if (root instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) root;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                View found = findTagged(group.getChildAt(i), id);
+                if (found != null) return found;
+            }
+        }
+        return null;
+    }
+
     /** "专辑 · X ›" under the artist on Now Playing, when the track belongs to an album. */
     private void showPlayingAlbum(String album, boolean artistLine) {
         if (playerAlbum == null) return;
@@ -4248,17 +5256,35 @@ public final class MainActivity extends ComponentActivity {
         playerAlbum.setVisibility(shown ? View.VISIBLE : View.GONE);
         if (shown) playerAlbum.setText("专辑 · " + album);
         playerAlbum.setContentDescription(shown ? "查看专辑 " + album : null);
+        subtitle.setTextColor(artistLine ? ACCENT : MUTED);
+        subtitle.setCompoundDrawablesRelativeWithIntrinsicBounds(null, null,
+                artistLine ? new PlayerIcon("forward", ACCENT, dp(12)) : null, null);
         subtitle.setContentDescription(artistLine ? "查看艺人 " + subtitle.getText() : null);
+    }
+
+    private boolean hasPlayingArtist() {
+        if (remoteMode()) {
+            RemoteDevices.State state = devices.state;
+            RemoteDevices.Track current = state == null ? null : state.current();
+            return current != null && !current.artist.isEmpty();
+        }
+        return playback != null && playback.current() != null && !playback.current().artist.isEmpty();
     }
 
     private void openPlayingAlbum() {
         if (remoteMode()) openRemotePlaying(true);
-        else if (playback != null && playback.current() != null) openTrackAlbum(playback.current());
+        else if (playback != null && playback.current() != null) {
+            revealTrackId = playback.current().id;
+            openTrackAlbum(playback.current());
+        }
     }
 
     private void openPlayingArtist() {
         if (remoteMode()) openRemotePlaying(false);
-        else if (playback != null && playback.current() != null) openTrackArtist(playback.current());
+        else if (playback != null && playback.current() != null) {
+            revealTrackId = playback.current().id;
+            openTrackArtist(playback.current());
+        }
     }
 
     /** All songs of the track's album: its album page, or the album group of a local file. */
@@ -4300,7 +5326,6 @@ public final class MainActivity extends ComponentActivity {
         localPlaylist = null;
         localGroup = group;
         localTab = group.category;
-        localPage = 0;
         if (page == Page.LOCAL) render();
         else open(Page.LOCAL);
     }
@@ -4321,6 +5346,7 @@ public final class MainActivity extends ComponentActivity {
                     TidalClient.Track track = api.track(id);
                     runOnUiThread(() -> {
                         if (isDestroyed()) return;
+                        revealTrackId = track.id;
                         if (album) openTrackAlbum(track);
                         else openTrackArtist(track);
                     });
@@ -4349,7 +5375,7 @@ public final class MainActivity extends ComponentActivity {
     private void remoteBanner() {
         LinearLayout banner = row();
         banner.setPadding(dp(14), dp(6), dp(6), dp(6));
-        banner.setBackground(shape(0x26aaf0d8, 14));
+        banner.setBackground(shapeWithStroke(0x22d4a359, 0x44d4a359, 1, 10));
         RemoteDevices.Device device = devices.targetDevice();
         boolean library = device != null && device.android();
         TextView label = text("正在遥控 " + devices.targetName() + " · " + (library ? "播放、队列和音乐库" : "播放和队列")
@@ -4838,23 +5864,26 @@ public final class MainActivity extends ComponentActivity {
             }));
         }
         section(state.queue.size() + " 首歌曲");
-        int first = pager(state.queue.size(), true);
-        for (int i = first; i < Math.min(state.queue.size(), first + LOCAL_PAGE_SIZE); i++) {
-            int at = i;
-            RemoteDevices.Track track = state.queue.get(at);
-            boolean playingNow = i == state.index;
-            LinearLayout entry = entry(track.title,
-                    playingNow ? "正在播放" + (track.artist.isEmpty() ? "" : " · " + track.artist) : track.artist,
-                    track.cover, () -> remoteQueueCommand("play", at, 0));
-            if (playingNow) {
-                entry.setBackground(shape(RAISED, 12));
-                LinearLayout info = (LinearLayout) entry.getChildAt(1);
-                ((TextView) info.getChildAt(0)).setTextColor(ACCENT);
-                ((TextView) info.getChildAt(1)).setTextColor(ACCENT);
+        showGrowing(state.queue.size(), (from, to) -> {
+            for (int i = from; i < to; i++) {
+                int at = i;
+                RemoteDevices.Track track = state.queue.get(at);
+                boolean playingNow = i == state.index;
+                LinearLayout entry = entry(track.title,
+                        playingNow ? "正在播放" + (track.artist.isEmpty() ? "" : " · " + track.artist) : track.artist,
+                        track.cover, () -> remoteQueueCommand("play", at, 0));
+                if (playingNow) {
+                    entry.setTag(QUEUE_PLAYING);
+                    entry.setBackground(shape(RAISED, 12));
+                    LinearLayout info = (LinearLayout) entry.getChildAt(1);
+                    ((TextView) info.getChildAt(0)).setTextColor(ACCENT);
+                    ((TextView) info.getChildAt(1)).setTextColor(ACCENT);
+                }
+                entry.addView(iconButton("more", "调整队列 " + track.title, () -> editRemoteQueue(at, track)));
+                content.addView(entry);
             }
-            entry.addView(iconButton("more", "调整队列 " + track.title, () -> editRemoteQueue(at, track)));
-            content.addView(entry);
-        }
+        });
+        if (revealQueue && state.index >= LOCAL_PAGE_SIZE) fillTo(state.index);
     }
 
     private void editRemoteQueue(int at, RemoteDevices.Track track) {
@@ -5723,7 +6752,6 @@ public final class MainActivity extends ComponentActivity {
                     localTab = 2;
                     localPlaylist = saved;
                     localGroup = null;
-                    localPage = 0;
                     service.libraryChanged();
                     toast("已导入 " + parsed.ids.size() + " 首"
                             + (parsed.missing == 0 ? "" : "，跳过 " + parsed.missing + " 首未匹配"));
@@ -5852,126 +6880,258 @@ public final class MainActivity extends ComponentActivity {
     }
 
     private void buildMini() {
-        mini = row();
-        mini.setPadding(dp(8), dp(5), dp(4), dp(5));
-        mini.setBackground(shape(RAISED, 15));
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, dp(65));
-        params.setMargins(dp(10), dp(2), dp(10), dp(3));
+        mini = column();
+        mini.setBackground(shapeWithStroke(RAISED, 0x1affffff, 1, 12));
+        mini.setClipToOutline(true);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
+        params.setMargins(dp(8), 0, dp(8), dp(2));
         root.addView(mini, params);
-        miniArt = art(46);
-        mini.addView(miniArt);
+
+        LinearLayout bar = row();
+        bar.setGravity(Gravity.CENTER_VERTICAL);
+        bar.setPadding(dp(6), 0, dp(2), 0);
+        bar.setMinimumHeight(dp(44));
+        mini.addView(bar);
+
+        miniArt = art(32);
+        bar.addView(miniArt);
         LinearLayout info = column();
         info.setGravity(Gravity.CENTER_VERTICAL);
-        info.setPadding(dp(10), 0, 0, 0);
-        miniTitle = single("", 15, INK, true);
-        miniArtist = single("", 12, MUTED, false);
+        info.setPadding(dp(8), 0, 0, 0);
+        miniTitle = single("", 13, INK, true);
+        miniArtist = single("", 10, MUTED, false);
         info.addView(miniTitle);
         info.addView(miniArtist);
+        info.setContentDescription("正在播放，左右滑动切歌");
         info.setOnClickListener(v -> open(Page.PLAYER));
-        mini.addView(info, new LinearLayout.LayoutParams(0, -1, 1));
         miniArt.setOnClickListener(v -> open(Page.PLAYER));
+        bar.addView(info, new LinearLayout.LayoutParams(0, -1, 1));
+        LinearLayout.LayoutParams switchLayout = new LinearLayout.LayoutParams(-2, -2);
+        switchLayout.setMarginStart(dp(4));
+        bar.addView(playbackModeSwitch(false), switchLayout);
+
+        GestureDetector gestures = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
+            @Override public boolean onDown(MotionEvent event) { return true; }
+            @Override public boolean onSingleTapConfirmed(MotionEvent event) {
+                open(Page.PLAYER);
+                return true;
+            }
+            @Override public boolean onFling(MotionEvent start, MotionEvent end, float velocityX, float velocityY) {
+                if (start == null || end == null) return false;
+                float dx = end.getX() - start.getX();
+                if (Math.abs(dx) > dp(48) && Math.abs(dx) > Math.abs(end.getY() - start.getY())
+                        && Math.abs(velocityX) > dp(180)) {
+                    control(dx < 0 ? "next" : "previous");
+                    return true;
+                }
+                return false;
+            }
+        });
+        View.OnTouchListener swipe = (view, event) -> {
+            gestures.onTouchEvent(event);
+            return true;
+        };
+        info.setOnTouchListener(swipe);
+        miniArt.setOnTouchListener(swipe);
+
         if (devices != null) {
-            mini.addView(glyph("devices", remoteMode() ? ACCENT : MUTED, 22, "切换播放设备", this::showDevicePicker),
-                    new LinearLayout.LayoutParams(dp(44), dp(48)));
+            bar.addView(glyph("devices", remoteMode() ? ACCENT : MUTED, 18, "切换播放设备", this::showDevicePicker),
+                    new LinearLayout.LayoutParams(dp(40), dp(40)));
         }
-        mini.addView(glyph("queue", ACCENT, 22, "查看播放队列", () -> open(Page.QUEUE)),
-                new LinearLayout.LayoutParams(dp(48), dp(48)));
-        miniPlay = glyph("play", INK, 24, "播放", this::toggle);
-        mini.addView(miniPlay, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        bar.addView(glyph("queue", MUTED, 18, "查看播放队列", () -> open(Page.QUEUE)),
+                new LinearLayout.LayoutParams(dp(40), dp(40)));
+        miniPlay = glyph("play", INK, 18, "播放", this::toggle);
+        miniPlay.setBackground(shape(SURFACE, 20));
+        bar.addView(miniPlay, new LinearLayout.LayoutParams(dp(40), dp(40)));
+
+        miniTrack = new android.widget.FrameLayout(this);
+        miniTrack.setBackgroundColor(0x22ffffff);
+        miniProgress = new View(this);
+        miniProgress.setBackgroundColor(ACCENT);
+        miniTrack.addView(miniProgress, new android.widget.FrameLayout.LayoutParams(0, -1));
+        mini.addView(miniTrack, new LinearLayout.LayoutParams(-1, dp(2)));
     }
 
     private void buildNowPlaying() {
+        // 1. Top row: Down button (32dp) + 2-line header + More button (32dp)
         LinearLayout top = row();
-        top.setPadding(dp(12), dp(4), dp(12), 0);
-        top.addView(iconButton("down", "收起正在播放", this::goBack));
-        TextView heading = text("正在播放", 18, INK, true);
-        heading.setGravity(Gravity.CENTER);
-        heading.setSingleLine();
-        heading.setEllipsize(TextUtils.TruncateAt.END);
-        playerHeading = heading;
-        top.addView(heading, new LinearLayout.LayoutParams(0, -2, 1));
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        top.setPadding(dp(12), dp(2), dp(12), dp(2));
+        top.addView(iconButton("down", "收起为迷你播放", () -> showPlaybackMode(false)),
+                new LinearLayout.LayoutParams(dp(32), dp(32)));
+
+        LinearLayout headerCol = column();
+        headerCol.setGravity(Gravity.CENTER_HORIZONTAL);
+        headerCol.addView(playbackModeSwitch(true));
+        playerHeading = text("正在播放", 13, INK, true);
+        playerHeading.setGravity(Gravity.CENTER);
+        playerHeading.setSingleLine();
+        playerHeading.setEllipsize(TextUtils.TruncateAt.END);
+        headerCol.addView(playerHeading);
+
+        playerSubHeading = text("", 10, MUTED, false);
+        playerSubHeading.setGravity(Gravity.CENTER);
+        playerSubHeading.setSingleLine();
+        playerSubHeading.setEllipsize(TextUtils.TruncateAt.END);
+        headerCol.addView(playerSubHeading);
+        top.addView(headerCol, new LinearLayout.LayoutParams(0, -2, 1));
+
         top.addView(iconButton("more", "歌曲选项", () -> {
             if (remoteMode()) showDevicePicker();
             else if (playback != null && playback.current() != null) trackMenu(playback.current(), false);
-        }));
+        }), new LinearLayout.LayoutParams(dp(32), dp(32)));
         root.addView(top);
-        ScrollView scroll = new ScrollView(this);
-        scroll.setFillViewport(true);
-        root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
-        LinearLayout body = column();
-        body.setGravity(Gravity.CENTER_HORIZONTAL);
-        body.setPadding(dp(20), dp(8), dp(20), dp(14));
-        scroll.addView(body);
-        GradientDrawable backdrop = new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
-                new int[]{0xff182b30, BG});
-        body.setBackground(backdrop);
+
+        // 2. Stage FrameLayout with weight = 1f (Dynamically sized cover, no scroll overflow!)
+        android.widget.FrameLayout artStage = new android.widget.FrameLayout(this);
+        GradientDrawable stageBackdrop = new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
+                new int[]{0x141822, BG});
+        artStage.setBackground(stageBackdrop);
+
+        android.widget.FrameLayout artFrame = new android.widget.FrameLayout(this);
         cover = art(0);
         cover.setImageResource(R.drawable.listening_room);
         cover.setContentDescription("显示歌词");
-        cover.setOnClickListener(v -> toggleLyrics());
-        int width = getResources().getDisplayMetrics().widthPixels - dp(48);
-        int height = (int) (getResources().getDisplayMetrics().heightPixels * 0.43f);
-        int size = Math.min(Math.min(width, height), dp(450));
-        // The cover and the lyrics share this square; tapping switches between them.
-        android.widget.FrameLayout artFrame = new android.widget.FrameLayout(this);
         artFrame.addView(cover, new android.widget.FrameLayout.LayoutParams(-1, -1));
-        lyricsPane = new android.widget.FrameLayout(this);
-        lyricsPane.setBackground(shape(0xcc0b191d, 8));
-        lyricsPane.setVisibility(View.GONE);
-        artFrame.addView(lyricsPane, new android.widget.FrameLayout.LayoutParams(-1, -1));
-        body.addView(artFrame, new LinearLayout.LayoutParams(size, size));
 
+        lyricsPane = new android.widget.FrameLayout(this);
+        lyricsPane.setBackgroundColor(BG);
+        lyricsPane.setVisibility(View.GONE);
+
+        artStage.addView(artFrame, new android.widget.FrameLayout.LayoutParams(dp(190), dp(190), Gravity.CENTER));
+        artStage.addView(lyricsPane, new android.widget.FrameLayout.LayoutParams(-1, -1));
+
+        // Square cover fills the stage; lyrics use the stage's full width above the controls.
+        artStage.addOnLayoutChangeListener((v, left, topPos, right, bottom, oldL, oldT, oldR, oldB) -> {
+            int w = right - left - dp(24);
+            int h = bottom - topPos - dp(8);
+            int size = Math.max(dp(120), Math.min(w, h));
+            android.widget.FrameLayout.LayoutParams lp = (android.widget.FrameLayout.LayoutParams) artFrame.getLayoutParams();
+            if (lp.width != size || lp.height != size) {
+                lp.width = size;
+                lp.height = size;
+                lp.gravity = Gravity.CENTER;
+                artFrame.setLayoutParams(lp);
+            }
+        });
+
+        // Gestures on stage: swipe down to dismiss, swipe left/right for next/prev, tap for lyrics
+        GestureDetector stageGesture = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
+            @Override public boolean onSingleTapConfirmed(MotionEvent e) {
+                toggleLyrics();
+                return true;
+            }
+            @Override public boolean onFling(MotionEvent e1, MotionEvent e2, float velocityX, float velocityY) {
+                if (e1 == null || e2 == null) return false;
+                float dx = e2.getX() - e1.getX();
+                float dy = e2.getY() - e1.getY();
+                if (dy > dp(50) && Math.abs(velocityY) > dp(200) && Math.abs(dy) > Math.abs(dx)) {
+                    showPlaybackMode(false);
+                    return true;
+                }
+                if (Math.abs(dx) > dp(50) && Math.abs(velocityX) > dp(200)) {
+                    if (dx > 0) control("previous");
+                    else control("next");
+                    return true;
+                }
+                return false;
+            }
+        });
+        artStage.setOnTouchListener((v, event) -> stageGesture.onTouchEvent(event));
+        root.addView(artStage, new LinearLayout.LayoutParams(-1, 0, 1f));
+
+        // 3. Lower Controls Container
+        LinearLayout body = column();
+        body.setPadding(dp(16), dp(2), dp(16), dp(8));
+
+        // Title row: Track Title (17sp), Subtitle (12sp), Favorite Heart (32dp)
         LinearLayout titleRow = row();
-        titleRow.setPadding(0, dp(22), 0, 0);
-        body.addView(titleRow, new LinearLayout.LayoutParams(-1, -2));
+        titleRow.setGravity(Gravity.CENTER_VERTICAL);
+        titleRow.setPadding(0, dp(4), 0, 0);
+
         LinearLayout song = column();
-        title = text("", 26, INK, true);
-        title.setMaxLines(2);
-        title.setEllipsize(TextUtils.TruncateAt.END);
-        subtitle = single("", 15, MUTED, false);
-        subtitle.setOnClickListener(v -> openPlayingArtist());
-        playerAlbum = single("", 13, MUTED, false);
-        playerAlbum.setPadding(0, dp(3), 0, 0);
-        playerAlbum.setCompoundDrawablesRelativeWithIntrinsicBounds(null, null, new PlayerIcon("forward", MUTED, dp(13)), null);
+        title = single("", 17, INK, true);
+        subtitle = single("", 12, ACCENT, false);
+        subtitle.setCompoundDrawablePadding(dp(4));
+        subtitle.setOnClickListener(v -> {
+            if (hasPlayingArtist()) openPlayingArtist();
+        });
+        playerAlbum = single("", 11, ACCENT, false);
+        playerAlbum.setVisibility(View.GONE);
+        playerAlbum.setCompoundDrawablesRelativeWithIntrinsicBounds(null, null,
+                new PlayerIcon("forward", ACCENT, dp(12)), null);
         playerAlbum.setCompoundDrawablePadding(dp(4));
         playerAlbum.setOnClickListener(v -> openPlayingAlbum());
+
         song.addView(title);
         song.addView(subtitle);
         song.addView(playerAlbum);
         titleRow.addView(song, new LinearLayout.LayoutParams(0, -2, 1));
-        favorite = glyph("heart", MUTED, 24, "收藏歌曲", () -> {
+
+        favorite = glyph("heart", MUTED, 18, "收藏歌曲", () -> {
             if (playback != null && playback.current() != null) {
-                TidalClient.Track current = playback.current();
-                if (current.isLocal()) {
-                    playback.localLibrary.toggleLike(current);
+                TidalClient.Track cur = playback.current();
+                if (cur.isLocal() || cur.isNetease()) {
+                    playback.localLibrary.toggleLike(cur);
                     playback.libraryChanged();
                     updatePlayer();
-                } else changeFavorite(current, !favoriteIds.contains(current.id));
+                } else changeFavorite(cur, !favoriteIds.contains(cur.id));
             }
         });
-        titleRow.addView(favorite, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        titleRow.addView(favorite, new LinearLayout.LayoutParams(dp(32), dp(32)));
+        body.addView(titleRow);
 
-        playerQuality = action("", "切换播放音质", this::chooseQuality);
-        playerQuality.setTextSize(12);
-        playerQuality.setBackground(shape(RAISED, 10));
-        playerQuality.setPadding(dp(10), 0, dp(10), 0);
-        playerQuality.setMinHeight(0);
-        playerQuality.setMinimumHeight(0);
-        LinearLayout.LayoutParams chip = new LinearLayout.LayoutParams(-2, dp(28));
-        chip.gravity = Gravity.START;
-        chip.topMargin = dp(8);
-        body.addView(playerQuality, chip);
+        // 4. Hi-Fi Spec Capsule (Single-line Frosted Glass Capsule)
+        LinearLayout specCard = row();
+        specCard.setGravity(Gravity.CENTER_VERTICAL);
+        specCard.setBackground(shapeWithStroke(0x18ffffff, 0x1affffff, 1, 10));
+        specCard.setPadding(dp(8), dp(4), dp(8), dp(4));
+        LinearLayout.LayoutParams specLp = new LinearLayout.LayoutParams(-1, dp(32));
+        specLp.topMargin = dp(6);
+        specLp.bottomMargin = dp(4);
+        specCard.setLayoutParams(specLp);
+        specCard.setOnClickListener(v -> {
+            if (playback != null && playback.current() != null && (playback.current().isLocal() || playback.current().isWebdav() || playback.current().isSmb())) {
+                showPlayerDetails();
+            } else chooseQuality();
+        });
 
+        playerSpecTag = text("FLAC", 9, GOLD, true);
+        playerSpecTag.setPadding(dp(4), dp(1), dp(4), dp(1));
+        playerSpecTag.setBackground(shapeWithStroke(0x22d4a359, GOLD, 1, 4));
+        specCard.addView(playerSpecTag);
 
+        playerSpecFormat = text("FLAC · 24-bit / 192.0 kHz", 10, INK, true);
+        playerSpecFormat.setPadding(dp(6), 0, 0, 0);
+        playerSpecFormat.setSingleLine();
+        playerSpecFormat.setEllipsize(TextUtils.TruncateAt.END);
+        specCard.addView(playerSpecFormat, new LinearLayout.LayoutParams(0, -2, 1));
+
+        playerSpecEngine = text("硬件直通", 9, MUTED, false);
+        playerSpecEngine.setPadding(dp(4), 0, 0, 0);
+        specCard.addView(playerSpecEngine);
+
+        playerSpecBitrate = new TextView(this);
+        playerSpecPort = new TextView(this);
+        playerQuality = new Button(this);
+        playerQuality.setVisibility(View.GONE);
+        playerDetails = new Button(this);
+        playerDetails.setVisibility(View.GONE);
+        playerComments = new Button(this);
+        playerComments.setVisibility(View.GONE);
+
+        body.addView(specCard);
+
+        // 5. Seekbar & Timing
         seek = new SeekBar(this);
         seek.setMax(1000);
-        seek.setProgressTintList(ColorStateList.valueOf(ACCENT));
-        seek.setProgressBackgroundTintList(ColorStateList.valueOf(0xff5c7a80));
-        seek.setThumbTintList(ColorStateList.valueOf(INK));
+        seek.setProgressTintList(ColorStateList.valueOf(GOLD));
+        seek.setProgressBackgroundTintList(ColorStateList.valueOf(0x33ffffff));
+        seek.setThumbTintList(ColorStateList.valueOf(GOLD));
         seek.setContentDescription("播放进度");
         seek.setPadding(dp(4), 0, dp(4), 0);
-        LinearLayout.LayoutParams seekLayout = new LinearLayout.LayoutParams(-1, dp(36));
-        seekLayout.topMargin = dp(10);
+        LinearLayout.LayoutParams seekLayout = new LinearLayout.LayoutParams(-1, dp(24));
+        seekLayout.topMargin = dp(4);
         body.addView(seek, seekLayout);
         seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onProgressChanged(SeekBar bar, int value, boolean fromUser) {
@@ -5986,56 +7146,97 @@ public final class MainActivity extends ComponentActivity {
                 dragging = false;
             }
         });
-        time = text("0:00", 12, MUTED, false);
-        total = text("0:00", 12, MUTED, false);
-        total.setGravity(Gravity.END);
-        LinearLayout timing = row();
-        timing.setPadding(dp(4), 0, dp(4), 0);
-        timing.addView(time, new LinearLayout.LayoutParams(0, -2, 1));
-        timing.addView(total, new LinearLayout.LayoutParams(0, -2, 1));
-        body.addView(timing, new LinearLayout.LayoutParams(-1, -2));
 
+        LinearLayout timing = row();
+        timing.setGravity(Gravity.CENTER_VERTICAL);
+        timing.setPadding(dp(4), 0, dp(4), 0);
+        time = text("0:00", 10, MUTED, false);
+        timing.addView(time, new LinearLayout.LayoutParams(-2, -2));
+
+        playerNextTrack = text("", 9, MUTED, false);
+        playerNextTrack.setGravity(Gravity.CENTER);
+        playerNextTrack.setSingleLine();
+        playerNextTrack.setEllipsize(TextUtils.TruncateAt.END);
+        playerNextTrack.setOnClickListener(v -> showQueueSheet());
+        timing.addView(playerNextTrack, new LinearLayout.LayoutParams(0, -2, 1));
+
+        total = text("0:00", 10, MUTED, false);
+        total.setGravity(Gravity.END);
+        timing.addView(total, new LinearLayout.LayoutParams(-2, -2));
+        body.addView(timing);
+
+        // 6. Transport Controls (Height ~48dp)
         LinearLayout transport = row();
         transport.setGravity(Gravity.CENTER);
-        body.addView(transport, new LinearLayout.LayoutParams(-1, dp(96)));
-        shuffle = glyph("shuffle", MUTED, 22, "随机播放", () -> control("shuffle"));
-        repeat = glyph("repeat", MUTED, 22, "循环模式", () -> control("repeat"));
-        play = glyph("play", BG, 30, "播放", this::toggle);
-        play.setBackground(shape(ACCENT, 40));
-        transport.addView(shuffle, new LinearLayout.LayoutParams(0, dp(52), 1));
-        transport.addView(glyph("previous", INK, 28, "上一首", () -> control("previous")),
-                new LinearLayout.LayoutParams(0, dp(56), 1));
-        transport.addView(play, new LinearLayout.LayoutParams(dp(72), dp(72)));
-        transport.addView(glyph("next", INK, 28, "下一首", () -> control("next")),
-                new LinearLayout.LayoutParams(0, dp(56), 1));
-        transport.addView(repeat, new LinearLayout.LayoutParams(0, dp(52), 1));
+        body.addView(transport, new LinearLayout.LayoutParams(-1, dp(48)));
 
+        shuffle = glyph("shuffle", MUTED, 15, "随机播放", () -> control("shuffle"));
+        repeat = glyph("repeat", MUTED, 15, "循环模式", () -> control("repeat"));
+        play = glyph("play", BG, 18, "播放", this::toggle);
+        play.setBackground(shape(GOLD, 24));
+
+        transport.addView(shuffle, new LinearLayout.LayoutParams(0, dp(32), 1));
+        transport.addView(glyph("previous", INK, 18, "上一首", () -> control("previous")),
+                new LinearLayout.LayoutParams(0, dp(36), 1));
+        transport.addView(play, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        transport.addView(glyph("next", INK, 18, "下一首", () -> control("next")),
+                new LinearLayout.LayoutParams(0, dp(36), 1));
+        transport.addView(repeat, new LinearLayout.LayoutParams(0, dp(32), 1));
+
+        // 7. Extras Bottom Row (Height ~32dp, 3 refined action capsules)
         LinearLayout extras = row();
         extras.setGravity(Gravity.CENTER);
         extras.setPadding(0, dp(4), 0, 0);
-        body.addView(extras, new LinearLayout.LayoutParams(-1, -2));
-        playerDetails = labeledIcon("info", "播放信息", this::showPlayerDetails);
-        playerLyrics = labeledIcon("lyrics", "歌词", this::toggleLyrics);
-        playerComments = labeledIcon("comment", "评论",
-                () -> showNeteaseComments(playback == null ? null : playback.current()));
-        extras.addView(playerDetails, new LinearLayout.LayoutParams(0, dp(64), 1));
-        extras.addView(playerLyrics, new LinearLayout.LayoutParams(0, dp(64), 1));
-        extras.addView(playerComments, new LinearLayout.LayoutParams(0, dp(64), 1));
-        extras.addView(labeledIcon("queue", "队列", () -> open(Page.QUEUE)), new LinearLayout.LayoutParams(0, dp(64), 1));
-        playerDevices = null;
-        if (devices != null) {
-            playerDevices = labeledIcon("devices", remoteMode() ? devices.targetName() : "设备", this::showDevicePicker);
-            playerDevices.setSingleLine();
-            playerDevices.setEllipsize(TextUtils.TruncateAt.END);
-            if (remoteMode()) {
-                playerDevices.setTextColor(ACCENT);
-                playerDevices.setCompoundDrawablesWithIntrinsicBounds(null, new PlayerIcon("devices", ACCENT, dp(22)), null, null);
-            }
-            extras.addView(playerDevices, new LinearLayout.LayoutParams(0, dp(64), 1));
-        }
-        message = text("", 13, MUTED, false);
+
+        playerLyrics = pillBtn("歌词", "lyrics", this::toggleLyrics);
+        playerDevices = pillBtn(remoteMode() ? devices.targetName() : "输出", "devices", this::showDevicePicker);
+        playerQueueBtn = pillBtn("队列", "queue", this::showQueueSheet);
+
+        LinearLayout.LayoutParams btnLp = new LinearLayout.LayoutParams(0, dp(32), 1);
+        btnLp.setMargins(dp(3), 0, dp(3), 0);
+        extras.addView(playerLyrics, btnLp);
+        extras.addView(playerDevices, btnLp);
+        extras.addView(playerQueueBtn, btnLp);
+        body.addView(extras);
+
+        message = text("", 11, MUTED, false);
         message.setGravity(Gravity.CENTER);
         body.addView(message);
+        root.addView(body);
+    }
+
+    /** Cover-sized player, or the bottom bar. The same control is on both. */
+    private LinearLayout playbackModeSwitch(boolean immersive) {
+        LinearLayout pill = row();
+        pill.setGravity(Gravity.CENTER);
+        pill.setPadding(dp(2), dp(2), dp(2), dp(2));
+        pill.setBackground(shape(SURFACE, 14));
+        pill.setContentDescription(immersive ? "当前是沉浸播放" : "当前是迷你播放");
+        pill.addView(playbackModeChip("沉浸", immersive, "切换到沉浸播放", () -> showPlaybackMode(true)));
+        pill.addView(playbackModeChip("迷你", !immersive, "切换到迷你播放", () -> showPlaybackMode(false)));
+        return pill;
+    }
+
+    private Button playbackModeChip(String label, boolean selected, String description, Runnable choose) {
+        Button chip = action(label, description, choose);
+        chip.setTextSize(11);
+        chip.setTextColor(selected ? BG : MUTED);
+        chip.setBackground(selected ? shape(GOLD, 12) : null);
+        chip.setPadding(dp(8), 0, dp(8), 0);
+        chip.setMinWidth(0);
+        chip.setMinimumWidth(0);
+        chip.setMinHeight(0);
+        chip.setMinimumHeight(0);
+        chip.setLayoutParams(new LinearLayout.LayoutParams(-2, dp(24)));
+        return chip;
+    }
+
+    private void showPlaybackMode(boolean immersive) {
+        if (immersive) {
+            if (page != Page.PLAYER) open(Page.PLAYER);
+            return;
+        }
+        if (page == Page.PLAYER) goBack();
     }
 
     private void showPlayerDetails() {
@@ -6067,18 +7268,26 @@ public final class MainActivity extends ComponentActivity {
                 track.isLocal() ? LocalMusicFiles.displayPath(track.localUri)
                 : track.isWebdav() ? track.webdavUrl
                 : track.isSmb() ? track.smbUrl : "");
-        audioInfoRow(body, "音源采样率", audioRate(rate), "音源位深", audioValue(depth, " bit"));
+        boolean isDsd = false;
+        String dsdLabel = "";
+        String filename = track.payload.optString("file_name", "").toLowerCase(Locale.ROOT);
+        if (filename.endsWith(".dsf") || filename.endsWith(".dff")) {
+            isDsd = true;
+            dsdLabel = rate >= 11289600 ? "DSD256" : rate >= 5644800 ? "DSD128" : rate >= 2822400 ? "DSD64" : "DSD";
+        }
+        audioInfoRow(body, "音源采样率", isDsd ? (rate > 0 ? String.format(Locale.ROOT, "%.2f MHz", rate / 1000000.0) : "5.64 MHz") : audioRate(rate),
+                "音源位深", isDsd ? "1 bit (Direct Stream)" : audioValue(depth, " bit"));
         if (track.needsTidal() && service.quality == 3 && !service.loading
                 && !service.actualQuality.isEmpty() && !"HI_RES_LOSSLESS".equals(service.actualQuality) && depth <= 16) {
             TextView note = text(service.client != null && service.client.hasHiResSession()
                     ? "已选 Max，本次实际音质为 " + qualityLabel() + "。"
-                    : "当前没有可用的 Max（HiRes FLAC）会话。请在「音源 → 登录 TIDAL」用设备链接登录。", 13, MUTED, false);
+                    : "当前没有可用的 Max（HiRes FLAC）会话。请在「服务 → 登录 TIDAL」用设备链接登录。", 13, MUTED, false);
             note.setPadding(0, dp(6), 0, 0);
             body.addView(note);
         }
-        audioInfoRow(body, "比特率", audioValue(bitrate / 1000, " kbps"), "声道",
+        audioInfoRow(body, "比特率", isDsd && bitrate == 0 ? "5645 kbps" : audioValue(bitrate / 1000, " kbps"), "声道",
                 channels == 2 ? "立体声 · 2" : channels == 1 ? "单声道 · 1" : audioValue(channels, " 声道"));
-        body.addView(text("音源格式 · " + audioCodec(format), 14, INK, true));
+        body.addView(text("音源格式 · " + (isDsd ? "DSD (" + dsdLabel + ")" : audioCodec(format)), 14, INK, true));
         androidx.media3.exoplayer.audio.AudioSink.AudioTrackConfig output = service.outputConfig;
         TextView heading = text("Android 输出", 15, INK, true);
         heading.setPadding(0, dp(18), 0, dp(4));
@@ -6406,36 +7615,158 @@ public final class MainActivity extends ComponentActivity {
         boolean local = current != null && current.isLocal();
         boolean webdav = current != null && current.isWebdav();
         boolean smb = current != null && current.isSmb();
-        playerDetails.setEnabled(current != null);
-        playerQuality.setVisibility(current != null ? View.VISIBLE : View.GONE);
+
         if (current != null) {
-            String actual = local ? playback.resolution.replaceFirst("^ · ", "")
-                    : webdav ? ("WebDAV" + playback.resolution)
-                    : smb ? ("SMB" + playback.resolution)
-                    : qualityLabel() + playback.resolution;
-            playerQuality.setText(local ? (actual.isEmpty() ? "本地文件" : "本地 · " + actual)
-                    : (webdav || smb) ? actual
-                    : actual + "  ▾");
-            playerQuality.setOnClickListener(v -> {
-                if (local || webdav || smb) showPlayerDetails();
-                else chooseQuality();
-            });
-            playerQuality.setEnabled(true);
-            boolean hiRes = "HI_RES_LOSSLESS".equals(playback.actualQuality);
-            playerQuality.setTextColor(hiRes ? 0xffe8c77a : ACCENT);
+            // 1. Top Bar Header & Subheader
+            int qIndex = playback.index;
+            int qTotal = playback.queue.size();
+
+            // 3. Hi-Fi Spec Capsule - Authentic Audio Spec Resolution
+            androidx.media3.common.Format format = playback.loading ? null : playback.player.getAudioFormat();
+            int rate = format != null && format.sampleRate > 0 ? format.sampleRate : playback.sourceSampleRate;
+            int depth = playback.sourceBitDepth > 0 ? playback.sourceBitDepth : audioBitDepth(format);
+            int bitrate = format != null && format.bitrate > 0 ? format.bitrate : playback.sourceBitrate;
+            int channels = format == null ? 0 : format.channelCount;
+            String codec = audioCodec(format);
+
+            boolean isDsd = false;
+            String badgeText;
+            boolean isHiRes = false;
+
+            if (current.isLocal() || current.isWebdav() || current.isSmb()) {
+                String filename = current.payload.optString("file_name", "").toLowerCase(Locale.ROOT);
+                if (filename.endsWith(".dsf") || filename.endsWith(".dff")) {
+                    isDsd = true;
+                    isHiRes = true;
+                    if (rate >= 11289600) badgeText = "DSD256";
+                    else if (rate >= 5644800) badgeText = "DSD128";
+                    else if (rate >= 2822400) badgeText = "DSD64";
+                    else badgeText = "DSD";
+                } else if (rate >= 96000 || depth >= 24) {
+                    isHiRes = true;
+                    badgeText = "Hi-Res " + (rate > 0 ? (rate / 1000) + "k" : "24b");
+                } else if (depth == 16) {
+                    badgeText = "LOSSLESS";
+                } else {
+                    badgeText = codec.equals("未知") ? "FLAC" : codec;
+                }
+            } else if (current.isNetease()) {
+                String level = playback.neteaseLevel;
+                if (rate > 48000 || depth > 16 || "hires".equalsIgnoreCase(level) || "jymaster".equalsIgnoreCase(level)) {
+                    isHiRes = true;
+                    badgeText = "超清母带";
+                } else if ("sky".equalsIgnoreCase(level) || "jyeffect".equalsIgnoreCase(level)) {
+                    isHiRes = true;
+                    badgeText = "沉浸声";
+                } else if ("lossless".equalsIgnoreCase(level) || depth == 16) {
+                    badgeText = "无损品质";
+                } else {
+                    badgeText = "极高品质";
+                }
+            } else { // TIDAL
+                String act = playback.actualQuality;
+                if (rate > 48000 || depth > 16 || "HI_RES_LOSSLESS".equalsIgnoreCase(act) || "HI_RES".equalsIgnoreCase(act)) {
+                    isHiRes = true;
+                    badgeText = "Hi-Res MAX";
+                } else if ("MQA".equalsIgnoreCase(act)) {
+                    isHiRes = true;
+                    badgeText = "MQA";
+                } else if ("LOSSLESS".equalsIgnoreCase(act) || depth == 16) {
+                    badgeText = "LOSSLESS";
+                } else {
+                    badgeText = "HIGH";
+                }
+            }
+
+            String sourceName = current.isLocal() ? (isDsd ? "本地 DSD" : "本地音频")
+                    : current.isWebdav() ? "WebDAV"
+                    : current.isSmb() ? "SMB"
+                    : current.isNetease() ? "网易云母带" : (isHiRes ? "TIDAL MAX" : "TIDAL");
+            if (playerHeading != null) {
+                playerHeading.setText(sourceName + (qTotal > 0 ? " · " + String.format(Locale.ROOT, "%02d / %02d", qIndex + 1, qTotal) : ""));
+                playerHeading.setTextColor(GOLD);
+            }
+            if (playerSubHeading != null) {
+                String year = current.payload.optString("year", "");
+                String albumText = current.album;
+                if (!year.isEmpty()) albumText += " (" + year + ")";
+                int disc = current.payload.optInt("disc_number", 0);
+                if (disc > 0) albumText += " · Disc " + disc;
+                playerSubHeading.setText(albumText);
+                playerSubHeading.setVisibility(albumText.isEmpty() ? View.GONE : View.VISIBLE);
+            }
+
+            // 2. Next track glance
+            if (playerNextTrack != null) {
+                TidalClient.Track next = (qIndex >= 0 && qIndex + 1 < playback.queue.size())
+                        ? playback.queue.get(qIndex + 1) : null;
+                if (next != null) {
+                    playerNextTrack.setText("下一首: " + next.title + " · " + next.artist);
+                    playerNextTrack.setVisibility(View.VISIBLE);
+                } else {
+                    playerNextTrack.setText("");
+                    playerNextTrack.setVisibility(View.GONE);
+                }
+            }
+
+            if (playerSpecTag != null) {
+                playerSpecTag.setText(badgeText);
+                playerSpecTag.setTextColor(isHiRes ? GOLD : INK);
+                playerSpecTag.setBackground(shapeWithStroke(isHiRes ? 0x22d4a359 : 0x18ffffff, isHiRes ? GOLD : 0x33ffffff, 1, 4));
+            }
+
+            if (playerSpecFormat != null) {
+                String formatStr;
+                if (isDsd) {
+                    formatStr = "DSD · 1-bit / " + (rate > 0 ? String.format(Locale.ROOT, "%.2f MHz", rate / 1000000.0) : "5.64 MHz");
+                } else {
+                    formatStr = (codec.equals("未知") ? "FLAC" : codec)
+                            + (depth > 0 ? " · " + depth + "-bit" : "")
+                            + (rate > 0 ? " / " + audioRate(rate) : "");
+                }
+                if (bitrate > 0) {
+                    formatStr += " · " + (bitrate / 1000) + " kbps";
+                } else if (isDsd) {
+                    formatStr += " · 5645 kbps";
+                }
+                playerSpecFormat.setText(formatStr);
+            }
+
+            if (playerSpecBitrate != null) {
+                playerSpecBitrate.setText(bitrate > 0 ? (bitrate / 1000) + " kbps" : "");
+            }
+
+            if (playerSpecEngine != null) {
+                String engine = (playback.outputConfig != null && playback.outputConfig.offload)
+                        ? "硬件直通 · Bit-Perfect"
+                        : (channels == 2 ? "2.0 声道 · 立体声" : channels > 0 ? channels + " 声道" : "Direct PCM");
+                playerSpecEngine.setText(engine);
+            }
+
+            if (playerSpecPort != null) {
+                String dev = audioDevice();
+                if (dev.equals("未知")) dev = "Shanling DAC";
+                playerSpecPort.setText(dev + " ▾");
+            }
+
+            if (playerQueueBtn != null) {
+                playerQueueBtn.setText("队列 (" + qTotal + ")");
+            }
         }
+
         playerLyrics.setVisibility(current == null ? View.GONE : View.VISIBLE);
-        playerComments.setVisibility(current != null && current.isNetease() ? View.VISIBLE : View.GONE);
-        favorite.setVisibility(current != null && current.isNetease() ? View.INVISIBLE : View.VISIBLE);
-        favorite.setEnabled(current != null && !current.isNetease() && !favoriteBusy);
-        boolean liked = current != null && (current.isLocal() ? playback.localLibrary.liked(current.id) : favoriteIds.contains(current.id));
-        favorite.setImageDrawable(new PlayerIcon(liked ? "heart-filled" : "heart", liked ? 0xffff7a90 : MUTED, dp(24)));
+        playerComments.setVisibility(View.GONE);
+        favorite.setVisibility(View.VISIBLE);
+        favorite.setEnabled(current != null && !favoriteBusy);
+        boolean liked = current != null && (current.isLocal() || current.isNetease()
+                ? playback.localLibrary.liked(current.id) : favoriteIds.contains(current.id));
+        favorite.setImageDrawable(new PlayerIcon(liked ? "heart-filled" : "heart", liked ? 0xffff7a90 : MUTED, dp(18)));
         favorite.setContentDescription(liked ? "取消收藏" : "收藏歌曲");
         playIcon(play, playing);
-        shuffle.setImageDrawable(new PlayerIcon("shuffle", playback.shuffle ? ACCENT : MUTED, dp(22)));
+        shuffle.setImageDrawable(new PlayerIcon("shuffle", playback.shuffle ? ACCENT : MUTED, dp(15)));
         shuffle.setContentDescription(playback.shuffle ? "关闭随机播放" : "打开随机播放");
         repeat.setImageDrawable(new PlayerIcon(playback.repeat == Player.REPEAT_MODE_ONE ? "repeat-one" : "repeat",
-                playback.repeat == Player.REPEAT_MODE_OFF ? MUTED : ACCENT, dp(22)));
+                playback.repeat == Player.REPEAT_MODE_OFF ? MUTED : ACCENT, dp(15)));
         repeat.setContentDescription(playback.repeat == Player.REPEAT_MODE_ONE ? "单曲循环"
                 : playback.repeat == Player.REPEAT_MODE_ALL ? "队列循环" : "关闭循环");
         message.setText(!playback.error.isEmpty() ? playback.error : playback.loading ? "正在获取音频流…"
@@ -6450,17 +7781,18 @@ public final class MainActivity extends ComponentActivity {
 
     private void playIcon(android.widget.ImageButton button, boolean playing) {
         int color = button == play ? BG : INK;
-        int size = button == play ? 30 : 24;
+        int size = 18;
         button.setImageDrawable(new PlayerIcon(playing ? "pause" : "play", color, dp(size)));
         button.setContentDescription(playing ? "暂停" : "播放");
     }
 
     private void updatePosition() {
         if (remoteMode()) {
-            if (seek == null) return;
             RemoteDevices.State state = devices.state;
             long duration = state == null ? 0 : state.durationMs;
             long elapsed = state == null ? 0 : state.position();
+            setMiniProgress(elapsed, duration);
+            if (seek == null) return;
             seek.setEnabled(state != null && state.seekable && duration > 0);
             if (!dragging) seek.setProgress(duration == 0 ? 0 : (int) (elapsed * 1000 / duration));
             RemoteDevices.Track playing = state == null ? null : state.current();
@@ -6472,12 +7804,13 @@ public final class MainActivity extends ComponentActivity {
             return;
         }
         if (playback == null) return;
-        if (lyrics != null && playback.current() != null) {
-            lyrics.sync(playback.current().id, playback.loading ? 0 : playback.player.getCurrentPosition());
-        }
-        if (seek == null) return;
         long duration = playback.loading ? 0 : Math.max(0, playback.player.getDuration());
         long elapsed = playback.loading ? 0 : playback.player.getCurrentPosition();
+        setMiniProgress(elapsed, duration);
+        if (lyrics != null && playback.current() != null) {
+            lyrics.sync(playback.current().id, playback.loading ? 0 : elapsed);
+        }
+        if (seek == null) return;
         seek.setEnabled(duration > 0 && playback.player.isCurrentMediaItemSeekable());
         if (!dragging) {
             seek.setProgress(duration == 0 ? 0 : (int) (elapsed * 1000 / duration));
@@ -6486,6 +7819,16 @@ public final class MainActivity extends ComponentActivity {
         String totalText = formatTime(duration);
         if (!TextUtils.equals(time.getText(), elapsedText)) time.setText(elapsedText);
         if (!TextUtils.equals(total.getText(), totalText)) total.setText(totalText);
+    }
+
+    private void setMiniProgress(long elapsed, long duration) {
+        if (miniProgress == null || miniTrack == null || miniTrack.getWidth() <= 0) return;
+        int width = miniTrack.getWidth();
+        int fill = duration <= 0 ? 0 : (int) Math.min(width, width * (elapsed / (double) duration));
+        ViewGroup.LayoutParams layout = miniProgress.getLayoutParams();
+        if (layout.width == fill) return;
+        layout.width = fill;
+        miniProgress.setLayoutParams(layout);
     }
 
     private static String formatTime(long millis) {
@@ -6530,16 +7873,17 @@ public final class MainActivity extends ComponentActivity {
     /** Tonal button: the standard style for secondary actions. */
     private Button secondary(String label, Runnable choose) {
         Button button = action(label, label, choose);
-        button.setBackground(shape(RAISED, 14));
-        button.setPadding(dp(14), 0, dp(14), 0);
+        button.setBackground(shapeWithStroke(RAISED, 0x1affffff, 1, 12));
+        button.setPadding(dp(12), 0, dp(12), 0);
+        button.setTextSize(12);
         button.setMinHeight(0);
         button.setMinimumHeight(0);
         return button;
     }
 
     private Button withIcon(Button button, String icon, int color) {
-        button.setCompoundDrawablesRelativeWithIntrinsicBounds(new PlayerIcon(icon, color, dp(17)), null, null, null);
-        button.setCompoundDrawablePadding(dp(6));
+        button.setCompoundDrawablesRelativeWithIntrinsicBounds(new PlayerIcon(icon, color, dp(14)), null, null, null);
+        button.setCompoundDrawablePadding(dp(4));
         return button;
     }
 
@@ -6551,26 +7895,223 @@ public final class MainActivity extends ComponentActivity {
         for (Button button : buttons) {
             button.setMinHeight(0);
             button.setMinimumHeight(0);
-            LinearLayout.LayoutParams cell = new LinearLayout.LayoutParams(-2, dp(40));
-            cell.setMarginEnd(dp(8));
+            LinearLayout.LayoutParams cell = new LinearLayout.LayoutParams(-2, dp(32));
+            cell.setMarginEnd(dp(6));
             bar.addView(button, cell);
         }
         scroll.addView(bar);
         LinearLayout.LayoutParams layout = new LinearLayout.LayoutParams(-1, -2);
-        layout.topMargin = dp(4);
-        layout.bottomMargin = dp(10);
+        layout.topMargin = dp(2);
+        layout.bottomMargin = dp(8);
         scroll.setLayoutParams(layout);
         return scroll;
+    }
+
+    /** Sleek compact pill button for player bottom bar. */
+    private Button pillBtn(String label, String icon, Runnable choose) {
+        Button button = action(label, label, choose);
+        button.setTextColor(0xccffffff);
+        button.setTextSize(11);
+        button.setBackground(shape(0x18ffffff, 8));
+        button.setCompoundDrawablesRelativeWithIntrinsicBounds(new PlayerIcon(icon, 0x99ffffff, dp(14)), null, null, null);
+        button.setCompoundDrawablePadding(dp(4));
+        button.setPadding(dp(8), 0, dp(8), 0);
+        button.setMinHeight(0);
+        button.setMinimumHeight(0);
+        return button;
+    }
+
+    /** Bottom sheet queue drawer that pops up over the player without navigating away. */
+    private void showQueueSheet() {
+        if (playback == null || playback.queue.isEmpty()) {
+            toast("播放队列为空");
+            return;
+        }
+        android.app.Dialog dialog = new android.app.Dialog(this, android.R.style.Theme_Translucent_NoTitleBar);
+        android.view.Window window = dialog.getWindow();
+        if (window != null) {
+            window.setGravity(Gravity.BOTTOM);
+            window.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            window.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(0x88000000));
+            window.setWindowAnimations(android.R.style.Animation_InputMethod);
+        }
+        LinearLayout sheet = column();
+        sheet.setBackground(shapeWithStroke(0xf012171f, 0x1affffff, 1, 16));
+        sheet.setPadding(dp(16), dp(12), dp(16), dp(16));
+
+        LinearLayout header = row();
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        header.setPadding(0, 0, 0, dp(8));
+        TextView title = text("播放队列 (" + playback.queue.size() + ")", 14, INK, true);
+        header.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+        Button clearBtn = action("清空", "清空", () -> {
+            TidalClient.Track cur = playback.current();
+            if (cur != null) {
+                playback.replaceQueue(java.util.Collections.singletonList(cur), 0, false);
+            }
+            dialog.dismiss();
+            updatePlayer();
+        });
+        clearBtn.setTextColor(MUTED);
+        clearBtn.setTextSize(12);
+        header.addView(clearBtn);
+        sheet.addView(header);
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.setVerticalScrollBarEnabled(false);
+        LinearLayout list = column();
+        int currentIdx = playback.index;
+        View playingRow = null;
+        for (int i = 0; i < playback.queue.size(); i++) {
+            int idx = i;
+            TidalClient.Track track = playback.queue.get(i);
+            boolean isCurrent = i == currentIdx;
+
+            LinearLayout item = row();
+            item.setGravity(Gravity.CENTER_VERTICAL);
+            item.setPadding(dp(8), dp(6), dp(8), dp(6));
+            if (isCurrent) item.setBackground(shapeWithStroke(0x22d4a359, 0x33d4a359, 1, 8));
+
+            TextView num = text(isCurrent ? "▶" : String.format(Locale.ROOT, "%02d", i + 1), 11, isCurrent ? GOLD : MUTED, isCurrent);
+            num.setGravity(Gravity.CENTER);
+            item.addView(num, new LinearLayout.LayoutParams(dp(24), -2));
+
+            LinearLayout info = column();
+            info.setPadding(dp(8), 0, dp(8), 0);
+            info.addView(single(track.title, 13, isCurrent ? GOLD : INK, isCurrent));
+            info.addView(single(track.artist, 10, MUTED, false));
+            item.addView(info, new LinearLayout.LayoutParams(0, -2, 1));
+
+            String tag = trackTag(track);
+            TextView tagView = text(tag, 8, MUTED, false);
+            tagView.setPadding(dp(4), dp(1), dp(4), dp(1));
+            tagView.setBackground(shape(0x14ffffff, 4));
+            item.addView(tagView);
+
+            long dur = DownloadTasks.length(track);
+            if (dur > 0) {
+                TextView durView = text(formatTime(dur * 1000), 10, MUTED, false);
+                durView.setPadding(dp(6), 0, 0, 0);
+                item.addView(durView);
+            }
+
+            item.setOnClickListener(v -> {
+                playback.playAt(idx, 0, true);
+                dialog.dismiss();
+                updatePlayer();
+            });
+            if (isCurrent) playingRow = item;
+            list.addView(item);
+        }
+        scroll.addView(list);
+        int maxHeight = (int) (getResources().getDisplayMetrics().heightPixels * 0.58f);
+        sheet.addView(scroll, new LinearLayout.LayoutParams(-1, maxHeight));
+
+        dialog.setContentView(sheet);
+        if (playingRow != null) {
+            View row = playingRow;
+            scroll.getViewTreeObserver().addOnGlobalLayoutListener(new android.view.ViewTreeObserver.OnGlobalLayoutListener() {
+                @Override public void onGlobalLayout() {
+                    android.view.ViewTreeObserver observer = scroll.getViewTreeObserver();
+                    if (observer.isAlive()) observer.removeOnGlobalLayoutListener(this);
+                    int y = row.getTop();
+                    if (y > dp(8)) scroll.scrollTo(0, y - dp(8));
+                }
+            });
+        }
+        dialog.show();
+    }
+
+    static final class AudioBadge {
+        final String text;
+        final int textColor;
+        final int bgColor;
+        final int borderColor;
+
+        AudioBadge(String text, int textColor, int bgColor, int borderColor) {
+            this.text = text;
+            this.textColor = textColor;
+            this.bgColor = bgColor;
+            this.borderColor = borderColor;
+        }
+    }
+
+    private AudioBadge audioSpecBadge(TidalClient.Track track) {
+        if (track == null) return null;
+        if (track.isLocal() || track.isWebdav() || track.isSmb()) {
+            String filename = track.payload.optString("file_name", "").toLowerCase(Locale.ROOT);
+            if (filename.endsWith(".dsf") || filename.endsWith(".dff")) {
+                int rate = track.payload.optInt("sample_rate", 0);
+                String label = rate >= 11289600 ? "DSD256" : rate >= 5644800 ? "DSD128" : rate >= 2822400 ? "DSD64" : "DSD";
+                return new AudioBadge(label, GOLD, 0x22d4a359, GOLD);
+            }
+            if (filename.endsWith(".flac") || filename.endsWith(".ape") || filename.endsWith(".wav")
+                    || track.payload.optBoolean("lossless", false)) {
+                int rate = track.payload.optInt("sample_rate", 0);
+                int depth = track.payload.optInt("bit_depth", 0);
+                if (rate >= 96000 || depth >= 24) {
+                    String rStr = rate > 0 ? (rate / 1000) + "k" : "24b";
+                    return new AudioBadge("Hi-Res " + rStr, GOLD, 0x22d4a359, GOLD);
+                }
+                return new AudioBadge("FLAC", INK, 0x18ffffff, 0x33ffffff);
+            }
+            if (filename.endsWith(".mp3")) return new AudioBadge("MP3", MUTED, 0x10ffffff, 0x20ffffff);
+            if (filename.endsWith(".m4a") || filename.endsWith(".aac")) return new AudioBadge("AAC", MUTED, 0x10ffffff, 0x20ffffff);
+            return new AudioBadge("无损", INK, 0x18ffffff, 0x33ffffff);
+        }
+        if (track.isNetease()) {
+            String level = track.payload.optString("level", "");
+            if ("hires".equalsIgnoreCase(level) || "jymaster".equalsIgnoreCase(level)) {
+                return new AudioBadge("超清母带", GOLD, 0x22d4a359, GOLD);
+            }
+            if ("sky".equalsIgnoreCase(level) || "jyeffect".equalsIgnoreCase(level)) {
+                return new AudioBadge("沉浸声", GOLD, 0x22d4a359, GOLD);
+            }
+            if ("lossless".equalsIgnoreCase(level) || track.payload.optBoolean("lossless", true)) {
+                return new AudioBadge("无损", INK, 0x18ffffff, 0x33ffffff);
+            }
+            return new AudioBadge("极高", MUTED, 0x10ffffff, 0x20ffffff);
+        }
+        // TIDAL
+        String q = track.payload.optString("audioQuality", "");
+        if ("HI_RES_LOSSLESS".equalsIgnoreCase(q) || "HI_RES".equalsIgnoreCase(q)) {
+            return new AudioBadge("Hi-Res MAX", GOLD, 0x22d4a359, GOLD);
+        }
+        if ("MQA".equalsIgnoreCase(q)) {
+            return new AudioBadge("MQA", GOLD, 0x22d4a359, GOLD);
+        }
+        if ("LOSSLESS".equalsIgnoreCase(q)) {
+            return new AudioBadge("LOSSLESS", INK, 0x18ffffff, 0x33ffffff);
+        }
+        return new AudioBadge("HIGH", MUTED, 0x10ffffff, 0x20ffffff);
+    }
+
+    private static String trackTag(TidalClient.Track track) {
+        if (track == null) return "";
+        if (track.isLocal()) {
+            String filename = track.payload.optString("file_name", "").toLowerCase(Locale.ROOT);
+            if (filename.endsWith(".flac")) return "FLAC";
+            if (filename.endsWith(".dsf") || filename.endsWith(".dff")) return "DSD";
+            if (filename.endsWith(".wav")) return "WAV";
+            if (filename.endsWith(".ape")) return "APE";
+            if (filename.endsWith(".mp3")) return "MP3";
+            if (filename.endsWith(".m4a")) return "AAC";
+            return track.payload.optBoolean("lossless", false) ? "FLAC" : "本地";
+        }
+        if (track.isNetease()) return "网易云";
+        if (track.isWebdav()) return "WebDAV";
+        if (track.isSmb()) return "SMB";
+        return "TIDAL";
     }
 
     /** Icon above a short label, for secondary player actions. */
     private Button labeledIcon(String icon, String label, Runnable choose) {
         Button button = action(label, label, choose);
         button.setTextColor(MUTED);
-        button.setTextSize(12);
-        button.setCompoundDrawablesWithIntrinsicBounds(null, new PlayerIcon(icon, MUTED, dp(22)), null, null);
-        button.setCompoundDrawablePadding(dp(4));
-        button.setPadding(0, dp(8), 0, dp(6));
+        button.setTextSize(11);
+        button.setCompoundDrawablesWithIntrinsicBounds(null, new PlayerIcon(icon, MUTED, dp(18)), null, null);
+        button.setCompoundDrawablePadding(dp(3));
+        button.setPadding(0, dp(6), 0, dp(4));
         return button;
     }
 
@@ -6579,16 +8120,16 @@ public final class MainActivity extends ComponentActivity {
         Button button = action(label, description, choose);
         boolean destructive = label.startsWith("退出") || label.startsWith("关闭");
         button.setTextColor(destructive ? 0xffff8f8f : INK);
-        button.setTextSize(15);
+        button.setTextSize(14);
         button.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
-        button.setBackground(shape(0x14ffffff, 12));
-        button.setPadding(dp(14), 0, dp(12), 0);
+        button.setBackground(shape(0x14ffffff, 10));
+        button.setPadding(dp(12), 0, dp(10), 0);
         if (!destructive) {
             button.setCompoundDrawablesRelativeWithIntrinsicBounds(null, null,
-                    new PlayerIcon("forward", MUTED, dp(16)), null);
+                    new PlayerIcon("forward", MUTED, dp(14)), null);
         }
-        LinearLayout.LayoutParams layout = new LinearLayout.LayoutParams(-1, dp(50));
-        layout.bottomMargin = dp(6);
+        LinearLayout.LayoutParams layout = new LinearLayout.LayoutParams(-1, dp(44));
+        layout.bottomMargin = dp(5);
         button.setLayoutParams(layout);
         return button;
     }
@@ -6597,40 +8138,41 @@ public final class MainActivity extends ComponentActivity {
     private Button tile(String icon, String label, Runnable choose) {
         Button button = action(label, label, choose);
         button.setTextColor(INK);
-        button.setTextSize(13);
-        button.setBackground(shape(SURFACE, 14));
-        button.setCompoundDrawablesWithIntrinsicBounds(null, new PlayerIcon(icon, ACCENT, dp(22)), null, null);
-        button.setCompoundDrawablePadding(dp(5));
-        button.setPadding(0, dp(12), 0, dp(10));
+        button.setTextSize(12);
+        button.setBackground(shape(SURFACE, 12));
+        button.setCompoundDrawablesWithIntrinsicBounds(null, new PlayerIcon(icon, ACCENT, dp(18)), null, null);
+        button.setCompoundDrawablePadding(dp(4));
+        button.setPadding(0, dp(8), 0, dp(6));
         return button;
     }
 
     private void empty(String heading, String detail) {
         section(heading);
-        if (!detail.isEmpty()) content.addView(text(detail, 14, MUTED, false));
+        if (!detail.isEmpty()) content.addView(text(detail, 13, MUTED, false));
     }
 
     private void section(String value) {
-        TextView heading = text(value, 19, INK, true);
-        heading.setPadding(0, dp(12), 0, dp(8));
+        TextView heading = text(value, 16, INK, true);
+        heading.setPadding(0, dp(10), 0, dp(6));
         content.addView(heading);
     }
 
     private LinearLayout entry(String title, String detail, String art, Runnable choose) {
         LinearLayout entry = row();
-        entry.setPadding(dp(8), dp(5), dp(3), dp(5));
-        entry.setBackground(shape(SURFACE, 12));
+        entry.setGravity(Gravity.CENTER_VERTICAL);
+        entry.setPadding(dp(6), dp(4), dp(4), dp(4));
+        entry.setBackground(shape(SURFACE, 10));
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
-        params.bottomMargin = dp(5);
+        params.bottomMargin = dp(4);
         entry.setLayoutParams(params);
-        ImageView image = art(48);
+        ImageView image = art(38);
         artwork.load(image, art, 160, title);
         image.setOnClickListener(v -> choose.run());
         entry.addView(image);
         LinearLayout info = column();
-        info.setPadding(dp(12), 0, dp(4), 0);
-        info.addView(single(title, 15, INK, true));
-        info.addView(single(detail, 12, MUTED, false));
+        info.setPadding(dp(10), 0, dp(4), 0);
+        info.addView(single(title, 14, INK, true));
+        info.addView(single(detail, 11, MUTED, false));
         info.setOnClickListener(v -> choose.run());
         entry.addView(info, new LinearLayout.LayoutParams(0, -2, 1));
         return entry;
@@ -6665,21 +8207,25 @@ public final class MainActivity extends ComponentActivity {
         Button button = new Button(this, null, android.R.attr.borderlessButtonStyle);
         button.setText(value);
         button.setTextColor(ACCENT);
-        button.setTextSize(14);
+        button.setTextSize(13);
         button.setAllCaps(false);
         button.setContentDescription(description);
-        button.setMinWidth(dp(44));
-        button.setMinimumWidth(dp(44));
-        button.setPadding(dp(7), 0, dp(7), 0);
+        button.setMinWidth(0);
+        button.setMinimumWidth(0);
+        button.setPadding(dp(6), 0, dp(6), 0);
         button.setOnClickListener(v -> choose.run());
         return button;
     }
 
     private Button iconButton(String icon, String description, Runnable choose) {
         Button button = action("", description, choose);
-        PlayerIcon image = new PlayerIcon(icon, ACCENT, dp(22));
+        PlayerIcon image = new PlayerIcon(icon, ACCENT, dp(16));
         button.setCompoundDrawablesWithIntrinsicBounds(null, image, null, null);
-        button.setPadding(0, dp(12), 0, dp(8));
+        button.setPadding(dp(4), dp(4), dp(4), dp(4));
+        button.setMinHeight(0);
+        button.setMinimumHeight(0);
+        button.setMinWidth(0);
+        button.setMinimumWidth(0);
         return button;
     }
 
@@ -6687,14 +8233,16 @@ public final class MainActivity extends ComponentActivity {
         Button button = action(label, label, choose);
         button.setTextColor(BG);
         button.setPadding(dp(16), 0, dp(16), 0);
-        button.setBackground(shape(ACCENT, 14));
+        button.setBackground(shape(GOLD, 14));
         return button;
     }
 
     private Button pill(String label, boolean active, Runnable choose) {
         Button button = action(label, label, choose);
-        button.setTextColor(active ? ACCENT : MUTED);
-        if (active) button.setBackground(shape(RAISED, 14));
+        button.setTextColor(active ? GOLD : MUTED);
+        button.setTextSize(11);
+        if (active) button.setBackground(shapeWithStroke(0x22d4a359, GOLD, 1, 14));
+        else button.setBackground(shape(SURFACE, 14));
         button.setPadding(dp(11), 0, dp(11), 0);
         return button;
     }
@@ -6721,6 +8269,14 @@ public final class MainActivity extends ComponentActivity {
         GradientDrawable background = new GradientDrawable();
         background.setColor(color);
         background.setCornerRadius(dp(corner));
+        return background;
+    }
+
+    private GradientDrawable shapeWithStroke(int color, int strokeColor, int strokeWidthDp, int corner) {
+        GradientDrawable background = new GradientDrawable();
+        background.setColor(color);
+        background.setCornerRadius(dp(corner));
+        if (strokeWidthDp > 0) background.setStroke(dp(strokeWidthDp), strokeColor);
         return background;
     }
 

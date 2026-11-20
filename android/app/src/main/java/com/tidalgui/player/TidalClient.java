@@ -127,7 +127,7 @@ final class TidalClient {
     }
 
     static Uri artwork(String cover, int size) {
-        if (!cover.matches("[0-9a-fA-F-]{36}")) return NeteaseClient.httpsMedia(cover);
+        if (!cover.matches("[0-9a-fA-F-]{36}")) return NeteaseClient.sizedMedia(cover, size);
         return Uri.parse("https://resources.tidal.com/images/" + cover.replace('-', '/')
                 + "/" + size + "x" + size + ".jpg");
     }
@@ -141,7 +141,7 @@ final class TidalClient {
         final String albumArtist;
         final int volumes;
 
-        enum Kind { ALBUM, PLAYLIST, ARTIST }
+        enum Kind { ALBUM, PLAYLIST, ARTIST, MIX }
 
         boolean isNetease() {
             try {
@@ -153,6 +153,16 @@ final class TidalClient {
 
         Collection(JSONObject data, Kind kind) throws JSONException {
             this.kind = kind;
+            if (kind == Kind.MIX) {
+                id = data.getString("id");
+                String name = data.optString("title");
+                title = name.isEmpty() ? "Mix" : name;
+                subtitle = data.optString("subTitle", data.optString("subtitle"));
+                albumArtist = "";
+                volumes = 1;
+                cover = mixImage(data);
+                return;
+            }
             id = data.getString(kind == Kind.PLAYLIST ? "uuid" : "id");
             title = data.getString(kind == Kind.ARTIST ? "name" : "title");
             String date = data.optString("releaseDate");
@@ -342,6 +352,212 @@ final class TidalClient {
         return tracks(data.getJSONObject("tracks").getJSONArray("items"));
     }
 
+    /** One horizontal row from TIDAL's home or explore page. */
+    static final class HomeShelf {
+        final String title;
+        final List<Track> tracks;
+        final List<Collection> collections;
+
+        HomeShelf(String title, List<Track> tracks, List<Collection> collections) {
+            this.title = title == null || title.isEmpty() ? "为你推荐" : title;
+            this.tracks = tracks;
+            this.collections = collections;
+        }
+    }
+
+    /** Editorial rows such as My Mix, new albums and recommended radio. */
+    List<HomeShelf> home() throws Exception {
+        JSONObject body;
+        try {
+            body = get("pages/home?deviceType=BROWSER&locale=zh_CN");
+        } catch (Exception chinese) {
+            body = get("pages/home?deviceType=BROWSER&locale=en_US");
+        }
+        List<HomeShelf> shelves = new ArrayList<>();
+        int fetches = shelvesFrom(body, shelves, 8);
+        if (shelves.size() < 2 && fetches < 6) {
+            try {
+                shelvesFrom(get("pages/explore?deviceType=BROWSER&locale=en_US"), shelves, 8);
+            } catch (Exception ignored) {
+                // The home rows already loaded stay visible.
+            }
+        }
+        return shelves;
+    }
+
+    private int shelvesFrom(JSONObject page, List<HomeShelf> shelves, int limit) throws Exception {
+        JSONArray rows = page.optJSONArray("rows");
+        int fetches = 0;
+        if (rows == null) return fetches;
+        for (int r = 0; r < rows.length() && shelves.size() < limit; r++) {
+            JSONObject row = rows.optJSONObject(r);
+            JSONArray modules = row == null ? null : row.optJSONArray("modules");
+            if (modules == null) continue;
+            for (int m = 0; m < modules.length() && shelves.size() < limit; m++) {
+                JSONObject module = modules.optJSONObject(m);
+                if (module == null) continue;
+                JSONArray items = moduleItems(module);
+                if ((items == null || items.length() == 0) && fetches < 4) {
+                    String path = dataPath(module);
+                    if (path != null) {
+                        fetches++;
+                        JSONObject more = get(path + (path.contains("?") ? "&" : "?")
+                                + "deviceType=BROWSER&limit=12&offset=0");
+                        items = more.optJSONArray("items");
+                        if (items == null) {
+                            JSONObject paged = more.optJSONObject("pagedList");
+                            items = paged == null ? null : paged.optJSONArray("items");
+                        }
+                    }
+                }
+                HomeShelf shelf = readShelf(module.optString("title"), module.optString("type"), items);
+                if (shelf != null) shelves.add(shelf);
+            }
+        }
+        return fetches;
+    }
+
+    private static String dataPath(JSONObject module) {
+        JSONObject paged = module.optJSONObject("pagedList");
+        String path = paged == null ? "" : paged.optString("dataApiPath");
+        if (path.isEmpty() || path.length() > 300 || path.contains("..")
+                || path.toLowerCase(java.util.Locale.ROOT).contains("countrycode")
+                || !(path.startsWith("pages/") || path.startsWith("mixes/"))) return null;
+        return path;
+    }
+
+    private static JSONArray moduleItems(JSONObject module) {
+        String type = module.optString("type");
+        if ("HIGHLIGHT_MODULE".equals(type)) {
+            JSONArray highlights = module.optJSONArray("highlights");
+            JSONArray items = new JSONArray();
+            if (highlights == null) return items;
+            for (int i = 0; i < highlights.length(); i++) {
+                JSONObject highlight = highlights.optJSONObject(i);
+                if (highlight != null) items.put(highlight);
+            }
+            return items;
+        }
+        JSONObject paged = module.optJSONObject("pagedList");
+        return paged == null ? null : paged.optJSONArray("items");
+    }
+
+    private static HomeShelf readShelf(String title, String type, JSONArray items) {
+        if (items == null || items.length() == 0) return null;
+        try {
+            switch (type) {
+                case "TRACK_LIST":
+                    List<Track> tracks = tracks(unwrapAll(items));
+                    return tracks.isEmpty() ? null : new HomeShelf(title, tracks, new ArrayList<>());
+                case "ALBUM_LIST":
+                    return collectionShelf(title, items, Collection.Kind.ALBUM);
+                case "ARTIST_LIST":
+                    return collectionShelf(title, items, Collection.Kind.ARTIST);
+                case "PLAYLIST_LIST":
+                    return collectionShelf(title, items, Collection.Kind.PLAYLIST);
+                case "MIX_LIST":
+                    return collectionShelf(title, items, Collection.Kind.MIX);
+                case "MIXED_TYPES_LIST":
+                case "HIGHLIGHT_MODULE":
+                    return mixedShelf(title, items);
+                default:
+                    return null;
+            }
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private static HomeShelf collectionShelf(String title, JSONArray items, Collection.Kind kind) throws Exception {
+        List<Collection> collections = new ArrayList<>();
+        int count = Math.min(items.length(), 12);
+        for (int i = 0; i < count; i++) {
+            JSONObject item = unwrap(items.optJSONObject(i));
+            if (item == null) continue;
+            try {
+                collections.add(new Collection(item, kind));
+            } catch (Exception ignored) {
+                // Skip a row the catalogue shape does not match.
+            }
+        }
+        return collections.isEmpty() ? null : new HomeShelf(title, new ArrayList<>(), collections);
+    }
+
+    private static HomeShelf mixedShelf(String title, JSONArray items) throws Exception {
+        List<Track> tracks = new ArrayList<>();
+        List<Collection> collections = new ArrayList<>();
+        int count = Math.min(items.length(), 12);
+        for (int i = 0; i < count; i++) {
+            JSONObject raw = items.optJSONObject(i);
+            if (raw == null) continue;
+            String kind = raw.optString("type").toUpperCase(java.util.Locale.ROOT);
+            JSONObject item = unwrap(raw);
+            try {
+                if ("TRACK".equals(kind)) tracks.add(new Track(item));
+                else if ("ALBUM".equals(kind)) collections.add(new Collection(item, Collection.Kind.ALBUM));
+                else if ("ARTIST".equals(kind)) collections.add(new Collection(item, Collection.Kind.ARTIST));
+                else if ("PLAYLIST".equals(kind)) collections.add(new Collection(item, Collection.Kind.PLAYLIST));
+                else if ("MIX".equals(kind)) collections.add(new Collection(item, Collection.Kind.MIX));
+            } catch (Exception ignored) {
+                // One unreadable item does not drop the rest of the row.
+            }
+        }
+        if (!tracks.isEmpty() && collections.isEmpty()) return new HomeShelf(title, tracks, collections);
+        if (!collections.isEmpty()) return new HomeShelf(title, new ArrayList<>(), collections);
+        return null;
+    }
+
+    private static JSONArray unwrapAll(JSONArray items) throws org.json.JSONException {
+        JSONArray unwrapped = new JSONArray();
+        int count = Math.min(items.length(), 20);
+        for (int i = 0; i < count; i++) {
+            JSONObject item = unwrap(items.optJSONObject(i));
+            if (item != null) unwrapped.put(item);
+        }
+        return unwrapped;
+    }
+
+    private static JSONObject unwrap(JSONObject item) {
+        if (item == null) return null;
+        JSONObject nested = item.optJSONObject("item");
+        if (nested == null) nested = item.optJSONObject("data");
+        return nested == null ? item : nested;
+    }
+
+    private static String imageList(JSONArray images) {
+        if (images == null || images.length() == 0) return "";
+        int index = images.length() > 1 ? 1 : 0;
+        JSONObject image = images.optJSONObject(index);
+        if (image == null) return "";
+        String url = image.optString("url");
+        return url.isEmpty() ? image.optString("id") : url;
+    }
+
+    private static String mixImage(JSONObject item) {
+        String listed = imageList(item.optJSONArray("mixImages"));
+        if (listed.isEmpty()) listed = imageList(item.optJSONArray("detailMixImages"));
+        if (!listed.isEmpty()) return listed;
+        JSONObject images = item.optJSONObject("images");
+        if (images != null) {
+            for (String key : new String[]{"MEDIUM", "SMALL", "LARGE"}) {
+                JSONObject size = images.optJSONObject(key);
+                if (size == null) continue;
+                String url = size.optString("url");
+                if (!url.isEmpty()) return url;
+                String id = size.optString("id");
+                if (!id.isEmpty()) return id;
+            }
+        }
+        JSONObject graphic = item.optJSONObject("graphic");
+        JSONArray pictures = graphic == null ? null : graphic.optJSONArray("images");
+        if (pictures != null && pictures.length() > 0) {
+            JSONObject picture = pictures.optJSONObject(0);
+            if (picture != null && !picture.optString("id").isEmpty()) return picture.optString("id");
+        }
+        String square = item.optString("squareImage");
+        return square.isEmpty() ? item.optString("image", item.optString("cover")) : square;
+    }
+
     List<Track> favorites(int offset) throws Exception {
         JSONObject data = get("users/" + user()
                 + "/favorites/tracks?order=DATE&orderDirection=DESC&limit=50&offset=" + offset);
@@ -353,6 +569,7 @@ final class TidalClient {
         switch (kind) {
             case ALBUM: type = "albums"; break;
             case ARTIST: type = "artists"; break;
+            case MIX: throw new IOException("混音请从首页打开");
             default: type = "playlists";
         }
         String page = "?limit=40&offset=" + offset;
@@ -524,6 +741,7 @@ final class TidalClient {
         switch (collection.kind) {
             case ALBUM: path = "albums/" + Uri.encode(collection.id) + "/tracks"; break;
             case ARTIST: path = "artists/" + Uri.encode(collection.id) + "/toptracks"; break;
+            case MIX: path = "mixes/" + Uri.encode(collection.id) + "/items"; break;
             default: path = "playlists/" + Uri.encode(collection.id) + "/tracks"; break;
         }
         JSONArray items = get(path + "?limit=50&offset=" + offset).getJSONArray("items");

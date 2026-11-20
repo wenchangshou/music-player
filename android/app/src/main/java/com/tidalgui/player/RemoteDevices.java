@@ -186,7 +186,7 @@ final class RemoteDevices {
     private final ExecutorService network = Executors.newSingleThreadExecutor();
     private final ArrayDeque<JSONObject> commands = new ArrayDeque<>();
     private boolean running, commandBusy, stateBusy, devicesBusy, closed;
-    private long lastDevices, lastState;
+    private long lastDevices, lastState, lastVolumeCommand;
     private int generation;
 
     volatile List<Device> devices = Collections.emptyList();
@@ -267,6 +267,7 @@ final class RemoteDevices {
 
     boolean send(JSONObject command) {
         if (target == null || pending() >= 60) return false;
+        if ("volume".equals(command.optString("op"))) lastVolumeCommand = SystemClock.elapsedRealtime();
         if (state != null) state.predict(command);
         commands.add(command);
         listener.run();
@@ -352,12 +353,34 @@ final class RemoteDevices {
                 if (closed || expected != generation) return;
                 stateBusy = false;
                 if (parsed != null) {
-                    state = parsed;
+                    applyParsed(parsed);
                     error = "";
                 } else error = message;
                 listener.run();
             });
         });
+    }
+
+    private void applyParsed(State parsed) {
+        if (parsed == null) return;
+        if (state != null) {
+            // Echo / oscillation suppression: preserve recent user-set volume within 1200ms
+            if (SystemClock.elapsedRealtime() - lastVolumeCommand < 1200 && state.volume >= 0) {
+                parsed.volume = state.volume;
+            }
+            // Position monotonic smoothing during continuous playback of same track
+            if (state.playing && parsed.playing && !state.loading && !parsed.loading
+                    && state.current() != null && parsed.current() != null
+                    && state.current().id == parsed.current().id) {
+                long currentEst = state.position();
+                long drift = currentEst - parsed.positionMs;
+                // If remote reports a position that would jump backward due to network latency within 1.5s
+                if (drift > 0 && drift < 1500) {
+                    parsed.received = SystemClock.elapsedRealtime() - drift;
+                }
+            }
+        }
+        state = parsed;
     }
 
     private void dispatch() {
@@ -381,7 +404,7 @@ final class RemoteDevices {
                 if (closed || expected != generation) return;
                 commandBusy = false;
                 lastState = SystemClock.elapsedRealtime();
-                if (parsed != null) state = parsed;
+                if (parsed != null) applyParsed(parsed);
                 if (!message.isEmpty()) {
                     notice = message;
                     lastState = 0;

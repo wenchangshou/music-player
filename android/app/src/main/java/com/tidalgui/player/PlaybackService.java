@@ -1010,10 +1010,12 @@ public final class PlaybackService extends MediaSessionService {
     JSONObject remoteSnapshot() throws org.json.JSONException {
         JSONArray items = new JSONArray();
         for (TidalClient.Track track : queue) items.put(remoteTrack(track));
-        JSONObject state = new JSONObject().put("queue", items).put("revision", queueRevision)
+        JSONObject state = new JSONObject().put("queue", items)
+                .put("revision", queueRevision).put("queueRevision", queueRevision)
                 .put("index", index).put("playing", loading ? intendedPlay : player.isPlaying())
                 .put("loading", loading).put("position", loading ? 0 : player.getCurrentPosition())
                 .put("duration", loading ? 0 : Math.max(0, player.getDuration()))
+                .put("time", System.currentTimeMillis()).put("speed", 1.0)
                 .put("seekable", !loading && player.isCurrentMediaItemSeekable())
                 .put("remoteFiles", remoteFiles).put("fullMode", true).put("quality", quality)
                 .put("loggedIn", client != null).put("loginPending", remoteLoginPending)
@@ -1035,18 +1037,36 @@ public final class PlaybackService extends MediaSessionService {
     }
 
     /** Media stream volume as 0–100, which is what the phone's volume keys change. */
+    private int lastSetVolumePercent = -1;
+    private int lastStreamVolume = -1;
+
     private int mediaVolume() {
         android.media.AudioManager audio = getSystemService(android.media.AudioManager.class);
+        if (audio == null) return 0;
         int max = audio.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC);
-        return max <= 0 ? 0 : Math.round(audio.getStreamVolume(android.media.AudioManager.STREAM_MUSIC) * 100f / max);
+        if (max <= 0) return 0;
+        int streamVol = audio.getStreamVolume(android.media.AudioManager.STREAM_MUSIC);
+        // If the hardware stream step hasn't changed since our last setMediaVolume,
+        // preserve the user-requested fine percentage (e.g. 28%) instead of round-tripping
+        // through coarse hardware steps (e.g. 4/15 -> 27%) which causes ping-pong oscillations.
+        if (lastSetVolumePercent >= 0 && streamVol == lastStreamVolume) {
+            return lastSetVolumePercent;
+        }
+        lastStreamVolume = streamVol;
+        lastSetVolumePercent = Math.round(streamVol * 100f / max);
+        return lastSetVolumePercent;
     }
 
     private void setMediaVolume(double percent) throws IOException {
         if (percent > 0 && percent <= 1.0) percent *= 100.0;
         if (!(percent >= 0 && percent <= 100)) throw new IOException("音量无效");
         android.media.AudioManager audio = getSystemService(android.media.AudioManager.class);
+        if (audio == null) return;
         int max = audio.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC);
-        audio.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, (int) Math.round(percent * max / 100), 0);
+        int target = (int) Math.round(percent * max / 100.0);
+        audio.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, target, 0);
+        lastStreamVolume = target;
+        lastSetVolumePercent = (int) Math.round(percent);
     }
 
     /**
@@ -1135,7 +1155,8 @@ public final class PlaybackService extends MediaSessionService {
             case "play":
             case "remove":
             case "move":
-                if (input.getLong("revision") != queueRevision) throw new IOException("队列已更新，请重试");
+                long rev = input.optLong("revision", input.optLong("queueRevision", -1));
+                if (rev != -1 && rev != queueRevision) throw new IOException("队列已更新，请重试");
                 int at = input.getInt("index");
                 if (at < 0 || at >= queue.size()) throw new IOException("队列项不存在");
                 if ("play".equals(operation)) playAt(at, 0, true);

@@ -68,11 +68,11 @@ final class LyricsDialog {
         scroll.setMinimumHeight(dp(170));
         scroll.addView(body);
         if (inline) {
-            body.setPadding(dp(12), dp(16), dp(12), dp(16));
+            body.setPadding(dp(28), dp(120), dp(28), dp(120));
             body.setGravity(android.view.Gravity.CENTER_HORIZONTAL);
             scroll.setVerticalScrollBarEnabled(false);
             scroll.setFillViewport(true);
-            scroll.setContentDescription("歌词，轻点返回封面");
+            scroll.setContentDescription("歌词，轻点跳转，点击空白返回封面");
             scroll.setOnClickListener(ignored -> tap.run());
             body.setOnClickListener(ignored -> tap.run());
             dialog = null;
@@ -124,15 +124,7 @@ final class LyricsDialog {
         } else {
             for (Line line : lines) {
                 TextView view = text(line.text);
-                if (dialog == null) {
-                    view.setOnClickListener(ignored -> tap.run());
-                    view.setOnLongClickListener(ignored -> {
-                        seek.at(line.at);
-                        return true;
-                    });
-                } else {
-                    view.setOnClickListener(ignored -> seek.at(line.at));
-                }
+                view.setOnClickListener(ignored -> seek.at(line.at));
                 body.addView(view);
             }
         }
@@ -143,8 +135,30 @@ final class LyricsDialog {
     }
 
     void unavailable(String reason) {
+        unavailable(reason, null);
+    }
+
+    void unavailable(String reason, Runnable action) {
         body.removeAllViews();
         body.addView(text(reason));
+        if (action != null) {
+            android.widget.Button btn = new android.widget.Button(body.getContext(), null, android.R.attr.borderlessButtonStyle);
+            btn.setText("在线搜索 / 下载歌词");
+            btn.setTextColor(ListeningRoomColors.GOLD);
+            btn.setTextSize(12);
+            android.graphics.drawable.GradientDrawable bg = new android.graphics.drawable.GradientDrawable();
+            bg.setColor(0x22d4a359);
+            bg.setCornerRadius(dp(14));
+            bg.setStroke(dp(1), ListeningRoomColors.GOLD);
+            btn.setBackground(bg);
+            btn.setPadding(dp(16), dp(4), dp(16), dp(4));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, dp(34));
+            lp.topMargin = dp(14);
+            lp.gravity = android.view.Gravity.CENTER_HORIZONTAL;
+            btn.setLayoutParams(lp);
+            btn.setOnClickListener(v -> action.run());
+            body.addView(btn);
+        }
     }
 
     void sync(long currentTrack, long position) {
@@ -155,14 +169,55 @@ final class LyricsDialog {
         }
         int next = -1;
         while (next + 1 < lines.size() && lines.get(next + 1).at <= position) next++;
-        if (next == active) return;
-        if (active >= 0) ((TextView) body.getChildAt(active)).setTextColor(INACTIVE);
-        active = next;
-        if (active >= 0) {
-            View current = body.getChildAt(active);
-            ((TextView) current).setTextColor(ACTIVE);
-            scroll.smoothScrollTo(0, Math.max(0, current.getTop() - scroll.getHeight() / 3));
+        // Hysteresis: prevent jittering back to previous line due to small polling/clock jitter.
+        // Only allow stepping backward if position rewound significantly (> 450ms before active line).
+        if (active >= 0 && next < active && active < lines.size()) {
+            long activeLineAt = lines.get(active).at;
+            if (position >= activeLineAt - 450) {
+                return;
+            }
         }
+        if (next == active) return;
+        boolean opening = active < 0;
+        if (active >= 0 && active < body.getChildCount()) {
+            TextView prev = (TextView) body.getChildAt(active);
+            prev.setTextColor(INACTIVE);
+            prev.setTextSize(idleSize());
+            prev.setTypeface(null, android.graphics.Typeface.NORMAL);
+        }
+        active = next;
+        if (active >= 0 && active < body.getChildCount()) {
+            TextView current = (TextView) body.getChildAt(active);
+            current.setTextColor(ACTIVE);
+            current.setTextSize(focusSize());
+            current.setTypeface(null, android.graphics.Typeface.BOLD);
+            center(current, opening);
+        }
+    }
+
+    /** Put the current line in the middle. The first placement waits until the lines have height. */
+    private void center(TextView current, boolean jump) {
+        Runnable place = () -> {
+            int y = Math.max(0, current.getTop() - scroll.getHeight() / 2 + current.getHeight() / 2);
+            if (jump) scroll.scrollTo(0, y);
+            else scroll.smoothScrollTo(0, y);
+        };
+        if (current.getHeight() > 0 && scroll.getHeight() > 0) {
+            place.run();
+            return;
+        }
+        scroll.getViewTreeObserver().addOnGlobalLayoutListener(new android.view.ViewTreeObserver.OnGlobalLayoutListener() {
+            @Override public void onGlobalLayout() {
+                android.view.ViewTreeObserver observer = scroll.getViewTreeObserver();
+                if (!scroll.isAttachedToWindow()) {
+                    if (observer.isAlive()) observer.removeOnGlobalLayoutListener(this);
+                    return;
+                }
+                if (current.getHeight() == 0 || scroll.getHeight() == 0) return;
+                if (observer.isAlive()) observer.removeOnGlobalLayoutListener(this);
+                if (body.indexOfChild(current) == active) place.run();
+            }
+        });
     }
 
     private TextView text(String value) {
@@ -170,12 +225,21 @@ final class LyricsDialog {
         view.setText(value);
         if (dialog == null) {
             view.setGravity(android.view.Gravity.CENTER);
-            if (tap != null) view.setOnClickListener(ignored -> tap.run());
         }
-        view.setTextSize(17);
+        view.setTextSize(idleSize());
         view.setTextColor(INACTIVE);
         view.setPadding(0, dp(8), 0, dp(8));
+        if (dialog == null) view.setLayoutParams(new LinearLayout.LayoutParams(-1, -2));
         return view;
+    }
+
+    /** Inline lyrics use a larger current line across the player stage. */
+    private int idleSize() {
+        return dialog == null ? 16 : 14;
+    }
+
+    private int focusSize() {
+        return dialog == null ? 24 : 17;
     }
 
     private int dp(int size) {

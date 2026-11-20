@@ -35,10 +35,13 @@ final class NeteaseClient {
     }
     private static final String[] LEVELS = {"lossless", "exhigh", "standard", "hires"};
     private static final long ID_BASE = 1L << 52;
+    private static final String LIKED_PLAYLIST = "netease_liked_playlist";
+    private final android.content.SharedPreferences preferences;
     private final String base;
     private final String session;
 
     NeteaseClient(android.content.SharedPreferences settings) {
+        preferences = settings;
         String custom = settings.getString(SETTING, "");
         base = custom.isEmpty() ? DEFAULT_BASE : custom;
         session = usesDefaultBackend() ? settings.getString(SESSION, "") : "";
@@ -237,6 +240,20 @@ final class NeteaseClient {
         }
     }
 
+    /** Cover URL capped by 网易云's image CDN, so the phone does not download the original. */
+    static Uri sizedMedia(String value, int size) {
+        Uri media = httpsMedia(value);
+        if (media == null || size <= 0) return media;
+        String host = media.getHost();
+        String query = media.getEncodedQuery();
+        if (host != null && host.toLowerCase(Locale.ROOT).endsWith(".music.126.net")
+                && (query == null || !query.contains("param="))) {
+            int edge = Math.min(Math.max(size, 64), 1024);
+            return media.buildUpon().appendQueryParameter("param", edge + "y" + edge).build();
+        }
+        return media;
+    }
+
     static Uri httpsMedia(String value) {
         Uri uri = Uri.parse(value);
         String host = uri.getHost();
@@ -251,6 +268,58 @@ final class NeteaseClient {
     List<TidalClient.Track> dailyTracks() throws Exception {
         JSONObject data = get("recommend/songs").optJSONObject("data");
         return tracks(data == null ? null : data.optJSONArray("dailySongs"));
+    }
+
+    /** Songs in the account's「我喜欢的音乐」playlist. */
+    List<TidalClient.Track> likedTracks() throws Exception {
+        if (!signedIn()) return new ArrayList<>();
+        long cached = rememberedLiked();
+        if (cached > 0) {
+            try {
+                List<TidalClient.Track> songs = likedSongs(cached);
+                if (!songs.isEmpty()) return songs;
+            } catch (Exception ignored) {
+                // The saved playlist id is stale; look it up again below.
+            }
+        }
+        JSONObject account = get("user/account").optJSONObject("account");
+        long user = account == null ? 0 : account.optLong("id");
+        if (user <= 0) return new ArrayList<>();
+        JSONArray rows = get("user/playlist?uid=" + user + "&limit=30&offset=0").optJSONArray("playlist");
+        long liked = 0;
+        if (rows != null) {
+            for (int i = 0; i < rows.length(); i++) {
+                JSONObject row = rows.optJSONObject(i);
+                if (row == null) continue;
+                if (row.optInt("specialType") == 5 || "我喜欢的音乐".equals(row.optString("name"))) {
+                    liked = row.optLong("id");
+                    break;
+                }
+            }
+        }
+        if (liked <= 0) return new ArrayList<>();
+        rememberLiked(liked);
+        return likedSongs(liked);
+    }
+
+    private List<TidalClient.Track> likedSongs(long playlist) throws Exception {
+        return tracks(get("playlist/track/all?id=" + playlist + "&limit=20&offset=0").optJSONArray("songs"));
+    }
+
+    private long rememberedLiked() {
+        String saved = preferences.getString(LIKED_PLAYLIST, "");
+        int split = saved.indexOf(':');
+        if (split <= 0 || !saved.substring(0, split).equals(Integer.toHexString(session.hashCode()))) return 0;
+        try {
+            return Long.parseLong(saved.substring(split + 1));
+        } catch (NumberFormatException ignored) {
+            return 0;
+        }
+    }
+
+    private void rememberLiked(long playlist) {
+        preferences.edit().putString(LIKED_PLAYLIST,
+                Integer.toHexString(session.hashCode()) + ":" + playlist).apply();
     }
 
     List<TidalClient.Collection> recommendedPlaylists(boolean personal) throws Exception {
