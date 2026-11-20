@@ -249,6 +249,10 @@ final class CatalogueScreens {
         }
         header.addView(info, new LinearLayout.LayoutParams(0, -2, 1));
         ui.content.addView(header);
+        if (item.kind == TidalClient.Collection.Kind.ALBUM) {
+            String albumBy = item.albumArtist.isEmpty() ? item.subtitle : item.albumArtist;
+            ui.aiScreens.albumInsight(albumBy, item.title, new ArrayList<>(ui.tracks));
+        }
         if (item.kind != TidalClient.Collection.Kind.ARTIST || item.isNetease()) {
             ui.section(item.kind == TidalClient.Collection.Kind.ARTIST ? "热门歌曲"
                     : item.kind == TidalClient.Collection.Kind.PLAYLIST ? "歌单曲目"

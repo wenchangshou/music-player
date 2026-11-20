@@ -68,6 +68,13 @@ final class RemoteLibrary {
                         .put("total", tracks.size())
                         .put("playlists", new JSONArray(library.playlists()));
             }
+            case "autodj": {
+                boolean enabled = input.getBoolean("enabled");
+                return main.run(() -> {
+                    player.setAutoDj(enabled);
+                    return player.remoteSnapshot();
+                });
+            }
             case "genre-update": {
                 JSONObject albumGenres = input.optJSONObject("genres");
                 JSONObject trackGenres = input.optJSONObject("tracks");

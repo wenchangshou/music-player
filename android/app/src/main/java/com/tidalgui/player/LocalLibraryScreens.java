@@ -403,6 +403,7 @@ final class LocalLibraryScreens {
         Button all = ui.withIcon(ui.primary("播放全部", () -> ui.catalogueScreens.playList(tracks, 0, false)), "play", BG);
         Button random = ui.withIcon(ui.secondary("随机播放", () -> ui.catalogueScreens.playList(tracks, 0, true)), "shuffle", ACCENT);
         ui.content.addView(ui.toolbar(all, random));
+        ui.aiScreens.albumInsight(AutoDj.albumArtist(sample), sample.album.isEmpty() ? albumName : sample.album, tracks);
 
         int lastDisc = -1;
         for (int i = 0; i < tracks.size(); i++) {

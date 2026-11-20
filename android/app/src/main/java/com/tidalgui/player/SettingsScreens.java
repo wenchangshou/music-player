@@ -93,6 +93,7 @@ final class SettingsScreens {
                 : PlaybackService.QUALITY_NAMES[ui.playback.quality]), "选择 TIDAL 播放音质", ui.nowPlaying::chooseTidalQuality));
         sound.addView(ui.menuRow("网易云音质 · " + (ui.playback == null ? "无损" : NeteaseClient.levelName(ui.playback.neteaseLevel)),
                 "选择网易云播放音质", ui.nowPlaying::chooseNeteaseQuality));
+        ui.aiScreens.settingsPanel();
     }
 
     void connections() {

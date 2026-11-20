@@ -121,3 +121,26 @@ adb shell am start -n com.tidalgui.player/.MainActivity
 ./gradlew :app:assembleRelease :app:lintRelease
 ```
 产物位于 `app/build/outputs/apk/release/`。
+
+## 代码结构
+
+界面全部用代码构建（没有布局 XML），按功能拆成多个文件，都在 `com.tidalgui.player` 包内：
+
+| 文件 | 职责 |
+| --- | --- |
+| `MainActivity` | 生命周期、页面导航与 `render()`、搜索栏、页面状态字段 |
+| `UiKit` | `MainActivity` 的父类：文字、按钮、面板、卡片等视图构建工具 |
+| `HomeScreens` / `LocalLibraryScreens` / `CatalogueScreens` | 首页、本地音乐库、TIDAL/网易云目录与曲目列表 |
+| `NowPlayingScreen` / `TrackExtras` | 正在播放、迷你播放条、播放队列；歌词、曲目菜单、歌曲电台 |
+| `DownloadScreens` / `ImportExport` | 下载管理与离线；导入音频、文件夹与 M3U |
+| `RemoteScreens` / `SettingsScreens` / `LoginFlow` | 多端遥控；设置与更新；TIDAL 登录 |
+| `NeteaseScreens` / `WebDavScreens` / `SmbScreens` | 网易云歌单与登录；WebDAV、SMB 网络存储 |
+| `AiScreens` | AI 设置、唱片手札、专辑 AI 鉴赏卡片 |
+
+各功能类通过 `ui` 字段访问 `MainActivity` 的共享状态与其他功能类（例如 `ui.catalogueScreens.playList(...)`）。
+新增页面：在 `Page` 加枚举值，在对应功能类写渲染方法，再在 `MainActivity.render()` 中挂上。
+
+不依赖界面的逻辑放在独立类中，便于单元测试：
+- `AutoDj`：智能无尽续播（候选打分、AI 挑选规则、无 AI 时的回退），由 `PlaybackService` 在队列快播完时调用；
+- `AiProxy`：OpenAI 兼容接口代理，配置与密钥只保存在本机；
+- `AiNotes`：唱片手札与专辑鉴赏的生成和本地缓存。

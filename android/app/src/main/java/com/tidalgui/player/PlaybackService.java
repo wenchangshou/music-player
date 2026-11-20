@@ -114,6 +114,15 @@ public final class PlaybackService extends MediaSessionService {
     androidx.media3.exoplayer.audio.AudioSink.AudioTrackConfig outputConfig;
     String error = "";
     Runnable listener;
+    /** Shows a short message in the app while it is open (set by the activity, null otherwise). */
+    java.util.function.Consumer<String> notice;
+
+    /** 智能无尽续播：队列快播完时由手机自己追加同频曲目，不依赖任何打开的遥控页面。 */
+    boolean autoDj;
+    private boolean autoDjBusy;
+    private String autoDjKey = "";
+    private final java.util.Set<Long> autoDjAdded = new java.util.HashSet<>();
+    private final ExecutorService aiWorker = Executors.newSingleThreadExecutor();
 
     @Override public void onCreate() {
         super.onCreate();
@@ -130,6 +139,7 @@ public final class PlaybackService extends MediaSessionService {
         neteaseLevel = NeteaseClient.knownLevel(level) ? level : "lossless";
         repeat = settings.getInt("repeat", Player.REPEAT_MODE_OFF);
         shuffle = settings.getBoolean("shuffle", false);
+        autoDj = settings.getBoolean("auto_dj", true);
         try {
             String saved = settings.getString("session", null);
             if (saved != null) {
@@ -1019,7 +1029,7 @@ public final class PlaybackService extends MediaSessionService {
                 .put("seekable", !loading && player.isCurrentMediaItemSeekable())
                 .put("remoteFiles", remoteFiles).put("fullMode", true).put("quality", quality)
                 .put("loggedIn", client != null).put("loginPending", remoteLoginPending)
-                .put("shuffle", shuffle).put("repeat", remoteRepeat()).put("volume", mediaVolume()).put("requestedQuality", QUALITIES[quality]).put("requestedNetease", neteaseLevel)
+                .put("shuffle", shuffle).put("autoDj", autoDj).put("repeat", remoteRepeat()).put("volume", mediaVolume()).put("requestedQuality", QUALITIES[quality]).put("requestedNetease", neteaseLevel)
                 // Changes when the music library or a download adds or removes files.
                 .put("filesRevision", localRevision + "." + DownloadTasks.get(this).revision())
                 .put("sourcePath", current() != null && current().isLocal() ? LocalMusicFiles.displayPath(current().localUri)
@@ -1172,6 +1182,81 @@ public final class PlaybackService extends MediaSessionService {
 
     void changed() {
         if (listener != null) listener.run();
+        maybeAutoDj();
+    }
+
+    void setAutoDj(boolean enabled) {
+        autoDj = enabled;
+        settings.edit().putBoolean("auto_dj", enabled).apply();
+        changed();
+    }
+
+    private void maybeAutoDj() {
+        if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
+            main.post(this::maybeAutoDj);
+            return;
+        }
+        if (!autoDj || autoDjBusy || repeat != Player.REPEAT_MODE_OFF || index < 0 || index >= queue.size()) return;
+        if (queue.size() - 1 - index > AutoDj.TRIGGER_REMAINING) return;
+        if (!(intendedPlay || player.isPlaying())) return;
+        TidalClient.Track current = queue.get(index);
+        String key = current.id + ":" + queue.size();
+        if (key.equals(autoDjKey)) return;
+        autoDjKey = key;
+        autoDjBusy = true;
+        List<TidalClient.Track> seeds = new ArrayList<>(queue.subList(Math.max(0, index - 4), index + 1));
+        java.util.Set<Long> exclude = new java.util.HashSet<>(autoDjAdded);
+        for (TidalClient.Track track : queue) exclude.add(track.id);
+        long revision = queueRevision;
+        aiWorker.execute(() -> {
+            AutoDj.Plan plan = null;
+            try {
+                plan = autoDjPlan(seeds, exclude);
+            } catch (RuntimeException problem) {
+                android.util.Log.w("AutoDj", "planning failed", problem);
+            }
+            AutoDj.Plan chosen = plan;
+            main.post(() -> {
+                autoDjBusy = false;
+                if (chosen == null || chosen.tracks.isEmpty()) return;
+                // 期间用户改了队列（手动加歌、清空等），就不再追加。
+                if (revision != queueRevision || index < 0 || queue.size() - 1 - index > AutoDj.TRIGGER_REMAINING) return;
+                for (TidalClient.Track track : chosen.tracks) autoDjAdded.add(track.id);
+                enqueueAll(chosen.tracks);
+                autoDjKey = queue.get(index).id + ":" + queue.size();
+                if (notice != null) {
+                    notice.accept(chosen.byAi
+                            ? "✨ AI 已为你续播 " + chosen.tracks.size() + " 首" + (chosen.theme.isEmpty() ? "同频曲目" : "「" + chosen.theme + "」")
+                            : "已按当前曲风从本地曲库续播 " + chosen.tracks.size() + " 首");
+                }
+            });
+        });
+    }
+
+    /** Runs on {@link #aiWorker}: AI picks from the library candidates, or the best-scored ones without AI. */
+    private AutoDj.Plan autoDjPlan(List<TidalClient.Track> seeds, java.util.Set<Long> exclude) {
+        List<TidalClient.Track> library = localLibrary.search("", null);
+        List<AutoDj.Candidate> pool = AutoDj.pool(seeds, exclude, library, new java.util.Random());
+        if (pool.isEmpty()) return null;
+        if (AiProxy.available(this)) { // offline: skip straight to the library match
+            try {
+                String prompt = AutoDj.prompt(seeds, pool, AutoDj.BATCH);
+                String reply = AiProxy.chat(this, AutoDj.request(prompt)).optString("content");
+                AutoDj.Plan plan = AutoDj.parse(reply, pool, seeds.get(seeds.size() - 1), AutoDj.BATCH);
+                if (plan != null && !plan.tracks.isEmpty()) {
+                    int picked = plan.tracks.size();
+                    List<TidalClient.Track> full = AutoDj.topUp(plan.tracks, pool, AutoDj.BATCH);
+                    android.util.Log.i("AutoDj", "AI picked " + picked + ", topped up to " + full.size()
+                            + " from " + pool.size() + " candidates, theme " + plan.theme);
+                    return new AutoDj.Plan(plan.theme, full, true);
+                }
+            } catch (IOException | org.json.JSONException problem) {
+                android.util.Log.i("AutoDj", "AI unavailable, using library match: " + problem.getMessage());
+            }
+        }
+        List<TidalClient.Track> picks = AutoDj.heuristic(pool, AutoDj.BATCH);
+        android.util.Log.i("AutoDj", "library match (no AI): " + picks.size() + " from " + pool.size() + " candidates");
+        return new AutoDj.Plan("", picks, false);
     }
 
     @Override public void onDestroy() {
@@ -1182,6 +1267,7 @@ public final class PlaybackService extends MediaSessionService {
         main.removeCallbacks(saveCheckpoint);
         cancelResolve();
         network.shutdownNow();
+        aiWorker.shutdownNow();
         removeSession(session);
         session.release();
         player.release();

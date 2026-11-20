@@ -352,12 +352,14 @@ final class NowPlayingScreen {
         ui.playerLyrics = ui.pillBtn("歌词", "lyrics", ui.trackExtras::toggleLyrics);
         playerDevices = ui.pillBtn(ui.remoteScreens.remoteMode() ? ui.devices.targetName() : "输出", "devices", ui.remoteScreens::showDevicePicker);
         ui.playerQueueBtn = ui.pillBtn("队列", "queue", this::showQueueSheet);
+        Button notes = ui.pillBtn("手札", "note", ui.aiScreens::showNotes);
 
         LinearLayout.LayoutParams btnLp = new LinearLayout.LayoutParams(0, ui.dp(32), 1);
         btnLp.setMargins(ui.dp(3), 0, ui.dp(3), 0);
         extras.addView(ui.playerLyrics, btnLp);
         extras.addView(playerDevices, btnLp);
         extras.addView(ui.playerQueueBtn, btnLp);
+        extras.addView(notes, btnLp);
         body.addView(extras);
 
         ui.message = ui.text("", 11, MUTED, false);

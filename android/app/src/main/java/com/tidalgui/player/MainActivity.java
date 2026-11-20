@@ -55,6 +55,7 @@ public final class MainActivity extends UiKit {
     final LoginFlow loginFlow = new LoginFlow(this);
     final ImportExport importExport = new ImportExport(this);
     final NowPlayingScreen nowPlaying = new NowPlayingScreen(this);
+    final AiScreens aiScreens = new AiScreens(this);
 
     static final int IMPORT_SESSION = 1;
     static final int IMPORT_AUDIO = 2;
@@ -146,6 +147,10 @@ public final class MainActivity extends UiKit {
     boolean keyboardHidden = true;
     LyricsDialog lyrics;
     final java.util.Set<Long> favoriteIds = new java.util.HashSet<>();
+    /** Messages from the playback service (such as smart continuation), shown while the app is in front. */
+    final java.util.function.Consumer<String> showNotice = message -> {
+        if (this.started) toast(message);
+    };
     final Runnable renderPlayer = nowPlaying::updatePlayer;
 
     LinearLayout root;
@@ -208,6 +213,7 @@ public final class MainActivity extends UiKit {
         @Override public void onServiceConnected(ComponentName name, IBinder binder) {
             playback = ((PlaybackService.LocalBinder) binder).service();
             playback.listener = renderPlayer;
+            playback.notice = showNotice;
             if (getIntent().getBooleanExtra(OPEN_PLAYER, false) && playback.current() != null) {
                 open(Page.PLAYER);
             } else {
@@ -314,6 +320,7 @@ public final class MainActivity extends UiKit {
         if (lyrics != null) lyrics.dismiss();
         if (devices != null) devices.close();
         if (playback != null && playback.listener == renderPlayer) playback.listener = null;
+        if (playback != null && playback.notice == showNotice) playback.notice = null;
         if (bound) unbindService(playbackConnection);
         worker.shutdownNow();
         artwork.close();
