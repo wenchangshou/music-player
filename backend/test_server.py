@@ -1,4 +1,5 @@
 """Relay tests: account devices, remote control between devices and session isolation."""
+import http.server
 import json
 import os
 import tempfile
@@ -236,6 +237,61 @@ class RelayTest(unittest.TestCase):
                               {"key": self.desktop["key"], "id": self.phone["id"]}, device=True)
         self.assertEqual(status, 401)
 
+    def test_csp_keeps_connections_same_origin(self):
+        with urllib.request.urlopen(self.base + "/") as response:
+            csp = response.headers.get("Content-Security-Policy", "")
+            self.assertIn("connect-src 'self';", csp)
+
+    def test_ai_requires_sign_in(self):
+        status, _ = self.call("/api/ai", {"messages": [{"role": "user", "content": "hi"}]})
+        self.assertEqual(status, 401)
+        status, _ = self.call("/api/ai/config")
+        self.assertEqual(status, 401)
+
+    def test_ai_unconfigured_reports_and_refuses(self):
+        status, body = self.call("/api/ai/config", session=self.desktop)
+        self.assertEqual((status, body["configured"], body["managed"]), (200, False, True))
+        status, _ = self.call("/api/ai", {"messages": [{"role": "user", "content": "hi"}]}, self.desktop)
+        self.assertEqual(status, 503)
+        status, _ = self.call("/api/ai/config", {"apiKey": "x"}, self.desktop)
+        self.assertEqual(status, 405)
+
+    def test_ai_uses_server_endpoint_and_key(self):
+        seen = []
+
+        class Upstream(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_POST(self):
+                seen.append((self.path, self.headers.get("Authorization"),
+                             json.loads(self.rfile.read(int(self.headers["Content-Length"])))))
+                reply = json.dumps({"choices": [{"message": {"content": " ok "}, "finish_reason": "stop"}]}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(reply)))
+                self.end_headers()
+                self.wfile.write(reply)
+
+        upstream = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Upstream)
+        threading.Thread(target=upstream.serve_forever, daemon=True).start()
+        self.addCleanup(upstream.server_close)
+        self.addCleanup(upstream.shutdown)
+        gateway = self.server.relay.ai
+        gateway.endpoint = f"http://127.0.0.1:{upstream.server_address[1]}/v1/chat/completions"
+        gateway.model, gateway.key = "m1", "server-secret"
+        status, body = self.call("/api/ai", {"messages": [{"role": "user", "content": "hi"}],
+                                              "endpoint": "https://evil.example", "model": "x",
+                                              "temperature": 9, "max_tokens": 99999}, self.desktop)
+        self.assertEqual((status, body), (200, {"content": "ok", "finish": "stop"}))
+        path, auth, sent = seen[0]
+        self.assertEqual((path, auth), ("/v1/chat/completions", "Bearer server-secret"))
+        self.assertEqual((sent["model"], sent["temperature"], sent["max_tokens"]), ("m1", 1.5, 4096))
+        self.assertNotIn("endpoint", sent)
+        status, body = self.call("/api/ai/config", session=self.desktop)
+        self.assertNotIn("server-secret", json.dumps(body))
+        status, _ = self.call("/api/ai", {"messages": [{"role": "tool", "content": "x"}]}, self.desktop)
+        self.assertEqual(status, 400)
 
 if __name__ == "__main__":
     unittest.main()

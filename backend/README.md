@@ -79,7 +79,12 @@ bash scripts/deploy_relay.sh
       "token": "DEVICE_SPECIFIC_TOKEN"
     }
   },
-  "netease_api_url": "http://127.0.0.1:3000"
+  "netease_api_url": "http://127.0.0.1:3000",
+  "ai": {
+    "endpoint": "https://api.deepseek.com",
+    "model": "deepseek-chat",
+    "api_key": "YOUR_AI_API_KEY"
+  }
 }
 ```
 
@@ -118,3 +123,14 @@ WantedBy=multi-user.target
 2. 在 `/etc/tidal-relay/config.json` 中配置 `"netease_api_url": "http://127.0.0.1:3000"`；
 3. 将 `backend/netease_gateway.py` 与 `server.py` 置于同级目录；
 4. 重启 `tidal-relay` 服务后，Android 端配置本中继即可直接使用网易云音乐功能。
+
+## 五、 AI 音乐助理 (可选)
+
+多端遥控网页的 AI 功能（智能续播、唱片手札、AI 寻歌等）通过中继的 `/api/ai` 调用大模型：
+1. 在 `/etc/tidal-relay/config.json` 中配置 `ai` 段（任意 OpenAI 兼容服务，`endpoint` 必须是 HTTPS），或使用环境变量 `TIDAL_AI_ENDPOINT` / `TIDAL_AI_MODEL` / `TIDAL_AI_KEY`；
+2. 接口地址、模型和密钥只保存在服务器上：浏览器只发送对话内容，`/api/ai/config` 只返回是否已配置和模型名；
+3. `/api/ai` 需要登录播放器账号或后台密钥，每个账号每小时最多 120 次、全服同时最多 4 个请求；
+4. 未配置时网页的 AI 增强会静默隐藏，不影响播放与浏览。
+
+局域网直连手机时不经过中继：AI 设置保存在手机的私有存储里，在网页的「AI 音乐助理设置」中填写即可。
+

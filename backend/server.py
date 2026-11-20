@@ -14,6 +14,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from accounts import Accounts
+from ai_gateway import AiError, AiGateway
 from netease_gateway import GatewayError, NeteaseGateway, PATH_PREFIX
 from tidal_auth import TidalBroker, TidalError
 from tidal_browser import CALLBACK, TidalBrowser
@@ -83,6 +84,7 @@ class Relay:
         self.netease = NeteaseGateway(config.get("netease_api_url", ""))
         self.tidal = TidalBroker(config.get("tidal_device"), config.get("tidal_hires"))
         self.browser = TidalBrowser(config.get("tidal_browser"), self.origin)
+        self.ai = AiGateway(config.get("ai"))
 
     def admin_access(self, auth):
         if not hmac.compare_digest(auth.encode(), ("Bearer " + self.admin).encode()):
@@ -425,7 +427,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Content-Security-Policy", "default-src 'none'; script-src 'self'; connect-src 'self'; img-src 'self' https://resources.tidal.com; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'")
+        self.send_header("Content-Security-Policy", "default-src 'none'; script-src 'self'; connect-src 'self'; img-src 'self' data: https: http: https://resources.tidal.com; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'")
         self.end_headers()
 
     def respond(self, body, mime="application/json; charset=utf-8", status=200):
@@ -548,6 +550,17 @@ class Handler(BaseHTTPRequestHandler):
                 query = parse_qs(parsed.query)
                 if not post and path == "/api/devices":
                     self.respond(relay.list_devices(owner, account["id"] if account else None))
+                    return
+                if path in ("/api/ai", "/api/ai/config"):
+                    try:
+                        if not post and path == "/api/ai/config":
+                            self.respond(relay.ai.status())
+                        elif post and path == "/api/ai":
+                            self.respond(relay.ai.chat(owner or "admin", self.payload(65536)))
+                        else:
+                            raise APIError(405, "AI 配置由服务器管理")
+                    except AiError as error:
+                        raise APIError(error.status, str(error)) from error
                     return
                 identifier = query.get("device", [""])[0]
                 if account:
